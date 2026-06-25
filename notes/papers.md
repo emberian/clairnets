@@ -56,6 +56,22 @@ Vision-only (CIFAR). We already reproduced FFN-redundancy on modadd (~42% fewer 
   is the primary driver. **Dot-only 76.91% / Wedge-only 76.35% / both 77.63%** (Table 4) — wedge ALONE,
   with zero energy info, nearly matches. The wedge is doing real discriminative work.
 
+### ★ CORRECTION (2026-06-25, after a hasty mis-test) — the CLAIM is PARETO param-efficiency, NOT iso-param
+The headline is "Nano 1.4M ≈ ResNet-18 11.2M (8× fewer params), Lite 2.6M = tiny-model SOTA 79.05%" — i.e.
+**geom MATCHES MUCH BIGGER baselines with far fewer params.** Comparing geom to an iso-param MLP-mixer (what
+we first did → geom 61% < mlp 64% at 1.5M/30ep) is the WRONG test AND was an unfaithful, undertrained repro.
+Mechanisms our first vision repro MISSED (the ones that make it work small):
+- **Self-energy suppression `C = C_loc(H) − λ·H`, λ=1 = discrete Laplacian ΔH** (geometric high-pass),
+  explicitly "optimal for capacity-constrained models." WE OMITTED THIS — likely the biggest miss.
+- **Local context = TWO stacked depthwise 3×3 convs** `Conv3x3(Conv3x3(H))`, not one.
+- **Global superposition** `C_glo=GlobalAvgPool`, β-switch (high-perf variants).
+- **Gated Geometric Residual** `H_l = H_{l-1} + γ⊙(SiLU(H_{l-1}) + Gate(H_{l-1},H_geo)⊙H_geo)`, not a plain residual.
+- isotropic columnar (constant h×w×D), patch-embed conv, shifts S={1,2,4,8,15}.
+**Lesson:** test in the regime the method targets (low-param Pareto), with a FAITHFUL build + proper training
+(~150 epochs), before concluding. Faithful repro = `clair/cliffordnet.py`; decisive Q = does Nano-1.4M-λ1 reach
+~76-78% and does λ=1 beat λ=0. NOTE our geom-LM language sweep ALSO hinted this — geom won at 0.5M, lost at 8M
+(low-param regime is geom's home), so that "negative" was likewise regime-dependent, not absolute.
+
 ## 3. HRM (Hierarchical Reasoning Model) — arXiv 2506.21734  ⚠ contested
 - Two recurrent modules: H (slow/abstract planning) + L (fast/detailed), 27M params, **1000 samples**,
   no pretraining/CoT, "sequential reasoning in a single forward pass."
