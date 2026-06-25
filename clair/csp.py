@@ -203,6 +203,109 @@ def coloring(n, edges, k=3):
 GENERATORS = {"chain_eq": chain_eq, "xor_parity": xor_parity}
 
 
+# --------------------------------------------------------------------- pair lattice (level 1)
+# State P maps each ORDERED pair (i,j), i!=j, to a frozenset of allowed (v_i, v_j). Symmetric by
+# construction. This catches 2-cell correlations (e.g. equality) that the per-cell lattice projects
+# to ⊤ — the Lean's pair_strictly_richer_than_cell. Still cannot see 3-cell factors (the XOR wall).
+def pair_init(csp: CSP, dom=None):
+    dom = dom or csp.full()
+    P = {}
+    for i in range(csp.n):
+        for j in range(csp.n):
+            if i == j:
+                continue
+            al = set()
+            for vi in dom[i]:
+                for vj in dom[j]:
+                    a = {i: vi, j: vj}
+                    if all(tuple(a[c] for c in sc) in rel for sc, rel in csp.cons if set(sc) <= {i, j}):
+                        al.add((vi, vj))
+            P[(i, j)] = frozenset(al)
+    return P
+
+
+def pair_step(csp: CSP, P):
+    """Path-consistency: keep (v_i,v_j) iff for every other cell k there is a v_k with (v_i,v_k) and
+    (v_k,v_j) both allowed. Reductive; sound. Iterating to fixpoint = 3-cell path consistency."""
+    new = {}
+    for (i, j), al in P.items():
+        keep = set()
+        for (vi, vj) in al:
+            ok = True
+            for k in range(csp.n):
+                if k in (i, j):
+                    continue
+                if not any((vi, vk) in P[(i, k)] and (vk, vj) in P[(k, j)] for vk in range(csp.d)):
+                    ok = False; break
+            if ok:
+                keep.add((vi, vj))
+        new[(i, j)] = frozenset(keep)
+    return new
+
+
+def pair_cells(csp: CSP, P):
+    """Project the pair state back to per-cell domains: v survives at i iff it appears (paired with
+    something) for EVERY partner j."""
+    if csp.n == 1:
+        return (frozenset(range(csp.d)),)
+    cells = []
+    for i in range(csp.n):
+        surv = None
+        for j in range(csp.n):
+            if j == i:
+                continue
+            here = frozenset(vi for (vi, vj) in P[(i, j)])
+            surv = here if surv is None else (surv & here)
+        cells.append(surv if surv is not None else frozenset(range(csp.d)))
+    return tuple(cells)
+
+
+def pair_to_fixpoint(csp: CSP, dom=None):
+    P = pair_init(csp, dom)
+    for t in range(1, csp.n * csp.d * csp.d + 2):
+        nxt = pair_step(csp, P)
+        if nxt == P:
+            return P, t
+        P = nxt
+    return P, t
+
+
+def pair_exact(csp: CSP, dom=None):
+    """Exact pair transformer: P[(i,j)] = {(s[i],s[j]) over all solutions}. Ground truth at level 1."""
+    sols = solutions(csp, dom)
+    return {(i, j): frozenset((s[i], s[j]) for s in sols)
+            for i in range(csp.n) for j in range(csp.n) if i != j}
+
+
+def solve_pair(csp: CSP):
+    """Run path-consistency to fixpoint, project to cells, report outcome + soundness vs pair-exact."""
+    P, steps = pair_to_fixpoint(csp)
+    cells = pair_cells(csp, P)
+    sols = solutions(csp)
+    ex = pair_exact(csp)
+    # false elim at pair level: pairs the operator dropped that some solution actually uses
+    fe = sum(len(ex[k] - P[k]) for k in ex) if sols else 0
+    return {"outcome": status(cells), "steps": steps, "final_alive": tuple(len(c) for c in cells),
+            "false_elim_vs_exact": fe, "solvable": len(sols) > 0}
+
+
+def completeness_per_level(csps):
+    """For a corpus of (name, csp), report solve rate at level 0 (per-cell AC) vs level 1 (pair PC),
+    over the SOLVABLE instances. Demonstrates 'completeness = level × width'."""
+    lvl0 = lvl1 = tot = 0
+    fe0 = fe1 = 0
+    for _, c in csps:
+        r0, r1 = solve(c, ac_step), solve_pair(c)
+        if not r0["solvable"]:
+            continue
+        tot += 1
+        lvl0 += r0["outcome"] == "solved"
+        lvl1 += r1["outcome"] == "solved"
+        fe0 += r0["false_elim_vs_exact"]; fe1 += r1["false_elim_vs_exact"]
+    return {"n_solvable": tot, "level0_solved": lvl0, "level1_solved": lvl1,
+            "level0_false_elim": fe0, "level1_false_elim": fe1}
+
+
 if __name__ == "__main__":
     print("exact-CSP harness self-check (reproduces the proven Lean facts)\n")
 
@@ -234,5 +337,31 @@ if __name__ == "__main__":
     col = coloring(3, [(0, 1), (1, 2), (0, 2)], k=3)
     print(f"coloring K3:  sols={solve(col)['n_solutions']} (3!=6 proper 3-colorings of a triangle)")
     assert solve(col)["n_solutions"] == 6
+
+    # ---- pair level (Level 1): the representation gap the Lean proves ----
+    print("\n-- pair lattice (level 1) --")
+    eq = CSP(2, 2, (_rel((0, 1), lambda t: t[0] == t[1], 2),))      # the equality atom {x=y}
+    P, _ = pair_to_fixpoint(eq)
+    ac_alive = solve(eq, ac_step)["final_alive"]
+    print(f"equality {{x=y}}:  per-cell AC alive={ac_alive} (=⊤, forgets the correlation)  "
+          f"pair P[(0,1)]={sorted(P[(0,1)])} (the diagonal — correlation kept)")
+    assert ac_alive == (2, 2) and P[(0, 1)] == frozenset({(0, 0), (1, 1)}), "pair > cell on equality"
+
+    rp = solve_pair(xr)   # pair on XOR: narrows the equality atoms but still can't see 3-cell parity
+    print(f"xor_parity:    pair outcome={rp['outcome']} alive={rp['final_alive']} "
+          f"(narrows correlations but abstains — 3-cell parity needs LEVEL 2, honest correction)")
+    assert rp["outcome"] == "open" and rp["false_elim_vs_exact"] == 0
+
+    # ---- completeness-per-level over a small corpus ----
+    corpus = [("chain", chain_eq(4)), ("xor", xor_parity()),
+              ("eq", eq), ("2sat", two_sat(3, [(0, 1, 1, 1), (1, 0, 2, 1)])),
+              ("3sat", three_sat(3, [(0, 1, 1, 1, 2, 1), (0, 0, 1, 0, 2, 0)])),
+              ("triK3", coloring(3, [(0, 1), (1, 2), (0, 2)], 3))]
+    cl = completeness_per_level(corpus)
+    print(f"\ncompleteness-per-level over {cl['n_solvable']} solvable CSPs:  "
+          f"level0(cell)={cl['level0_solved']} solved  level1(pair)={cl['level1_solved']} solved  "
+          f"| false_elim L0={cl['level0_false_elim']} L1={cl['level1_false_elim']} (both must be 0)")
+    assert cl["level1_solved"] >= cl["level0_solved"], "pair never solves FEWER than per-cell"
+    assert cl["level0_false_elim"] == 0 and cl["level1_false_elim"] == 0, "both levels stay sound"
 
     print("\nALL CHECKS PASS — harness matches the Lean: soundness free, completeness is level×width.")
