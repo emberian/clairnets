@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from . import induce as I
+from . import perf
 
 
 def device():
@@ -127,6 +128,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    perf.setup()
     dev = device()
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     n_lo, n_hi = (int(x) for x in a.train_n.split(","))
