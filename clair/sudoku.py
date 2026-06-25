@@ -140,26 +140,24 @@ def conflict_flag(cls_logit, theta_cls=0.0):
 
 
 @torch.no_grad()
-def branch(alive, b_logits, tau=1.5, rng=None):
+def branch(alive, b_logits, tau=1.5):
     """Pick, per unsolved example, a multi-candidate cell and PIN one digit sampled from
-    softmax(b/tau) among its alive candidates. Returns new alive + the (cell,digit) pinned."""
-    B = alive.size(0)
-    nalive = alive.sum(-1)                                    # [B,81]
-    multi = nalive > 1
+    softmax(b/tau) among its alive candidates. Fully vectorized (no Python loop over the batch).
+    Returns new alive + the (cell,digit) pinned (cell=digit=-1 for examples with no multi cell)."""
+    B, P, V = alive.shape
+    ar = torch.arange(B, device=alive.device)
+    multi = alive.sum(-1) > 1                                 # [B,P]
+    has = multi.any(-1)                                       # [B]
+    # random multi-cell per example: random score on multi cells, argmax
+    score = torch.rand(B, P, device=alive.device).masked_fill(~multi, -1.0)
+    cell = score.argmax(-1)                                   # [B]
+    bl = b_logits[ar, cell].masked_fill(alive[ar, cell] < 0.5, -1e9)   # [B,V] alive-only logits
+    di = torch.multinomial(torch.softmax(bl / tau, -1), 1).squeeze(-1)  # [B]
+    onehot = torch.zeros(B, V, device=alive.device).scatter_(1, di[:, None], 1.0)
     out = alive.clone()
-    pinned = torch.full((B, 2), -1, dtype=torch.long, device=alive.device)
-    for bm in range(B):
-        cells = torch.nonzero(multi[bm], as_tuple=False).flatten()
-        if cells.numel() == 0:
-            continue
-        ci = cells[torch.randint(len(cells), (1,), device=alive.device)].item()
-        logits = b_logits[bm, ci].clone()
-        logits[alive[bm, ci] < 0.5] = -1e9                   # only alive candidates
-        p = torch.softmax(logits / tau, -1)
-        di = torch.multinomial(p, 1).item()
-        out[bm, ci] = 0.0
-        out[bm, ci, di] = 1.0
-        pinned[bm, 0], pinned[bm, 1] = ci, di
+    out[ar, cell] = torch.where(has[:, None], onehot, out[ar, cell])   # only pin where a multi cell exists
+    neg = torch.full_like(cell, -1)
+    pinned = torch.stack([torch.where(has, cell, neg), torch.where(has, di, neg)], -1)
     return out, pinned
 
 
