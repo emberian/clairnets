@@ -58,12 +58,21 @@ def batch_from(pool, idxs, tok, Nmax, K, colors, dev):
     return A.build_batch([pool[i] for i in idxs], tok, Nmax, K, colors, dev)
 
 
-def losses(model, ba, aux):
-    color_logits, abstain_logit, (cand, E, alive, elog) = model(ba)
-    la = F.binary_cross_entropy_with_logits(abstain_logit, ba["abst"])
-    det = ba["abst"] < 0.5
-    lc = F.cross_entropy(color_logits[det], ba["ans"][det]) if det.any() else color_logits.sum() * 0
-    l = la + lc
+def losses(model, ba, aux, set_wpos=6.0):
+    color_logits, abstain_logit, (cand, E, alive, elog, keep_logits) = model(ba)
+    if keep_logits is not None:
+        # SET-VALUED readout: SOUNDNESS-ASYMMETRIC BCE on the per-value keep/drop logits vs the EXACT
+        # surviving set. pos_weight=set_wpos makes DROPPING a survivor (unsound) ~6x more expensive
+        # than KEEPING a non-survivor (loose-but-sound) -> the false-elimination objective.
+        pw = torch.tensor(set_wpos, device=keep_logits.device)
+        l = F.binary_cross_entropy_with_logits(keep_logits, ba["surv"], pos_weight=pw)
+        head_terms = {"set": float(l.detach())}
+    else:
+        la = F.binary_cross_entropy_with_logits(abstain_logit, ba["abst"])
+        det = ba["abst"] < 0.5
+        lc = F.cross_entropy(color_logits[det], ba["ans"][det]) if det.any() else color_logits.sum() * 0
+        l = la + lc
+        head_terms = {"la": float(la.detach()), "lc": float(lc.detach() if torch.is_tensor(lc) else 0.0)}
     aux_terms = {}
     if aux > 0:
         vm = ba["vmask"]; pair = vm[:, :, None] * vm[:, None, :]
@@ -74,7 +83,7 @@ def losses(model, ba, aux):
         lp = (lp * ba["pinned"].unsqueeze(-1)).sum() / ba["pinned"].sum().clamp_min(1)
         l = l + aux * (le + lp)
         aux_terms = {"edge": float(le.detach()), "pin": float(lp.detach())}
-    return l, {"la": float(la.detach()), "lc": float(lc.detach() if torch.is_tensor(lc) else 0.0), **aux_terms}
+    return l, {**head_terms, **aux_terms}
 
 
 @torch.no_grad()
@@ -101,6 +110,21 @@ def extraction_metrics(model, ba, cand, E):
     return {"pin_acc": pin_acc, "edge_f1": f1, "prog_exact": exact / B}
 
 
+def reported_set(cl, al, keep_logits, K):
+    """Map a head's output to a reported candidate SET R [B,K] (binary), uniformly across heads:
+      * set-valued head: R = {v : sigmoid(keep_logit_v) > 0.5}
+      * single-answer head: ABSTAIN -> full domain (declined = no info); else the singleton {argmax}.
+    This lets the SAME soundness/tightness/useful-info metrics score both heads apples-to-apples:
+    the binary head's only sound move on an underdetermined query IS to abstain (= the full set)."""
+    B = cl.size(0)
+    if keep_logits is not None:
+        return (torch.sigmoid(keep_logits) > 0.5).float()
+    pred_abs = (torch.sigmoid(al) > 0.5)
+    R = F.one_hot(cl.argmax(-1), K).float()
+    R = torch.where(pred_abs[:, None], torch.ones_like(R), R)
+    return R
+
+
 @torch.no_grad()
 def evaluate(model, pool, tok, Nmax, K, colors, dev, n=512, bs=64):
     model.eval()
@@ -108,6 +132,11 @@ def evaluate(model, pool, tok, Nmax, K, colors, dev, n=512, bs=64):
     det_tot = det_right = 0
     correct = tot = 0
     pin_accs, edge_f1s, prog_exacts = [], [], []
+    # SET-VALUED metrics (computed for whichever head, via reported_set):
+    snd = useful = 0                      # sound (R contains the true survivors) ; sound AND informative
+    tight_num = tight_den = 0.0          # mean |R|/|S| over cells with >=1 survivor
+    rsize_sum = ssize_sum = 0.0
+    set_det_tot = set_det_right = 0      # det-acc(set): among determined cells, R == the true singleton
     seen = 0
     i = 0
     while seen < min(n, len(pool)):
@@ -116,7 +145,7 @@ def evaluate(model, pool, tok, Nmax, K, colors, dev, n=512, bs=64):
             break
         i += bs
         ba = batch_from(pool, idxs, tok, Nmax, K, colors, dev)
-        cl, al, (cand, E, alive, elog) = model(ba)
+        cl, al, (cand, E, alive, elog, keep_logits) = model(ba)
         em = extraction_metrics(model, ba, cand, E)
         pin_accs.append(em["pin_acc"]); edge_f1s.append(em["edge_f1"]); prog_exacts.append(em["prog_exact"])
         pred_abs = torch.sigmoid(al) > 0.5
@@ -128,12 +157,30 @@ def evaluate(model, pool, tok, Nmax, K, colors, dev, n=512, bs=64):
         det_tot += int(det.sum()); det_right += int(((pred_col == ba["ans"]) & ~pred_abs & det).sum())
         ok = (true_abs & pred_abs) | (~true_abs & ~pred_abs & (pred_col == ba["ans"]))
         correct += int(ok.sum()); tot += ba["abst"].numel(); seen += ba["abst"].numel()
+        # ---- set-valued readout metrics ----
+        S = ba["surv"]                                            # [B,K] true surviving set
+        R = reported_set(cl, al, keep_logits, K)                 # [B,K] reported set
+        ssize = S.sum(-1); rsize = R.sum(-1)
+        sound = ((S * (1 - R)).sum(-1) < 0.5)                    # dropped no survivor
+        snd += int(sound.sum())
+        useful += int((sound & (rsize < K - 0.5)).sum())
+        rsize_sum += float(rsize.sum()); ssize_sum += float(ssize.sum())
+        has = ssize >= 0.5                                        # has >=1 survivor (exclude unsat)
+        tight_num += float((rsize[has] / ssize[has].clamp_min(1)).sum()); tight_den += int(has.sum())
+        dmask = (ssize > 0.5) & (ssize < 1.5)                    # determined (singleton survivor)
+        set_det_tot += int(dmask.sum())
+        exact_single = (((R - S).abs().sum(-1) < 0.5) & dmask)   # R == the true singleton exactly
+        set_det_right += int(exact_single.sum())
     model.train()
     prec = tp / max(1, tp + fp); rec = tp / max(1, tp + fn)
     return {"overall": correct / max(1, tot), "det_acc": det_right / max(1, det_tot),
             "abstain_prec": prec, "abstain_rec": rec, "n": tot,
             "pin_acc": float(np.mean(pin_accs)), "edge_f1": float(np.mean(edge_f1s)),
-            "prog_exact": float(np.mean(prog_exacts))}
+            "prog_exact": float(np.mean(prog_exacts)),
+            "soundness": snd / max(1, tot), "useful_info": useful / max(1, tot),
+            "tightness": tight_num / max(1, tight_den),
+            "mean_report_size": rsize_sum / max(1, tot), "mean_surv_size": ssize_sum / max(1, tot),
+            "set_det_acc": set_det_right / max(1, set_det_tot)}
 
 
 # ===================================================================== base OLMo few-shot baseline
@@ -211,6 +258,11 @@ def main():
                     help="edge extractor: pool (bilinear on per-cell summaries, baseline) | "
                          "grounded (read each edge from where i,j co-occur in the text)")
     ap.add_argument("--edge_window", type=int, default=7, help="grounded head: mention dilation window")
+    ap.add_argument("--readout", choices=["single", "setvalued"], default="single",
+                    help="output head: single (answer-or-abstain, baseline) | setvalued (per-value "
+                         "keep/drop SET on the query cell's narrowed marginal, soundness-asymmetric)")
+    ap.add_argument("--set_wpos", type=float, default=6.0,
+                    help="setvalued: BCE pos_weight = cost of DROPPING a survivor (unsound) vs keeping")
     ap.add_argument("--data", choices=["templated", "curriculum"], default="templated",
                     help="train source: templated render_problem (arbitrary N) | diverse curriculum text")
     ap.add_argument("--curriculum_path", default=os.path.join(os.path.dirname(__file__), "..",
@@ -237,8 +289,9 @@ def main():
           f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
-                            write_head=a.write_head, edge_window=a.edge_window).to(dev)
-    print(f"WRITE head: {a.write_head}" + (f" (edge_window={a.edge_window})" if a.write_head == "grounded" else ""),
+                            write_head=a.write_head, edge_window=a.edge_window, readout=a.readout).to(dev)
+    print(f"WRITE head: {a.write_head}" + (f" (edge_window={a.edge_window})" if a.write_head == "grounded" else "")
+          + f"  |  READOUT: {a.readout}" + (f" (set_wpos={a.set_wpos})" if a.readout == "setvalued" else ""),
           flush=True)
     # trainable modules stay fp32 (stable Adam); they cast bf16 host activations internally
     print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}", flush=True)
@@ -281,13 +334,17 @@ def main():
     for s in range(1, a.steps + 1):
         idxs = rng.integers(0, len(train_pool), a.bs).tolist()
         ba = batch_from(train_pool, idxs, tok, Nmax, a.k, colors, dev)
-        loss, parts = losses(model, ba, a.aux)
+        loss, parts = losses(model, ba, a.aux, set_wpos=a.set_wpos)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); opt.step()
         if s % max(1, a.steps // 10) == 0 or s == 1:
             ind = evaluate(model, eval_pools["train"], tok, Nmax, a.k, colors, dev, n=min(192, a.eval_n))
+            extra = (f"  snd {ind['soundness']*100:.0f} useful {ind['useful_info']*100:.0f}"
+                     f" tight {ind['tightness']:.2f} setDet {ind['set_det_acc']*100:.0f}"
+                     if a.readout == "setvalued" else
+                     f"  abstP/R {ind['abstain_prec']*100:.0f}/{ind['abstain_rec']*100:.0f}")
             print(f"  step {s:5d} loss {loss.item():.3f} ({parts})  in-dist overall {ind['overall']*100:4.1f}%"
-                  f"  abstP/R {ind['abstain_prec']*100:.0f}/{ind['abstain_rec']*100:.0f}"
+                  f"{extra}"
                   f"  pinAcc {ind['pin_acc']*100:.0f} edgeF1 {ind['edge_f1']*100:.0f} progEx {ind['prog_exact']*100:.0f}"
                   f"  {time.time()-t0:.0f}s", flush=True)
             log.append({"step": s, "loss": float(loss.detach()), **ind})
@@ -296,12 +353,15 @@ def main():
     print("\n=== AUGMENTED size-generalization ===", flush=True)
     aug_gen = {}
     test_keys = [int(x) for x in a.test_n.split(",")] + (["curr"] if "curr" in eval_pools else [])
+    print(f"  (set metrics: SND=soundness(R⊇true) TIGHT=|R|/|S| USE=sound&informative "
+          f"setDet=singleton-exact; reported even for the single head via abstain=full-domain)", flush=True)
     for tn in test_keys:
         aug_gen[tn] = evaluate(model, eval_pools[tn], tok, Nmax, a.k, colors, dev, n=a.eval_n)
         r = aug_gen[tn]
-        print(f"  N={str(tn):>4}  overall {r['overall']*100:4.1f}  detAcc {r['det_acc']*100:4.1f}"
-              f"  abstP/R {r['abstain_prec']*100:.0f}/{r['abstain_rec']*100:.0f}"
-              f"  pinAcc {r['pin_acc']*100:.0f} edgeF1 {r['edge_f1']*100:.0f} progEx {r['prog_exact']*100:.0f}", flush=True)
+        print(f"  N={str(tn):>4}  SND {r['soundness']*100:4.1f}  TIGHT {r['tightness']:.2f}"
+              f" (|R|{r['mean_report_size']:.2f}/|S|{r['mean_surv_size']:.2f})  USE {r['useful_info']*100:4.1f}"
+              f"  setDet {r['set_det_acc']*100:4.1f}  | detAcc {r['det_acc']*100:4.1f}"
+              f"  edgeF1 {r['edge_f1']*100:.0f} progEx {r['prog_exact']*100:.0f}", flush=True)
 
     base_gen = {}
     if not a.no_base:
