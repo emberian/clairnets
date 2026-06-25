@@ -42,10 +42,10 @@ def verdict(sl, maj, aff):
 
 def analyze(n_per=40, seed=0):
     rng = np.random.default_rng(seed)
-    print(f"\nrelation     poly SL/Maj/Aff   AC-solve  pair-solve  exact-solve  false_elim   kind / verdict")
+    print(f"\nrelation     poly SL/Maj/Aff   L0(cell)  L1(pair)  L2(triple)  exact-cell   kind / verdict")
     print("-" * 104)
     for rel in CU.GENERATORS:
-        tot = ac = pr = ex = 0
+        tot = ac = pr = tr = ex = 0
         sl_n = maj_n = aff_n = fe = 0
         for _ in range(n_per):
             p = CU.gen_problem(rng, relation=rel)
@@ -61,17 +61,15 @@ def analyze(n_per=40, seed=0):
             try:
                 pr += C.solve_pair(csp)["outcome"] == "solved"
             except Exception:
-                pr += 0
+                pass
+            tr += C.solve_factor(csp, 3)["outcome"] == "solved"   # level-2 / triple factor lattice
             dom, _ = C.to_fixpoint(C.exact_dedP, csp, csp.full())
             ex += C.status(dom) == "solved"
         if not tot:
             continue
-        sl_maj = sl_n > 0.8 * tot
-        maj_maj = maj_n > 0.8 * tot
-        aff_maj = aff_n > 0.8 * tot
-        v = verdict(sl_maj, maj_maj, aff_maj)
+        v = verdict(sl_n > 0.8 * tot, maj_n > 0.8 * tot, aff_n > 0.8 * tot)
         print(f"{rel:11}  {sl_n*100//tot:>3}/{maj_n*100//tot:>3}/{aff_n*100//tot:>3}        "
-              f"{ac*100//tot:>4}%     {pr*100//tot:>5}%      {ex*100//tot:>5}%       {fe:>4}      {v}")
+              f"{ac*100//tot:>4}%    {pr*100//tot:>5}%     {tr*100//tot:>5}%     {ex*100//tot:>5}%      {v}")
     print("\nreads: AC-solve = per-cell arc-consistency pins a unique solution; exact-solve = the best")
     print("per-cell transformer dedP solves it; pair-solve = path-consistency. false_elim must be 0")
     print("(all levels sound). Where AC<exact, per-cell propagation is incomplete; where exact<100,")
@@ -80,5 +78,20 @@ def analyze(n_per=40, seed=0):
     print("on arithmetic/alldiff -- a fixable pair_init limitation, not 'pair is worse'.")
 
 
+def affine_wall_demo():
+    """The canonical proof the factor (level-2) lattice breaks the affine wall: XOR is uniquely
+    solvable but per-cell AC abstains; the triple lattice solves it, staying sound."""
+    xr = C.xor_parity()
+    ac = C.solve(xr, C.ac_step)
+    f3 = C.solve_factor(xr, 3)
+    print("\naffine-wall demo (XOR x=y,y=z,x^y^z=0; unique solution, per-cell must abstain):")
+    print(f"  L0 per-cell AC : {ac['outcome']:7} alive={ac['final_alive']} false_elim={ac['false_elim_vs_exact']}")
+    print(f"  L2 triple      : {f3['outcome']:7} alive={f3['final_alive']} false_elim={f3['false_elim_vs_exact']}")
+    assert ac["outcome"] == "open" and f3["outcome"] == "solved" and f3["false_elim_vs_exact"] == 0
+    assert C.solve_factor(C.chain_eq(4), 3)["outcome"] == "solved"   # still solves the easy case, soundly
+    print("  -> level-2 SOLVES where level-0 abstains, soundly. The richer lattice is the lever.")
+
+
 if __name__ == "__main__":
     analyze()
+    affine_wall_demo()
