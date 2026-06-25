@@ -122,6 +122,7 @@ def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1, amp=False):
     chain_done = torch.zeros(E * K, dtype=torch.bool, device=dev)
     chain_correct = torch.zeros(E * K, dtype=torch.bool, device=dev)
     chain_returned = torch.zeros(E * K, dtype=torch.bool, device=dev)
+    chain_abstained = torch.zeros(E * K, dtype=torch.bool, device=dev)
     chain_fwd = torch.zeros(E * K, dtype=torch.long, device=dev)
     for r in range(1, R_max + 1):
         live = ~chain_done
@@ -139,6 +140,7 @@ def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1, amp=False):
         fin_abstain = conf & live & ~solved             # ⊥ -> abstain (do NOT return an answer)
         chain_returned |= fin_solved
         chain_correct |= (fin_solved & ok)
+        chain_abstained |= fin_abstain
         chain_done |= fin_solved | fin_abstain
         # branch stalled live chains
         stalled = (new == alive).all(-1).all(-1) & live & ~solved & ~conf
@@ -156,8 +158,12 @@ def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1, amp=False):
     fwd_solved = big.min(1).values[correct]
     p90 = float(torch.quantile(fwd_solved.float(), 0.9)) if correct.any() else float("nan")
     m.train()
+    # chain-level failure-mode diagnostics (per chain, not per puzzle): why did chains end?
+    diag = {"chain_solved": float(chain_returned.float().mean()),
+            "chain_abstained": float(chain_abstained.float().mean()),
+            "chain_timeout": float((~chain_done).float().mean())}
     return {"solve_rate": float(correct.float().mean()), "wrong_return_rate": float(wrong.float().mean()),
-            "n_returned": int(returned.sum()), "p90_forwards": p90, "n_eval": E}
+            "n_returned": int(returned.sum()), "p90_forwards": p90, "n_eval": E, **diag}
 
 
 def main():
@@ -197,16 +203,18 @@ def main():
     for R in rounds:
         ev = evaluate(m, ev_p, ev_s, dev, K=a.K, R_max=R, amp=a.amp)
         res["eval_sweep"][str(R)] = ev
-        print(f"  rounds {R:5d}  solve {ev['solve_rate']*100:5.1f}%  wrong-return {ev['wrong_return_rate']*100:5.2f}%  "
-              f"returned {ev['n_returned']}/{ev['n_eval']*a.K}  p90fwd {ev['p90_forwards']}")
+        print(f"  rounds {R:5d}  solve {ev['solve_rate']*100:5.1f}%  wrong {ev['wrong_return_rate']*100:5.2f}%  "
+              f"| chains: solved {ev['chain_solved']*100:4.1f}% abstained {ev['chain_abstained']*100:4.1f}% "
+              f"timeout {ev['chain_timeout']*100:4.1f}%  p90fwd {ev['p90_forwards']}")
     res["eval"] = res["eval_sweep"][str(rounds[-1])]
     ev = res["eval"]
     print(f"\nDONE {a.arm}: best solve {ev['solve_rate']*100:.1f}%  wrong-return {ev['wrong_return_rate']*100:.2f}%  "
           f"| final false_elim {res['log'][-1]['false_elim']:.4f}")
     out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", f"glados_{a.arm}_{int(a.target)}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
+    torch.save({"state": m.state_dict(), "d_model": res["d_model"], "arm": a.arm}, out.replace(".json", ".pt"))
     json.dump(res, open(out, "w"), indent=1)
-    print("wrote", out)
+    print("wrote", out, "+ checkpoint")
 
 
 if __name__ == "__main__":
