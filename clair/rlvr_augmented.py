@@ -240,6 +240,8 @@ def main():
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--host", default="olmo2-1b",
                     help="frozen host config: olmo2-1b (default, baseline) | olmo3-7b | raw HF id")
+    ap.add_argument("--write_head", choices=["pool", "grounded"], default="pool")
+    ap.add_argument("--edge_window", type=int, default=7)
     ap.add_argument("--lr", type=float, default=1e-4)            # lower than SFT; RL is higher-variance
     ap.add_argument("--T", type=int, default=10)
     ap.add_argument("--ent_coef", type=float, default=0.01)
@@ -284,8 +286,9 @@ def main():
     print(f"host config: {olmo.config.num_hidden_layers} layers, hidden_size {olmo.config.hidden_size}, "
           f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
-    model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T).to(dev)
-    print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}  dev={dev}", flush=True)
+    model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
+                            write_head=a.write_head, edge_window=a.edge_window).to(dev)
+    print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}  dev={dev}  write_head={a.write_head}", flush=True)
 
     gap = A.verify_flamingo_noop(olmo, tok, dev)
     print(f"FLAMINGO GATE NO-OP (zero-init gated adapter, max|base-gated|, ~0 expected): {gap:.3e}", flush=True)
@@ -312,7 +315,8 @@ def main():
     # ---- reference for KL (snapshot of the SFT-init heads; shares the frozen OLMo) ----
     ref = None
     if a.kl_coef > 0:
-        ref = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T).to(dev)
+        ref = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
+                              write_head=a.write_head, edge_window=a.edge_window).to(dev)
         ref.load_state_dict(model.state_dict())
         for p in ref.parameters():
             p.requires_grad_(False)

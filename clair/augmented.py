@@ -107,9 +107,18 @@ def _fix_caps(text):
 
 def build_batch(probs, tok, Nmax, K, colors, device):
     """Tokenize a batch of rendered problems and build cell-mention masks + the ground-truth program
-    and answer targets. Returns a dict of tensors."""
+    and answer targets. Returns a dict of tensors.
+
+    A problem may carry a PRE-RENDERED `text` + `mentions` (diverse curriculum records, where the
+    natural language and entity char-spans come from Bedrock + the curriculum loader). In that case
+    we use them verbatim; otherwise we render the canonical template from `facts`."""
     texts, all_spans = [], []
     for p in probs:
+        if p.get("text") is not None and p.get("mentions") is not None:
+            # diverse curriculum record: text + char-span mentions already provided
+            texts.append(p["text"])
+            all_spans.append({int(k): [tuple(s) for s in v] for k, v in p["mentions"].items()})
+            continue
         t, spans = render_problem(p, colors)
         # capitalization shouldn't move char offsets (same length), apply after computing spans
         texts.append(_fix_caps(t))
@@ -181,6 +190,66 @@ class CellReader(nn.Module):
         return ctx
 
 
+# ===================================================================== WRITE: pair-grounded edge reader
+class PairGroundedEdgeReader(nn.Module):
+    """LOCALLY-GROUNDED DIFF-edge extractor (the fix for the extraction wall).
+
+    The pool baseline scores every (i,j) pair BILINEARLY from two INDEPENDENT per-cell summaries
+    (edge_a/edge_b on each cell's globally-pooled context). That summary throws away WHICH clause
+    couples i to j, so as N grows the bilinear scorer can no longer bind the right DIFF-edges
+    (edge-F1 63->48, det-acc 84->26 as N 5->11).
+
+    Here each edge decision (i,j) is read from the host hidden states WHERE i AND j CO-OCCUR. For
+    every ordered pair we form a SYMMETRIC query from both cells' mention-mean states and
+    cross-attend over the prompt, with the attention BIASED toward the union of i's and j's mention
+    neighborhoods (the local fact-clause spanning both mentions). We then classify edge present/
+    absent from that LOCAL context plus a hard co-occurrence feature (max overlap of the two
+    proximity fields). Grounding is what makes it scale: a DIFF fact is ONE local clause -> ONE
+    edge, independent of N; pairs that never co-occur locally get no evidence and default off.
+    """
+    def __init__(self, D, dp=512, heads=8, window=7):
+        super().__init__()
+        self.h, self.dp, self.dk = heads, dp, dp // heads
+        self.window = window | 1                      # force odd so padding keeps T fixed
+        self.qln = nn.LayerNorm(2 * D)
+        self.wq = nn.Linear(2 * D, dp)
+        self.wk = nn.Linear(D, dp)
+        self.wv = nn.Linear(D, dp)
+        self.beta = nn.Parameter(torch.tensor(2.0))   # locality-bias strength (>=0 via softplus)
+        self.cls = nn.Sequential(nn.Linear(dp + 1, dp), nn.GELU(), nn.Linear(dp, 1))
+
+    def _prox(self, mention):
+        """mention [B,N,T] binary -> proximity field [B,N,T] in {0,1}: 1 within +-window//2 tokens
+        of any mention of that cell (a dilation along the token axis)."""
+        B, N, T = mention.shape
+        w = self.window
+        p = F.max_pool1d(mention.reshape(B * N, 1, T), kernel_size=w, stride=1, padding=w // 2)
+        return p.reshape(B, N, T)
+
+    def forward(self, v_mean, h, mention, attn_mask):
+        # v_mean [B,N,D] cell identity, h [B,T,D] host states, mention [B,N,T], attn_mask [B,T]
+        B, N, D = v_mean.shape
+        T = h.size(1)
+        prox = self._prox(mention)                                          # [B,N,T]
+        a = v_mean[:, :, None, :].expand(B, N, N, D)
+        b = v_mean[:, None, :, :].expand(B, N, N, D)
+        pf = torch.cat([a + b, a * b], -1)                                  # symmetric pair feat [B,N,N,2D]
+        q = self.wq(self.qln(pf)).view(B, N * N, self.h, self.dk).transpose(1, 2)  # [B,h,N*N,dk]
+        k = self.wk(h).view(B, T, self.h, self.dk).transpose(1, 2)
+        vv = self.wv(h).view(B, T, self.h, self.dk).transpose(1, 2)
+        att = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.dk)     # [B,h,N*N,T]
+        # locality bias: attend near EITHER mention so the clause spanning both is read
+        union = (prox[:, :, None, :] + prox[:, None, :, :]).reshape(B, N * N, T)   # [B,N*N,T]
+        att = att + F.softplus(self.beta) * union[:, None, :, :]
+        att = att.masked_fill(attn_mask[:, None, None, :] < 0.5, -1e9)
+        att = att.softmax(-1)
+        ctx = torch.matmul(att, vv).transpose(1, 2).reshape(B, N * N, self.dp)    # [B,N*N,dp]
+        # hard co-occurrence feature: do i and j share a local neighborhood at all?
+        cooc = (prox[:, :, None, :] * prox[:, None, :, :]).max(-1).values.reshape(B, N * N, 1)
+        elog = self.cls(torch.cat([ctx, cooc], -1)).reshape(B, N, N)
+        return 0.5 * (elog + elog.transpose(1, 2))                          # symmetric raw edge logits
+
+
 # ===================================================================== gated lattice readback (abstain)
 class ReadBack(nn.Module):
     """Zero-init tanh-gated cross-attention: a host-derived query reads the NARROWED lattice workspace
@@ -237,19 +306,25 @@ class AugmentedOLMo(nn.Module):
     READ (answer = the deductor's narrowed query-cell marginals; abstain = deductor stats + gated
     lattice readback). The answer is FORCED through the deductor, so the host cannot bypass it and the
     deductor is load-bearing -> checked reasoning + size-agnostic abstention."""
-    def __init__(self, olmo, tok, Nmax, K, T=10, dp=512, edge_dim=256, Dw=128):
+    def __init__(self, olmo, tok, Nmax, K, T=10, dp=512, edge_dim=256, Dw=128,
+                 write_head="pool", edge_window=7):
         super().__init__()
         self.olmo = olmo; self.tok = tok
         self.Nmax, self.K, self.T = Nmax, K, T
+        self.write_head = write_head
         D = olmo.config.hidden_size; self.D = D
         for p in self.olmo.parameters():
             p.requires_grad_(False)
-        # WRITE
+        # WRITE: per-cell pooler (pins always; edges in pool mode)
         self.reader = CellReader(D, dp)
         self.cand_head = nn.Sequential(nn.Linear(dp, dp), nn.GELU(), nn.Linear(dp, K))
-        self.edge_a = nn.Linear(dp, edge_dim)
-        self.edge_b = nn.Linear(dp, edge_dim)
-        self.edge_bias = nn.Parameter(torch.tensor(-2.0))  # sparse-edge prior
+        self.edge_bias = nn.Parameter(torch.tensor(-2.0))  # sparse-edge prior (shared by both heads)
+        if write_head == "grounded":
+            # LOCALLY-GROUNDED edge extractor: read each (i,j) edge from where i & j co-occur
+            self.edge_reader = PairGroundedEdgeReader(D, dp, window=edge_window)
+        else:                                              # pool baseline: bilinear on per-cell ctx
+            self.edge_a = nn.Linear(dp, edge_dim)
+            self.edge_b = nn.Linear(dp, edge_dim)
         # DEDUCE (learned differentiable organ; co-trains)
         self.ded = I.ColorDeductor(T)
         # workspace + gated readback (abstain)
@@ -265,13 +340,18 @@ class AugmentedOLMo(nn.Module):
 
     def write(self, h, ba):
         m = ba["mention"]
+        hd = h.float().detach()
         denom = m.sum(-1, keepdim=True).clamp_min(1e-6)
-        v_mean = (torch.einsum("bnt,btd->bnd", m, h.float()) / denom).detach()  # cell identity [B,N,D]
-        ctx = self.reader(v_mean, h.float().detach(), ba["attn"])               # [B,N,dp]
-        cand = self.cand_head(ctx)                                              # pin logits [B,N,K]
-        ea, eb = self.edge_a(ctx), self.edge_b(ctx)
-        elog = torch.einsum("bid,bjd->bij", ea, eb) / ea.size(-1) ** 0.5
-        elog = 0.5 * (elog + elog.transpose(1, 2)) + self.edge_bias
+        v_mean = (torch.einsum("bnt,btd->bnd", m, hd) / denom).detach()         # cell identity [B,N,D]
+        ctx = self.reader(v_mean, hd, ba["attn"])                              # [B,N,dp]
+        cand = self.cand_head(ctx)                                              # pin logits [B,N,K] (per-cell)
+        if self.write_head == "grounded":
+            elog = self.edge_reader(v_mean, hd, m, ba["attn"])                  # locally-grounded raw edge logits
+        else:
+            ea, eb = self.edge_a(ctx), self.edge_b(ctx)                         # pool: bilinear on per-cell ctx
+            elog = torch.einsum("bid,bjd->bij", ea, eb) / ea.size(-1) ** 0.5
+            elog = 0.5 * (elog + elog.transpose(1, 2))
+        elog = elog + self.edge_bias
         vm = ba["vmask"]; pair = vm[:, :, None] * vm[:, None, :]
         elog = elog.masked_fill(pair < 0.5, -1e4)
         E = torch.sigmoid(elog) * pair
