@@ -1,48 +1,51 @@
 # clairnets
 
-A research program on **param-efficient, sound-reasoning architectures** — mixing recent primitives
-(Clifford geometric product · lattice abstract-interpretation · recurrent deduction · automata shortcuts
-· edge-of-stability) into things that reason reliably at tiny scale, then asking whether the efficiency
-survives a compute-matched instantiation.
+A research program on **reasoning architectures that propose freely and stay reliable at the boundary**.
+The spine, after a lot of honest correction:
 
-> **Honesty first.** The sound-lattice-deduction core is *not ours* — it's the Lattice Deduction
-> Transformer (LDT, arXiv 2605.08605). Our seam is narrow: **(a)** the Clifford *wedge* as a
-> pairwise-exclusion proposer, and **(d)** welding a sound deductor *inside* a pretrained LLM, woven
-> across layers. We say "empirically sound on this distribution," never "certified." See
-> [`notes/prior_art.md`](notes/prior_art.md).
+> A **learned geometric-product organ** proposes/compiles/narrows; a **lattice + cheap output check** is
+> the authority for reliability. Soundness is *free at the output* (proven, see the Lean files) — which is
+> a **permission to make the deductor loose, learned, and differentiable**, not a prescription to make it a
+> verifier. **Completeness** (does the learned organ reach a checkable answer vs abstain, and does it
+> size-generalize) is the real research variable.
 
-## Threads
+Grounded in: CliffordNet (geometric product, arXiv 2601.06793), the Lattice Deduction Transformer
+(arXiv 2605.08605) + its Lean formalization (`~/dev/graphplay/Graphplay/Integrations/LDT*.lean`), and the
+automata-shortcuts lens (2210.10749). See `notes/geometric_product_options.md` and `notes/prior_art.md`.
 
-### 1. GLaDOS — Geometric Lattice Deduction Over Streams  *(the main bet)*
-A recurrent reasoner whose state is a point in a per-position powerset lattice; a Clifford
-geometric-product cell *proposes* candidate eliminations, the lattice *meet* narrows soundly, and a
-conflict head lets it *abstain*.  `a_{t+1} = a_t ⊓ Π(f_θ(a_t, p, m))`.
-- `clair/glados.py` — the organ: 3 iso-param arms `ldt` / `glados` / `nowedge`.
-- `clair/sudoku.py` — powerset-lattice state, on-policy alpha-target, MEET/branch solve loop.
-- `clair/run_glados.py` — the decisive core-swap + the metric that decides it (**false-elimination rate**),
-  plus solve-rate / wrong-return / p90-forwards.
-- `clair/domains.py`, `clair/run_gauntlet.py` — the domain-general gauntlet (graph-coloring · 3-SAT · maze),
-  one organ many lattices, hold-out-a-domain zero-shot soundness.
+## What we've actually found (honest)
 
-### 2. Geometric transformers  *(is the Clifford product a viable efficient LM primitive?)*
-- `clair/graft.py` — swap a real **OLMo-2/3** model's SwiGLU FFNs for geometric-product mixers (`GeomFFN`),
-  freeze everything else, distill to recover; read off *recovered fraction* + *param ratio*.
-- `clair/model.py`, `clair/tasks.py`, `clair/train.py` — the 4-arm iso-param toy harness
-  (`std`/`attn`/`geom`/`geom_recur`) that reproduced FFN-redundancy (geom mixer solves modadd at ~42%
-  fewer params than SwiGLU).
+| result | verdict |
+|---|---|
+| **(d) host compiles → checked deductor → abstains** (`induce`) | **the one real positive** — gains calibrated abstention that survives distribution shift (abstain-recall gap ~0 in-dist → **+30 OOD**); modest on raw accuracy; single-seed |
+| geometric product as a **channel mixer** (LM + vision) | **null, regime-caveated** — ties SwiGLU/MLP at iso-param; wins only low-param. It's a *fine* mixer, not a superior one |
+| **GLaDOS-on-sudoku** | we *broke* it (under-implemented LDT's backtracking search) → parked; faithful `ldt.py` written |
+| **exact CSP harness** (`csp.py`) | **the ground truth** — reproduces the Lean's proven facts (soundness free; completeness = lattice-level × width) |
+| **neural proposer vs harness** | **sound** (dominates exact `dedₚ`, beats arc-consistency) but ffn/inner/wedge/full **tie** at the per-cell ceiling — that regime can't separate the mixer |
 
-### 3. The augmented LLM  *(Layer 1, future)*
-A Clifford *cortex* compiles a problem into a constraint program and writes it into the GLaDOS *deductor*
-(zero-init gated graft into OLMo-3, gradients through the solver, tapped across layers); baseline to beat
-= OLMo-3-Think. The genuinely novel combination — gated by Thread 1 first.
+The throughline: the seductive bets (wedge, geom-as-mixer, GLaDOS) died or need fair retries; the bet that
+stands is **neural-proposes / checked-at-the-boundary**, validated weakly by induce.
+
+## Where it's going
+**The augmented LLM** (`augmented.py`): frozen **OLMo** + zero-init gated adapters that **write** a constraint
+program → a **learned, differentiable, woven** lattice organ narrows it (gradients flow, co-trains) → host
+**reads back** → answer/abstain, end-to-end, with the output check as the *only* soundness mechanism.
+The make-or-break question: **can the LM learn to program a learned deductor from text and gain reasoning the
+base model can't fake?**
 
 ## Layout
-- `notes/` — regrounded paper mechanics (`papers.md`), layered architecture (`architecture.md`),
-  task ladder + training regime (`roadmap.md`), and the prior-art / novelty audit (`prior_art.md`).
-- `pdfs/` — the full must-read set (LDT, CliffordNet, HRM + ARC-Prize critique, TRM, SATNet, …).
-- `report/clairnets.typ` — the living writeup / lab notebook.
-- `infra/box.sh`, `infra/threeway.sh` — sync + run on the GPU box.
+- `clair/csp.py` — **exact finite-CSP harness** (ground truth: exact solutions, exact `dedₚ`, per-cell AC +
+  pair path-consistency, polymorphism diagnostic, completeness/false-elim metrics).
+- `clair/proposer.py` / `run_proposer.py` — factor-graph neural proposer, measured against the harness.
+- `clair/induce.py` / `run_induce.py` — the toy (d) bet that worked (calibrated abstention + size-gen).
+- `clair/augmented.py` / `run_augmented.py` — OLMo + learned woven deductor *(in progress)*.
+- `clair/glados.py`, `ldt.py`, `cliffordnet.py`, `rope_lm.py`, `geom_lm.py`, `organs.py` — parked/superseded
+  experiments (kept for reference; see commit history + `notes/` for what each found).
+- `notes/` — `geometric_product_options.md` (the current design doc), `papers.md`, `prior_art.md`, `roadmap.md`.
+- `pdfs/` — the must-read set. `report/clairnets.typ` — living writeup.
 
-## Status
-Layer-0 decisive 3-way (Sudoku-Extreme, iso-param) running. Gauntlet built. Co-processor graft is next,
-gated by whether the wedge lowers false-elimination at equal params.
+## Discipline (learned the hard way today)
+- Don't conclude from underpowered or mis-aimed runs; test a method in the regime it targets.
+- The soundness proof is a *permission* (be loose, check the output), not a *prescription* (don't build the
+  checker into the deductor — that's just "LLM phones a SAT solver").
+- Run a portfolio; let the data, not the enthusiasm, pick the next bet.
