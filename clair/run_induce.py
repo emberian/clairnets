@@ -144,7 +144,11 @@ def main():
         rng = np.random.default_rng(a.seed)           # same sampling stream for both
         torch.manual_seed(a.seed)
         res["models"][which] = train_one(which, a, dev, rng, Nmax, train_pool, eval_pools)
-    print("\n=== SIZE GENERALIZATION (overall correct %, train N=%s) ===" % a.train_n)
+    out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "induce.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    json.dump(res, open(out, "w"), indent=1)           # SAVE FIRST — never lose results to a print bug
+    print("wrote", out)
+    print(f"\n=== SIZE GENERALIZATION (overall correct %, train N={a.train_n}) ===")
     ns = [int(x) for x in a.test_n.split(",")]
     print("  N       " + "  ".join(f"{n:>6d}" for n in ns))
     for which in ["hybrid", "baseline"]:
@@ -154,10 +158,6 @@ def main():
     for which in ["hybrid", "baseline"]:
         g = res["models"][which]["size_gen"]
         print(f"  {which:8s}" + "  ".join(f"{g[str(n)]['abstain_rec']*100:6.1f}" for n in ns))
-    out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "induce.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    json.dump(res, open(out, "w"), indent=1)
-    print("wrote", out)
 
 
 if __name__ == "__main__":
