@@ -1,7 +1,6 @@
-.venv/
 __pycache__/
 *.pyc
 runs/
-data/
-*.pem
-infra/instance.env
+*.json.tmp
+.DS_Store
+venv/
