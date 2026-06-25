@@ -73,8 +73,8 @@ def load_sudoku_extreme(split="train", limit=None):
     if ds is None:
         raise RuntimeError(f"could not load Sudoku-Extreme: {last}")
     cols = ds.column_names
-    pk = next(c for c in cols if c.lower() in ("puzzle", "quizzes", "question", "source"))
-    sk = next(c for c in cols if c.lower() in ("solution", "solutions", "answer", "target"))
+    pk = next(c for c in cols if c.lower() in ("question", "puzzle", "quizzes", "puzzles"))
+    sk = next(c for c in cols if c.lower() in ("answer", "solution", "solutions", "target"))
     rows = ds if limit is None else ds.select(range(min(limit, len(ds))))
 
     def parse(s):
@@ -120,17 +120,23 @@ def alpha_target(alive, sol, dev):
 
 @torch.no_grad()
 def step_state(alive, given, b_logits, theta_elim=0.1):
-    """MEET: drop candidates whose survival prob < theta. Never touch given clues; never let a
-    cell go fully empty by elimination alone (keep the argmax alive so 'dead' only happens via a
-    wrong pin upstream, which the conflict head should catch)."""
+    """MEET (monotone narrowing): drop currently-alive candidates whose survival prob < theta.
+    Protect given clues, and never let thresholding spuriously empty a cell — always keep the
+    highest-logit *currently-alive* candidate. Genuine unsatisfiability is reported by the CLS
+    conflict head, not by emptiness (see conflict_flag)."""
     keep = (torch.sigmoid(b_logits) >= theta_elim).float()
     new = alive * keep
-    new = torch.where(given.unsqueeze(-1) > 0, alive, new)   # protect clues
-    empty = (new.sum(-1, keepdim=True) == 0).float()         # would-be-empty cells: restore argmax
-    amax = torch.zeros_like(alive).scatter_(2, b_logits.argmax(-1, keepdim=True), 1.0)
-    new = torch.where(empty > 0, alive * 0 + amax * alive + (alive.sum(-1, keepdim=True) == 0).float() * amax, new)
-    new = torch.where(empty > 0, amax, new)
-    return new
+    new = torch.where(given.unsqueeze(-1) > 0, alive, new)       # protect clues
+    # restore the best alive candidate wherever the meet would empty a cell
+    masked = b_logits.masked_fill(alive < 0.5, float("-inf"))
+    best = torch.zeros_like(alive).scatter_(2, masked.argmax(-1, keepdim=True), 1.0)
+    empty = (new.sum(-1, keepdim=True) == 0)
+    return torch.where(empty, best, new)
+
+
+def conflict_flag(cls_logit, theta_cls=0.0):
+    """The trained conflict (⊥) head: this state is unsatisfiable (a branch killed a true digit)."""
+    return cls_logit > theta_cls
 
 
 @torch.no_grad()

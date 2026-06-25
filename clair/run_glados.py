@@ -77,17 +77,18 @@ def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_ev
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
 
         with torch.no_grad():
+            conf = S.conflict_flag(cls)                  # ⊥ head on the state we just processed
             new = S.step_state(alive, given, b)
             k, n = false_elim_rate(alive, new, given, sol[idx], dev)
             fe_k += k; fe_n += n
             stalled = (new == alive).all(dim=-1).all(dim=-1)
-            solved, dead = S.status(new)
-            # branch the stalled-but-unsolved; recycle solved/dead with fresh puzzles
-            need_branch = stalled & ~solved & ~dead
+            solved, _ = S.status(new)
+            # branch the stalled-but-unsolved-and-consistent; recycle solved/conflicted as fresh puzzles
+            need_branch = stalled & ~solved & ~conf
             if need_branch.any():
                 bnew, _ = S.branch(new, b)
                 new = torch.where(need_branch.view(-1, 1, 1), bnew, new)
-            recycle = solved | dead
+            recycle = solved | conf
             if recycle.any():
                 ridx = rng.integers(0, N, int(recycle.sum().item()))
                 ra, rg = S.init_state(puz[ridx], dev)
@@ -97,7 +98,7 @@ def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_ev
 
         if s % log_every == 0:
             fer = fe_k / max(1, fe_n)
-            msg = {"step": s, "loss": float(loss), "false_elim": fer,
+            msg = {"step": s, "loss": float(loss.detach()), "false_elim": fer,
                    "frac_solved": float(solved.float().mean()), "mean_alive": float(alive.sum(-1).mean())}
             log.append(msg)
             print(f"  step {s:5d}  loss {loss.item():.3f}  false_elim {fer:.4f}  "
@@ -124,16 +125,17 @@ def evaluate(m, puz, sol, dev, K=16, R_max=64, theta_elim=0.1):
             break
         b, cls, _ = m(alive, given)
         chain_fwd[live] = r
+        conf = S.conflict_flag(cls)
         new = S.step_state(alive, given, b)
-        solved, dead = S.status(new)
+        solved, _ = S.status(new)
         ok = S.is_correct(new, se, dev)
         fin_solved = solved & live
-        fin_dead = dead & live
+        fin_abstain = conf & live & ~solved             # ⊥ -> abstain (do NOT return an answer)
         chain_returned |= fin_solved
         chain_correct |= (fin_solved & ok)
-        chain_done |= fin_solved | fin_dead
+        chain_done |= fin_solved | fin_abstain
         # branch stalled live chains
-        stalled = (new == alive).all(-1).all(-1) & live & ~solved & ~dead
+        stalled = (new == alive).all(-1).all(-1) & live & ~solved & ~conf
         if stalled.any():
             bnew, _ = S.branch(new, b)
             new = torch.where(stalled.view(-1, 1, 1), bnew, new)
