@@ -64,9 +64,10 @@ def load_sudoku_extreme(split="train", limit=None):
     81-char puzzle ('0'/'.'=blank) + 81-char solution. Returns (puz[N,81], sol[N,81]) int64."""
     from datasets import load_dataset
     last = None
+    sp = split if limit is None else f"{split}[:{int(limit)}]"   # slice at load -> don't materialize 3.8M rows
     for spec in [("sapientinc/sudoku-extreme", None), ("Ritvik19/Sudoku-Extreme", None)]:
         try:
-            ds = load_dataset(spec[0], name=spec[1], split=split, streaming=False)
+            ds = load_dataset(spec[0], name=spec[1], split=sp)
             break
         except Exception as e:  # noqa: BLE001
             last = e; ds = None
@@ -75,7 +76,7 @@ def load_sudoku_extreme(split="train", limit=None):
     cols = ds.column_names
     pk = next(c for c in cols if c.lower() in ("question", "puzzle", "quizzes", "puzzles"))
     sk = next(c for c in cols if c.lower() in ("answer", "solution", "solutions", "target"))
-    rows = ds if limit is None else ds.select(range(min(limit, len(ds))))
+    rows = ds
 
     def parse(s):
         return np.array([0 if ch in "0." else int(ch) for ch in s.strip()], np.int64)

@@ -20,6 +20,7 @@ import torch.nn.functional as F
 
 from .glados import GLaDOS, size_for
 from . import sudoku as S
+from . import perf
 
 
 def device():
@@ -55,7 +56,7 @@ def false_elim_rate(alive_before, alive_after, given, sol, dev):
     return killed.sum().item(), elig.sum().item()
 
 
-def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_every=None, seed=0):
+def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_every=None, seed=0, amp=False):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     d, npar = size_for(arm, 81, 9, target, inner=inner)
@@ -71,7 +72,10 @@ def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_ev
     log = []
     t0 = time.time()
     for s in range(1, steps + 1):
-        b, cls, sup = m(alive, given)
+        with perf.amp(dev, amp):
+            b, cls, sup = m(alive, given)
+        sup = [(bb.float(), cc.float()) for bb, cc in sup]   # decisions/loss in fp32 (soundness)
+        b, cls = sup[-1]
         loss, _ = loss_fn(sup, alive, sol[idx], dev)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
@@ -108,7 +112,7 @@ def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_ev
 
 
 @torch.no_grad()
-def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1):
+def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1, amp=False):
     """K parallel chains per puzzle. A chain abstains on a dead cell; returns on all-singleton.
     Reports solve_rate, wrong_return_rate (soundness!), and p90 forward-passes over solved puzzles."""
     m.eval()
@@ -123,7 +127,9 @@ def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1):
         live = ~chain_done
         if not live.any():
             break
-        b, cls, _ = m(alive, given)
+        with perf.amp(dev, amp):
+            b, cls, _ = m(alive, given)
+        b, cls = b.float(), cls.float()
         chain_fwd[live] = r
         conf = S.conflict_flag(cls)
         new = S.step_state(alive, given, b)
@@ -169,8 +175,10 @@ def main():
     ap.add_argument("--rounds", default="64,128,256,512,1024", help="inference-budget sweep (max deduction rounds)")
     ap.add_argument("--K", type=int, default=32, help="parallel search chains per puzzle")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--amp", action="store_true", help="bf16 autocast on the model forward (decisions stay fp32)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    perf.setup()
     dev = device()
     rng = np.random.default_rng(a.seed)
 
@@ -181,13 +189,13 @@ def main():
     tr_p, tr_s = puz[:a.ntrain], sol[:a.ntrain]
     ev_p, ev_s = puz[a.ntrain:a.ntrain + a.neval], sol[a.ntrain:a.ntrain + a.neval]
 
-    m, res = train(a.arm, tr_p, tr_s, dev, a.target, a.steps, pool=a.pool, lr=a.lr, inner=a.inner, seed=a.seed)
+    m, res = train(a.arm, tr_p, tr_s, dev, a.target, a.steps, pool=a.pool, lr=a.lr, inner=a.inner, seed=a.seed, amp=a.amp)
     # sweep the INFERENCE budget upward to find the model's ceiling (don't guess one round count)
     rounds = [int(r) for r in a.rounds.split(",")]
     res["eval_sweep"] = {}
     print(f"\n--- inference-budget sweep (K={a.K} chains) ---")
     for R in rounds:
-        ev = evaluate(m, ev_p, ev_s, dev, K=a.K, R_max=R)
+        ev = evaluate(m, ev_p, ev_s, dev, K=a.K, R_max=R, amp=a.amp)
         res["eval_sweep"][str(R)] = ev
         print(f"  rounds {R:5d}  solve {ev['solve_rate']*100:5.1f}%  wrong-return {ev['wrong_return_rate']*100:5.2f}%  "
               f"returned {ev['n_returned']}/{ev['n_eval']*a.K}  p90fwd {ev['p90_forwards']}")
