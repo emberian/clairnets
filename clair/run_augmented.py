@@ -21,6 +21,23 @@ from . import augmented as A
 from . import induce as I
 
 
+def load_curriculum_pool(path, n_lo=None, n_hi=None):
+    """Load the DIVERSE Bedrock-rendered coloring records as induce-style problems (each carries its
+    own `text` + char-span `mentions`, so the grounded WRITE head reads real phrasing variety).
+    Optionally filter by N range. Returns a list of induce-problem dicts."""
+    from . import curriculum as Cu
+    recs = Cu.load_curriculum(path)
+    pool = []
+    for r in recs:
+        p = Cu.to_induce_problem(r)                 # coloring/equality-with-only-neq -> None otherwise
+        if p is None:
+            continue
+        if n_lo is not None and not (n_lo <= p["n"] <= n_hi):
+            continue
+        pool.append(p)
+    return pool
+
+
 def build_pool(n_lo, n_hi, k, size, rng, det_frac=0.5):
     n_det = int(size * det_frac)
     det, ab = [], []
@@ -190,6 +207,16 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--host", default="olmo2-1b",
                     help="frozen host config: olmo2-1b (default, baseline) | olmo3-7b | raw HF id")
+    ap.add_argument("--write_head", choices=["pool", "grounded"], default="pool",
+                    help="edge extractor: pool (bilinear on per-cell summaries, baseline) | "
+                         "grounded (read each edge from where i,j co-occur in the text)")
+    ap.add_argument("--edge_window", type=int, default=7, help="grounded head: mention dilation window")
+    ap.add_argument("--data", choices=["templated", "curriculum"], default="templated",
+                    help="train source: templated render_problem (arbitrary N) | diverse curriculum text")
+    ap.add_argument("--curriculum_path", default=os.path.join(os.path.dirname(__file__), "..",
+                    "data", "curriculum", "curriculum.jsonl"))
+    ap.add_argument("--eval_curr", action="store_true",
+                    help="add a held-out DIVERSE curriculum coloring eval pool ('curr') to the size-gen report")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--no_base", action="store_true")
     ap.add_argument("--out", default=None)
@@ -209,7 +236,10 @@ def main():
     print(f"host config: {olmo.config.num_hidden_layers} layers, hidden_size {olmo.config.hidden_size}, "
           f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
-    model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T).to(dev)
+    model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
+                            write_head=a.write_head, edge_window=a.edge_window).to(dev)
+    print(f"WRITE head: {a.write_head}" + (f" (edge_window={a.edge_window})" if a.write_head == "grounded" else ""),
+          flush=True)
     # trainable modules stay fp32 (stable Adam); they cast bf16 host activations internally
     print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}", flush=True)
 
@@ -219,10 +249,28 @@ def main():
     n_lo, n_hi = (int(x) for x in a.train_n.split(","))
     prng = np.random.default_rng(a.seed + 999)
     t0 = time.time()
-    train_pool = build_pool(n_lo, n_hi, a.k, a.pool_size, prng)
-    eval_pools = {"train": build_pool(n_lo, n_hi, a.k, a.eval_n, prng)}
-    for tn in (int(x) for x in a.test_n.split(",")):
-        eval_pools[tn] = build_pool(tn, tn, a.k, a.eval_n, prng)
+    if a.data == "curriculum":
+        # train on the diverse Bedrock-rendered coloring text (held-out split for in-dist eval)
+        recs = load_curriculum_pool(a.curriculum_path, n_lo, n_hi)
+        prng.shuffle(recs)
+        n_te = max(1, len(recs) // 6)
+        curr_eval, train_pool = recs[:n_te], recs[n_te:]
+        print(f"curriculum train: {len(train_pool)} records (N in [{n_lo},{n_hi}]), held-out {len(curr_eval)}", flush=True)
+        eval_pools = {"train": curr_eval}
+        # OOD sizes the diverse generator can't reach fall back to templated (still measures the head)
+        for tn in (int(x) for x in a.test_n.split(",")):
+            eval_pools[tn] = build_pool(tn, tn, a.k, a.eval_n, prng)
+    else:
+        train_pool = build_pool(n_lo, n_hi, a.k, a.pool_size, prng)
+        eval_pools = {"train": build_pool(n_lo, n_hi, a.k, a.eval_n, prng)}
+        for tn in (int(x) for x in a.test_n.split(",")):
+            eval_pools[tn] = build_pool(tn, tn, a.k, a.eval_n, prng)
+    if a.eval_curr and a.data != "curriculum":
+        # held-out DIVERSE phrasing probe: does grounding transfer to unseen Bedrock renderings?
+        cpool = load_curriculum_pool(a.curriculum_path)
+        prng.shuffle(cpool)
+        eval_pools["curr"] = cpool[: a.eval_n]
+        print(f"diverse curriculum eval pool: {len(eval_pools['curr'])} records", flush=True)
     print(f"pools built in {time.time()-t0:.0f}s", flush=True)
 
     opt = torch.optim.AdamW(model.trainable_parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.01)
@@ -247,10 +295,11 @@ def main():
     # ---- size-generalization eval (augmented, end-to-end) ----
     print("\n=== AUGMENTED size-generalization ===", flush=True)
     aug_gen = {}
-    for tn in (int(x) for x in a.test_n.split(",")):
+    test_keys = [int(x) for x in a.test_n.split(",")] + (["curr"] if "curr" in eval_pools else [])
+    for tn in test_keys:
         aug_gen[tn] = evaluate(model, eval_pools[tn], tok, Nmax, a.k, colors, dev, n=a.eval_n)
         r = aug_gen[tn]
-        print(f"  N={tn:2d}  overall {r['overall']*100:4.1f}  detAcc {r['det_acc']*100:4.1f}"
+        print(f"  N={str(tn):>4}  overall {r['overall']*100:4.1f}  detAcc {r['det_acc']*100:4.1f}"
               f"  abstP/R {r['abstain_prec']*100:.0f}/{r['abstain_rec']*100:.0f}"
               f"  pinAcc {r['pin_acc']*100:.0f} edgeF1 {r['edge_f1']*100:.0f} progEx {r['prog_exact']*100:.0f}", flush=True)
 
