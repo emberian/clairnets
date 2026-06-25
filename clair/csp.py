@@ -289,6 +289,90 @@ def solve_pair(csp: CSP):
             "false_elim_vs_exact": fe, "solvable": len(sols) > 0}
 
 
+# --------------------------------------------------------------------- factor lattice (level-k, any arity)
+# State maps each FACTOR (a tuple of cell indices) -> frozenset of allowed value-tuples. Unlike the pair
+# lattice this handles constraints of ANY arity (a constraint of arity a is captured by any factor whose
+# cells ⊇ its scope), so it can represent 3-cell structure (XOR / arithmetic) the pair level can't —
+# this is the level-2 (triple) the affine wall needs. factors default to all k-subsets touched by a constraint.
+def default_factors(csp: CSP, k=3):
+    """All k-subsets of cells that are covered by (contain the scope of) at least one constraint,
+    plus every constraint's own scope. Keeps it small while capturing each constraint exactly."""
+    import itertools as _it
+    facs = {tuple(sorted(sc)) for sc, _ in csp.cons}                  # every constraint scope is a factor
+    cells = sorted({c for sc, _ in csp.cons for c in sc}) or list(range(csp.n))
+    for combo in _it.combinations(range(csp.n), min(k, csp.n)):
+        if any(set(sc) <= set(combo) for sc, _ in csp.cons):         # only k-subsets that cover a constraint
+            facs.add(combo)
+    return sorted(facs)
+
+
+def factor_init(csp: CSP, factors, dom=None):
+    dom = dom or csp.full()
+    st = {}
+    for f in factors:
+        fs = set(f)
+        al = set()
+        for vt in __import__("itertools").product(*[sorted(dom[c]) for c in f]):
+            a = dict(zip(f, vt))
+            if all(tuple(a[c] for c in sc) in rel for sc, rel in csp.cons if set(sc) <= fs):
+                al.add(vt)
+        st[f] = frozenset(al)
+    return st
+
+
+def factor_step(csp: CSP, st, factors):
+    """Generalized (pairwise-factor) consistency: a tuple t in factor f survives iff for every OTHER
+    factor g sharing cells, some tuple of g agrees with t on the shared cells. Reductive; sound."""
+    new = {}
+    for f in factors:
+        keep = set()
+        for t in st[f]:
+            af = dict(zip(f, t))
+            ok = True
+            for g in factors:
+                if g == f:
+                    continue
+                shared = [c for c in g if c in f]
+                if not shared:
+                    continue
+                if not any(all(af[c] == u[g.index(c)] for c in shared) for u in st[g]):
+                    ok = False; break
+            if ok:
+                keep.add(t)
+        new[f] = frozenset(keep)
+    return new
+
+
+def factor_cells(csp: CSP, st, factors):
+    cells = []
+    for i in range(csp.n):
+        surv = None
+        for f in factors:
+            if i in f:
+                here = frozenset(t[f.index(i)] for t in st[f])
+                surv = here if surv is None else (surv & here)
+        cells.append(surv if surv is not None else frozenset(range(csp.d)))
+    return tuple(cells)
+
+
+def solve_factor(csp: CSP, k=3):
+    """Run level-k factor consistency to fixpoint, project to cells, report outcome + soundness."""
+    factors = default_factors(csp, k)
+    st = factor_init(csp, factors)
+    for _ in range(csp.n * csp.d * csp.d + 2):
+        nxt = factor_step(csp, st, factors)
+        if nxt == st:
+            break
+        st = nxt
+    cells = factor_cells(csp, st, factors)
+    sols = solutions(csp)
+    # exact factor projection -> false elim
+    ex = {f: frozenset(tuple(s[c] for c in f) for s in sols) for f in factors} if sols else None
+    fe = sum(len(ex[f] - st[f]) for f in factors) if sols else 0
+    return {"outcome": status(cells), "final_alive": tuple(len(c) for c in cells),
+            "false_elim_vs_exact": fe, "solvable": len(sols) > 0, "k": k}
+
+
 def completeness_per_level(csps):
     """For a corpus of (name, csp), report solve rate at level 0 (per-cell AC) vs level 1 (pair PC),
     over the SOLVABLE instances. Demonstrates 'completeness = level × width'."""
