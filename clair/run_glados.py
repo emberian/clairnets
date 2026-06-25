@@ -108,7 +108,7 @@ def train(arm, puz, sol, dev, target, steps, pool=512, lr=3e-4, inner=16, log_ev
 
 
 @torch.no_grad()
-def evaluate(m, puz, sol, dev, K=16, R_max=64, theta_elim=0.1):
+def evaluate(m, puz, sol, dev, K=16, R_max=512, theta_elim=0.1):
     """K parallel chains per puzzle. A chain abstains on a dead cell; returns on all-singleton.
     Reports solve_rate, wrong_return_rate (soundness!), and p90 forward-passes over solved puzzles."""
     m.eval()
