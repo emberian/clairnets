@@ -25,20 +25,27 @@ def device():
     return "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 
-def sample(n_lo, n_hi, k, bs, rng, dev, Nmax, det_frac=0.5):
-    """Rejection-balance so ~det_frac of the batch is determined (else 'always abstain' is a
-    strong trivial baseline given the natural ~31% determined rate)."""
-    n_det = int(bs * det_frac)
+def build_pool(n_lo, n_hi, k, size, rng, det_frac=0.5):
+    """Pre-generate a balanced problem pool ONCE (the CSP solver is the CPU cost; keep it out of
+    the per-step hot loop). ~det_frac determined so 'always abstain' isn't a strong trivial baseline."""
+    n_det = int(size * det_frac)
     det, ab = [], []
-    while len(det) < n_det or len(ab) < bs - n_det:
+    while len(det) < n_det or len(ab) < size - n_det:
         p = I.gen_problem(int(rng.integers(n_lo, n_hi + 1)), k, rng)
+        if p["capped"]:
+            continue                                  # determinacy label unreliable -> drop
         if p["determined"] and len(det) < n_det:
             det.append(p)
-        elif not p["determined"] and len(ab) < bs - n_det:
+        elif not p["determined"] and len(ab) < size - n_det:
             ab.append(p)
-    probs = det + ab
-    rng.shuffle(probs)
-    return I.make_batch(probs, Nmax, k, dev), probs
+    pool = det + ab
+    rng.shuffle(pool)
+    return pool
+
+
+def pool_batch(pool, bs, k, rng, dev, Nmax):
+    idx = rng.integers(0, len(pool), bs)
+    return I.make_batch([pool[i] for i in idx], Nmax, k, dev)
 
 
 def losses(model, ba, aux):
@@ -59,14 +66,14 @@ def losses(model, ba, aux):
 
 
 @torch.no_grad()
-def evaluate(model, n_lo, n_hi, k, rng, dev, Nmax, n=2048, bs=256):
+def evaluate(model, pool, k, rng, dev, Nmax, n=2048, bs=256):
     model.eval()
     tp = fp = fn = 0          # abstain confusion
     det_tot = det_right = 0
     correct = tot = 0
     seen = 0
     while seen < n:
-        ba, _ = sample(n_lo, n_hi, k, min(bs, n - seen), rng, dev, Nmax)
+        ba = pool_batch(pool, min(bs, n - seen), k, rng, dev, Nmax)
         cl, al, _ = model(ba)
         pred_abs = torch.sigmoid(al) > 0.5
         true_abs = ba["abst"] > 0.5
@@ -83,28 +90,24 @@ def evaluate(model, n_lo, n_hi, k, rng, dev, Nmax, n=2048, bs=256):
             "abstain_prec": prec, "abstain_rec": rec}
 
 
-def train_one(which, args, dev, rng):
-    Nmax = max(int(x) for x in args.test_n.split(",")) + 1
+def train_one(which, args, dev, rng, Nmax, train_pool, eval_pools):
     cls = I.HybridReasoner if which == "hybrid" else I.BaselineReasoner
     m = cls(Nmax, args.k, d=args.d, layers=args.layers, T=args.T).to(dev)
     opt = torch.optim.AdamW(m.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
-    n_lo, n_hi = (int(x) for x in args.train_n.split(","))
-    print(f"[{which}] params={I.n_params(m):,}  train N={n_lo}..{n_hi}  Nmax={Nmax}")
+    print(f"[{which}] params={I.n_params(m):,}  Nmax={Nmax}")
     t0 = time.time(); log = []
     for s in range(1, args.steps + 1):
-        ba, _ = sample(n_lo, n_hi, args.k, args.bs, rng, dev, Nmax)
+        ba = pool_batch(train_pool, args.bs, args.k, rng, dev, Nmax)
         loss = losses(m, ba, args.aux)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
         if s % max(1, args.steps // 10) == 0:
-            ind = evaluate(m, n_lo, n_hi, args.k, rng, dev, Nmax)
+            ind = evaluate(m, eval_pools["train"], args.k, rng, dev, Nmax)
             print(f"  [{which}] step {s:5d} loss {loss.item():.3f}  in-dist overall {ind['overall']*100:4.1f}%"
                   f"  abst P/R {ind['abstain_prec']*100:.0f}/{ind['abstain_rec']*100:.0f}  {time.time()-t0:.0f}s")
             log.append({"step": s, "loss": float(loss.detach()), **ind})
-    # size-generalization sweep
-    gen = {}
-    for tn in (int(x) for x in args.test_n.split(",")):
-        gen[str(tn)] = evaluate(m, tn, tn, args.k, rng, dev, Nmax, n=4096)
+    gen = {str(tn): evaluate(m, eval_pools[tn], args.k, rng, dev, Nmax, n=4096)
+           for tn in (int(x) for x in args.test_n.split(","))}
     return {"which": which, "params": I.n_params(m), "log": log, "size_gen": gen}
 
 
@@ -120,15 +123,25 @@ def main():
     ap.add_argument("--aux", type=float, default=0.5, help="compiler-grounding aux loss weight (0=pure end-to-end)")
     ap.add_argument("--train_n", default="4,6")
     ap.add_argument("--test_n", default="5,8,10,12")
+    ap.add_argument("--pool_size", type=int, default=20000, help="pre-generated train problem pool")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     dev = device()
+    Nmax = max(int(x) for x in a.test_n.split(",")) + 1
+    n_lo, n_hi = (int(x) for x in a.train_n.split(","))
+    prng = np.random.default_rng(a.seed + 999)        # pool-building rng (pools shared by both models)
+    t0 = time.time()
+    train_pool = build_pool(n_lo, n_hi, a.k, a.pool_size, prng)
+    eval_pools = {"train": build_pool(n_lo, n_hi, a.k, 4096, prng)}
+    for tn in (int(x) for x in a.test_n.split(",")):
+        eval_pools[tn] = build_pool(tn, tn, a.k, 4096, prng)
+    print(f"pools built ({a.pool_size} train + eval) in {time.time()-t0:.0f}s")
     res = {"args": vars(a), "models": {}}
     for which in ["hybrid", "baseline"]:
-        rng = np.random.default_rng(a.seed)           # same data stream for both
+        rng = np.random.default_rng(a.seed)           # same sampling stream for both
         torch.manual_seed(a.seed)
-        res["models"][which] = train_one(which, a, dev, rng)
+        res["models"][which] = train_one(which, a, dev, rng, Nmax, train_pool, eval_pools)
     print("\n=== SIZE GENERALIZATION (overall correct %, train N=%s) ===" % a.train_n)
     ns = [int(x) for x in a.test_n.split(",")]
     print("  N       " + "  ".join(f"{n:>6d}" for n in ns))

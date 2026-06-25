@@ -85,7 +85,8 @@ def gen_problem(n, k, rng, edge_p=0.35, pin_frac=0.35):
     facts = [(0, v, c) for v, c in pins.items()] + [(1, i, j) for (i, j) in edges]
     rng.shuffle(facts)
     return {"n": n, "k": k, "facts": facts, "query": q, "answer": ans,
-            "sat": len(sols) > 0, "determined": ans != ABSTAIN}
+            "sat": len(sols) > 0, "determined": ans != ABSTAIN,
+            "capped": len(sols) >= 20000}    # if hit, determinacy label is unreliable -> caller skips
 
 
 def make_batch(probs, Nmax, K, dev):
