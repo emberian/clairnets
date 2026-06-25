@@ -166,6 +166,8 @@ def main():
     ap.add_argument("--dataset", default="sapientinc/sudoku-extreme")
     ap.add_argument("--ntrain", type=int, default=1000)
     ap.add_argument("--neval", type=int, default=256)
+    ap.add_argument("--rounds", default="64,128,256,512,1024", help="inference-budget sweep (max deduction rounds)")
+    ap.add_argument("--K", type=int, default=32, help="parallel search chains per puzzle")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -180,10 +182,19 @@ def main():
     ev_p, ev_s = puz[a.ntrain:a.ntrain + a.neval], sol[a.ntrain:a.ntrain + a.neval]
 
     m, res = train(a.arm, tr_p, tr_s, dev, a.target, a.steps, pool=a.pool, lr=a.lr, inner=a.inner, seed=a.seed)
-    ev = evaluate(m, ev_p, ev_s, dev)
-    res["eval"] = ev
-    print(f"\nDONE {a.arm}: solve {ev['solve_rate']*100:.1f}%  wrong-return {ev['wrong_return_rate']*100:.2f}%  "
-          f"p90-forwards {ev['p90_forwards']:.1f}  | final false_elim {res['log'][-1]['false_elim']:.4f}")
+    # sweep the INFERENCE budget upward to find the model's ceiling (don't guess one round count)
+    rounds = [int(r) for r in a.rounds.split(",")]
+    res["eval_sweep"] = {}
+    print(f"\n--- inference-budget sweep (K={a.K} chains) ---")
+    for R in rounds:
+        ev = evaluate(m, ev_p, ev_s, dev, K=a.K, R_max=R)
+        res["eval_sweep"][str(R)] = ev
+        print(f"  rounds {R:5d}  solve {ev['solve_rate']*100:5.1f}%  wrong-return {ev['wrong_return_rate']*100:5.2f}%  "
+              f"returned {ev['n_returned']}/{ev['n_eval']*a.K}  p90fwd {ev['p90_forwards']}")
+    res["eval"] = res["eval_sweep"][str(rounds[-1])]
+    ev = res["eval"]
+    print(f"\nDONE {a.arm}: best solve {ev['solve_rate']*100:.1f}%  wrong-return {ev['wrong_return_rate']*100:.2f}%  "
+          f"| final false_elim {res['log'][-1]['false_elim']:.4f}")
     out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", f"glados_{a.arm}_{int(a.target)}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     json.dump(res, open(out, "w"), indent=1)
