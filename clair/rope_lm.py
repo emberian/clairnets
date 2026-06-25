@@ -280,7 +280,7 @@ def size_for(target, n_layers, heads=8, ratio=2.67, d_fixed=None):
     size on the backbone alone and report the per-arm delta separately). Mirrors
     geom_lm.size_for's two-stage search but specialised to the one mixer shape we use here.
     Returns (d, h, n_params_backbone). Pure python — runs without torch."""
-    step = _lcm(heads, 6)
+    step = _lcm(2 * heads, 6)   # 2*heads -> d/heads is EVEN so RoPE's pairwise unflatten works (dh must be even)
     bb = lambda dd, hh: n_params_for("rope", dd, hh, n_layers, heads)   # backbone (no rotor extra)
     if d_fixed is not None:
         d = (d_fixed // step) * step or step

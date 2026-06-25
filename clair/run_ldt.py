@@ -94,7 +94,8 @@ def false_elim_rate(alive_before, alive_after, given, sol, dev):
 # --------------------------------------------------------------------------- training (parallel-solve pool)
 def train(mixer, puz, sol, dev, steps, pool=512, lr=3e-4, d=128, n_layers=4, inner=16,
           wpos=4.0, wneg=0.5, lcls=0.1, lce=0.2, theta_elim=0.1, tau=1.5,
-          seed=0, amp=False, log_every=None):
+          seed=0, amp=False, log_every=None, eval_every=0, eval_set=None,
+          eval_M=32, eval_R=128, theta_cls=0.6):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     model = LDT(81, 9, d=d, n_layers=n_layers, inner=inner, ds=inner, mixer=mixer).to(dev)
@@ -154,6 +155,13 @@ def train(mixer, puz, sol, dev, steps, pool=512, lr=3e-4, d=128, n_layers=4, inn
                   f"cls[unsat {pos:.2f}/sat {neg:.2f}]  conf {msg['frac_conflict']*100:4.1f}%  "
                   f"alive {msg['mean_alive']:.2f}  {time.time()-t0:.0f}s", flush=True)
             fe_k = fe_n = 0
+
+        if eval_every and eval_set is not None and (s % eval_every == 0):
+            ep, es = eval_set
+            ev = solve(model, ep, es, dev, M=eval_M, R=eval_R,
+                       theta_elim=theta_elim, theta_cls=theta_cls, tau=tau, amp=amp)
+            print(f"    [eval @ {s}] solve {ev['solve_rate']*100:5.1f}%  WRONG {ev['wrong_return_rate']*100:5.2f}%  "
+                  f"abstain {ev['abstain_rate']*100:5.1f}%  (M={eval_M},R={eval_R})", flush=True)
     return model, {"mixer": mixer, "d_model": d, "params": model.n_params(), "log": log}
 
 
@@ -250,6 +258,9 @@ def main():
     ap.add_argument("--theta_cls", type=float, default=0.6)
     ap.add_argument("--tau", type=float, default=1.5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--eval_every", type=int, default=0, help="run a quick held-out solve() every N steps")
+    ap.add_argument("--eval_M", type=int, default=32)
+    ap.add_argument("--eval_R", type=int, default=128)
     ap.add_argument("--amp", action="store_true")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -266,7 +277,9 @@ def main():
 
     model, res = train(a.mixer, tr_p, tr_s, dev, a.steps, pool=a.pool, lr=a.lr,
                        d=a.d, n_layers=a.layers, inner=a.inner, seed=a.seed, amp=a.amp,
-                       theta_elim=a.theta_elim, tau=a.tau)
+                       theta_elim=a.theta_elim, tau=a.tau,
+                       eval_every=a.eval_every, eval_set=(ev_p, ev_s),
+                       eval_M=a.eval_M, eval_R=a.eval_R, theta_cls=a.theta_cls)
 
     rounds = [int(x) for x in a.rounds.split(",")]
     res["eval_sweep"] = {}
