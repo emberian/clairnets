@@ -261,6 +261,14 @@ def main():
     ap.add_argument("--readout", choices=["single", "setvalued"], default="single",
                     help="output head: single (answer-or-abstain, baseline) | setvalued (per-value "
                          "keep/drop SET on the query cell's narrowed marginal, soundness-asymmetric)")
+    ap.add_argument("--read_source", choices=["terminal", "woven", "fused"], default="terminal",
+                    help="terminal=current deductor/readout only; woven=second OLMo pass with lattice "
+                         "write-back then host-state head; fused=terminal logits plus woven logits")
+    ap.add_argument("--woven_layers", default="",
+                    help="comma-separated OLMo layer indices for zero-init lattice write-back; empty "
+                         "with read_source=woven is the prompt-only frozen-host head control")
+    ap.add_argument("--woven_heads", type=int, default=8)
+    ap.add_argument("--woven_dh", type=int, default=512)
     ap.add_argument("--set_wpos", type=float, default=6.0,
                     help="setvalued: BCE pos_weight = cost of DROPPING a survivor (unsound) vs keeping")
     ap.add_argument("--data", choices=["templated", "curriculum"], default="templated",
@@ -289,9 +297,13 @@ def main():
           f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
-                            write_head=a.write_head, edge_window=a.edge_window, readout=a.readout).to(dev)
+                            write_head=a.write_head, edge_window=a.edge_window, readout=a.readout,
+                            read_source=a.read_source, woven_layers=a.woven_layers,
+                            woven_heads=a.woven_heads, woven_dh=a.woven_dh).to(dev)
     print(f"WRITE head: {a.write_head}" + (f" (edge_window={a.edge_window})" if a.write_head == "grounded" else "")
-          + f"  |  READOUT: {a.readout}" + (f" (set_wpos={a.set_wpos})" if a.readout == "setvalued" else ""),
+          + f"  |  READOUT: {a.readout}" + (f" (set_wpos={a.set_wpos})" if a.readout == "setvalued" else "")
+          + f"  |  READ_SOURCE: {a.read_source}"
+          + (f" layers={model.woven_layers}" if a.read_source != "terminal" else ""),
           flush=True)
     # trainable modules stay fp32 (stable Adam); they cast bf16 host activations internally
     print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}", flush=True)

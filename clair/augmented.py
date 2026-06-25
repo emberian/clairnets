@@ -321,12 +321,15 @@ class SetReadout(nn.Module):
         return self.mlp(feats).squeeze(-1)                           # [B,K] keep/drop logits
 
 
-# ===================================================================== Flamingo no-op demonstrator
-class _GateNoOp(nn.Module):
-    """Standalone zero-init tanh-gated in-stream adapter, used ONLY to confirm the Flamingo property:
-    a gated cross-attn added to an OLMo layer is an EXACT no-op at init (tanh(0)=0), so installing the
-    coupling does not damage the frozen pretrained model. Not used for the decision (an in-stream
-    answer head lets OLMo bypass the deductor — see report)."""
+# ===================================================================== woven host write-back
+class WovenWriteBack(nn.Module):
+    """Zero-init tanh-gated in-stream workspace adapter.
+
+    The terminal augmented model reads the lattice after OLMo is done. This module gives the lattice
+    a causal path back into the host: hidden tokens query the narrowed lattice workspace, and the
+    resulting update is added to the residual stream. Since alpha starts at 0, installing the adapter
+    is an exact no-op at initialization.
+    """
     def __init__(self, D, Dw, heads=8, dh=512):
         super().__init__()
         self.h, self.dh, self.dk = heads, dh, dh // heads
@@ -346,6 +349,26 @@ class _GateNoOp(nn.Module):
         return (torch.tanh(self.alpha) * self.o(out)).to(dt)
 
 
+def _parse_layer_spec(spec, n_layers):
+    """Parse comma-separated layer indices. Negative indices are relative to the end."""
+    if spec is None or spec == "":
+        return ()
+    if isinstance(spec, (list, tuple)):
+        vals = spec
+    else:
+        vals = [x.strip() for x in str(spec).split(",") if x.strip()]
+    out = []
+    for x in vals:
+        i = int(x)
+        if i < 0:
+            i = n_layers + i
+        if not 0 <= i < n_layers:
+            raise ValueError(f"woven layer {x!r} resolves to {i}, outside [0,{n_layers})")
+        if i not in out:
+            out.append(i)
+    return tuple(out)
+
+
 # ===================================================================== the augmented model
 class AugmentedOLMo(nn.Module):
     """Frozen OLMo host + learned WRITE (cell cross-attn) + learned differentiable DEDUCTOR + checked
@@ -353,13 +376,17 @@ class AugmentedOLMo(nn.Module):
     lattice readback). The answer is FORCED through the deductor, so the host cannot bypass it and the
     deductor is load-bearing -> checked reasoning + size-agnostic abstention."""
     def __init__(self, olmo, tok, Nmax, K, T=10, dp=512, edge_dim=256, Dw=128,
-                 write_head="pool", edge_window=7, readout="single"):
+                 write_head="pool", edge_window=7, readout="single",
+                 read_source="terminal", woven_layers=(), woven_heads=8, woven_dh=512):
         super().__init__()
         self.olmo = olmo; self.tok = tok
         self.Nmax, self.K, self.T = Nmax, K, T
         self.write_head = write_head
         self.readout = readout
+        self.read_source = read_source
         D = olmo.config.hidden_size; self.D = D
+        if read_source not in {"terminal", "woven", "fused"}:
+            raise ValueError("read_source must be terminal, woven, or fused")
         for p in self.olmo.parameters():
             p.requires_grad_(False)
         # WRITE: per-cell pooler (pins always; edges in pool mode)
@@ -382,11 +409,47 @@ class AugmentedOLMo(nn.Module):
         # SET-VALUED readout (config-gated): per-value keep/drop on the query cell's narrowed marginal.
         # Only built in setvalued mode so the single-answer baseline is byte-for-byte unchanged.
         self.set_readout = SetReadout() if readout == "setvalued" else None
+        # WOVEN readout path: after the lattice is built, inject it into selected host layers and read
+        # the modified final hidden state. `terminal` keeps the old path exactly; `woven` replaces the
+        # terminal decision; `fused` adds the woven logits to the terminal logits.
+        self.woven_layers = _parse_layer_spec(woven_layers, olmo.config.num_hidden_layers)
+        self.woven = nn.ModuleDict({
+            str(i): WovenWriteBack(D, Dw, heads=woven_heads, dh=woven_dh) for i in self.woven_layers
+        })
+        self.woven_single = nn.Sequential(nn.Linear(D + 3, 128), nn.GELU(), nn.Linear(128, K + 1))
+        self.woven_keep = nn.Sequential(nn.Linear(D + 3, 128), nn.GELU(), nn.Linear(128, K))
 
     @torch.no_grad()
     def host_encode(self, ba):
         out = self.olmo.model(input_ids=ba["input_ids"], attention_mask=ba["attn"])
         return out.last_hidden_state  # [B,T,D] bf16
+
+    def host_encode_woven(self, ba, ws, ws_mask):
+        """Run a second host pass with lattice workspace adapters installed.
+
+        OLMo parameters stay frozen. The pass is intentionally not wrapped in no_grad: gradients must
+        flow through the woven adapters and the frozen layers after each injection site.
+        """
+        handles = []
+
+        def make_hook(layer_id):
+            gate = self.woven[str(layer_id)]
+
+            def hook(module, args, output):
+                hs = output[0] if isinstance(output, tuple) else output
+                hs = hs + gate(hs, ws, ws_mask)
+                return (hs,) + tuple(output[1:]) if isinstance(output, tuple) else hs
+
+            return hook
+
+        try:
+            for layer_id in self.woven_layers:
+                handles.append(self.olmo.model.layers[layer_id].register_forward_hook(make_hook(layer_id)))
+            out = self.olmo.model(input_ids=ba["input_ids"], attention_mask=ba["attn"])
+            return out.last_hidden_state
+        finally:
+            for h in handles:
+                h.remove()
 
     def write(self, h, ba):
         m = ba["mention"]
@@ -412,31 +475,53 @@ class AugmentedOLMo(nn.Module):
         alive0 = torch.sigmoid(cand) * vm.unsqueeze(-1) + 1e-3
         return self.ded(alive0, E, vm)                                          # [B,N,K]
 
-    def read(self, alive, h, ba):
+    def workspace(self, alive, ba):
+        marg = alive / alive.sum(-1, keepdim=True).clamp_min(1e-6)
+        ws = self.ws_enc(marg)
+        qoh = F.one_hot(ba["query"], self.Nmax).float()
+        ws = self.ws_ln(ws + qoh.unsqueeze(-1) * self.ws_query[None, None, :])
+        return ws, ba["vmask"]
+
+    def read(self, alive, h, ba, h_woven=None):
         B = alive.size(0)
         qa = alive[torch.arange(B, device=alive.device), ba["query"]]           # [B,K]
-        keep_logits = self.set_readout(qa) if self.set_readout is not None else None
+        term_keep = self.set_readout(qa) if self.set_readout is not None else None
         qm = qa / qa.sum(-1, keepdim=True).clamp_min(1e-6)
-        color_logits = torch.log(qm + 1e-6)                                     # answer FROM deductor
+        term_color = torch.log(qm + 1e-6)                                       # answer FROM deductor
         peak = qm.max(-1).values
         ent = -(qm * (qm + 1e-9).log()).sum(-1)
         nalive = (qm > 0.1).float().sum(-1)
         stats = torch.stack([peak, ent, nalive], -1)                           # [B,3]
         # gated lattice readback for abstain (values = lattice only -> no bypass)
-        marg = alive / alive.sum(-1, keepdim=True).clamp_min(1e-6)
-        ws = self.ws_enc(marg)
-        qoh = F.one_hot(ba["query"], self.Nmax).float()
-        ws = self.ws_ln(ws + qoh.unsqueeze(-1) * self.ws_query[None, None, :])
+        ws, ws_mask = self.workspace(alive, ba)
         qvec = h[torch.arange(B, device=h.device), ba["last_idx"]].float().detach()
-        rb = self.readback(qvec, ws, ba["vmask"])                              # gated; 0 at init
-        abstain_logit = self.abstain_head(torch.cat([stats, rb], -1)).squeeze(-1)
+        rb = self.readback(qvec, ws, ws_mask)                                  # gated; 0 at init
+        term_abstain = self.abstain_head(torch.cat([stats, rb], -1)).squeeze(-1)
+
+        color_logits, abstain_logit, keep_logits = term_color, term_abstain, term_keep
+        if h_woven is not None:
+            wvec = h_woven[torch.arange(B, device=h_woven.device), ba["last_idx"]].float()
+            wfeat = torch.cat([wvec, stats], -1)
+            wsingle = self.woven_single(wfeat)
+            wcolor, wabstain = wsingle[:, :self.K], wsingle[:, self.K]
+            wkeep = self.woven_keep(wfeat)
+            if self.read_source == "woven":
+                color_logits, abstain_logit = wcolor, wabstain
+                keep_logits = wkeep if self.set_readout is not None else keep_logits
+            elif self.read_source == "fused":
+                color_logits, abstain_logit = term_color + wcolor, term_abstain + wabstain
+                keep_logits = (term_keep + wkeep) if self.set_readout is not None else keep_logits
         return color_logits, abstain_logit, keep_logits
 
     def forward(self, ba):
         h = self.host_encode(ba)
         cand, elog, E = self.write(h, ba)
         alive = self.deduce(cand, E, ba)
-        color_logits, abstain_logit, keep_logits = self.read(alive, h, ba)
+        h_woven = None
+        if self.read_source in {"woven", "fused"}:
+            ws, ws_mask = self.workspace(alive, ba)
+            h_woven = self.host_encode_woven(ba, ws, ws_mask)
+        color_logits, abstain_logit, keep_logits = self.read(alive, h, ba, h_woven=h_woven)
         return color_logits, abstain_logit, (cand, E, alive, elog, keep_logits)
 
     def trainable_parameters(self):
@@ -456,7 +541,7 @@ def verify_flamingo_noop(olmo, tok, dev, layer=None, Dw=128):
     text = "Node A is red. Node A and node B must be different colors. Question: what color is node B? Answer:"
     ids = tok(text, return_tensors="pt").to(dev)
     base = olmo(input_ids=ids["input_ids"]).logits.float()
-    gate = _GateNoOp(olmo.config.hidden_size, Dw).to(dev)
+    gate = WovenWriteBack(olmo.config.hidden_size, Dw).to(dev)
     ws = torch.randn(1, 6, Dw, device=dev); wm = torch.ones(1, 6, device=dev)
     def hook(module, args, output):
         hs = output[0] if isinstance(output, tuple) else output
