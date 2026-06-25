@@ -105,6 +105,24 @@ def _fix_caps(text):
     return "".join(out)
 
 
+def surviving_set(p, K):
+    """The EXACT surviving set for the query cell q: {v : SOME full solution consistent with the
+    givens has q=v}. This is the q-th component of clair.csp.exact_dedP (per-cell projection of the
+    solution set), computed here directly from the problem's facts via the induce backtracking solver
+    so it is exact for BOTH templated (induce.gen_problem) and diverse (curriculum coloring) records
+    — both reach here as (0,v,c)=IS / (1,i,j)=DIFF facts. Empty set == unsatisfiable (bottom)."""
+    pins, edges = {}, set()
+    for (t, a, b) in p["facts"]:
+        if t == 0:
+            pins[a] = b
+        else:
+            edges.add((a, b))
+    sols = I._solutions(p["n"], K, pins, edges)
+    if not sols:
+        return set()                                   # unsat -> the sound answer is the empty set
+    return {s[p["query"]] for s in sols}
+
+
 def build_batch(probs, tok, Nmax, K, colors, device):
     """Tokenize a batch of rendered problems and build cell-mention masks + the ground-truth program
     and answer targets. Returns a dict of tensors.
@@ -147,6 +165,7 @@ def build_batch(probs, tok, Nmax, K, colors, device):
     query = torch.zeros(B, dtype=torch.long, device=device)
     ans = torch.zeros(B, dtype=torch.long, device=device)
     abst = torch.zeros(B, device=device)
+    surv = torch.zeros(B, K, device=device)          # SET-VALUED target: 1 if v survives at query cell
     for b, p in enumerate(probs):
         vmask[b, : p["n"]] = 1.0
         for (t, a, c) in p["facts"]:
@@ -157,9 +176,11 @@ def build_batch(probs, tok, Nmax, K, colors, device):
         query[b] = p["query"]
         abst[b] = 0.0 if p["determined"] else 1.0
         ans[b] = p["answer"] if p["determined"] else 0
+        for v in surviving_set(p, K):
+            surv[b, v] = 1.0
     return {"input_ids": input_ids, "attn": attn, "mention": mention, "last_idx": last_idx,
             "vmask": vmask, "pins": pins, "pinned": pinned, "adj": adj, "query": query,
-            "ans": ans, "abst": abst, "texts": texts}
+            "ans": ans, "abst": abst, "surv": surv, "texts": texts}
 
 
 # ===================================================================== WRITE: cell cross-attn pooler
@@ -275,6 +296,31 @@ class ReadBack(nn.Module):
         return torch.tanh(self.alpha) * ctx
 
 
+# ===================================================================== SET-VALUED lattice readout
+class SetReadout(nn.Module):
+    """Per-candidate-value KEEP/DROP logits for the QUERY cell, read from the deductor's narrowed
+    marginal. The reported answer is the SET {v : keep}. A singleton set = a determinate answer; a
+    larger set = an honest PARTIAL answer; the empty set = unsatisfiable. This replaces the brittle
+    answer-or-abstain head: there is NO separate abstain token, and a single extraction error widens
+    the set GENTLY (one more value survives) instead of flipping a binary answer.
+
+    Each value's keep decision is a SHARED tiny MLP on that value's own narrowed mass + the cell's
+    determinacy context (so it is permutation-equivariant over values and generalizes across K). The
+    inductive bias is monotone: more surviving mass -> more likely kept. Soundness (never drop a true
+    survivor) is enforced by the asymmetric training loss, not hard-coded here."""
+    def __init__(self, hidden=64):
+        super().__init__()
+        self.mlp = nn.Sequential(nn.Linear(5, hidden), nn.GELU(), nn.Linear(hidden, 1))
+
+    def forward(self, qa):
+        # qa [B,K] = narrowed alive-mass at the query cell (in (0,1]); larger = more viable
+        qa = qa.clamp_min(1e-6)
+        m = qa / qa.sum(-1, keepdim=True).clamp_min(1e-6)            # normalized marginal
+        peak = m.max(-1, keepdim=True).values.expand_as(m)          # cell determinacy context
+        feats = torch.stack([qa.clamp(0, 1), m, qa.log(), m.log(), peak], -1)  # [B,K,5]
+        return self.mlp(feats).squeeze(-1)                           # [B,K] keep/drop logits
+
+
 # ===================================================================== Flamingo no-op demonstrator
 class _GateNoOp(nn.Module):
     """Standalone zero-init tanh-gated in-stream adapter, used ONLY to confirm the Flamingo property:
@@ -307,11 +353,12 @@ class AugmentedOLMo(nn.Module):
     lattice readback). The answer is FORCED through the deductor, so the host cannot bypass it and the
     deductor is load-bearing -> checked reasoning + size-agnostic abstention."""
     def __init__(self, olmo, tok, Nmax, K, T=10, dp=512, edge_dim=256, Dw=128,
-                 write_head="pool", edge_window=7):
+                 write_head="pool", edge_window=7, readout="single"):
         super().__init__()
         self.olmo = olmo; self.tok = tok
         self.Nmax, self.K, self.T = Nmax, K, T
         self.write_head = write_head
+        self.readout = readout
         D = olmo.config.hidden_size; self.D = D
         for p in self.olmo.parameters():
             p.requires_grad_(False)
@@ -332,6 +379,9 @@ class AugmentedOLMo(nn.Module):
         self.ws_ln = nn.LayerNorm(Dw)
         self.readback = ReadBack(D, Dw)
         self.abstain_head = nn.Sequential(nn.Linear(3 + self.readback.dp, 64), nn.GELU(), nn.Linear(64, 1))
+        # SET-VALUED readout (config-gated): per-value keep/drop on the query cell's narrowed marginal.
+        # Only built in setvalued mode so the single-answer baseline is byte-for-byte unchanged.
+        self.set_readout = SetReadout() if readout == "setvalued" else None
 
     @torch.no_grad()
     def host_encode(self, ba):
@@ -365,6 +415,7 @@ class AugmentedOLMo(nn.Module):
     def read(self, alive, h, ba):
         B = alive.size(0)
         qa = alive[torch.arange(B, device=alive.device), ba["query"]]           # [B,K]
+        keep_logits = self.set_readout(qa) if self.set_readout is not None else None
         qm = qa / qa.sum(-1, keepdim=True).clamp_min(1e-6)
         color_logits = torch.log(qm + 1e-6)                                     # answer FROM deductor
         peak = qm.max(-1).values
@@ -379,14 +430,14 @@ class AugmentedOLMo(nn.Module):
         qvec = h[torch.arange(B, device=h.device), ba["last_idx"]].float().detach()
         rb = self.readback(qvec, ws, ba["vmask"])                              # gated; 0 at init
         abstain_logit = self.abstain_head(torch.cat([stats, rb], -1)).squeeze(-1)
-        return color_logits, abstain_logit
+        return color_logits, abstain_logit, keep_logits
 
     def forward(self, ba):
         h = self.host_encode(ba)
         cand, elog, E = self.write(h, ba)
         alive = self.deduce(cand, E, ba)
-        color_logits, abstain_logit = self.read(alive, h, ba)
-        return color_logits, abstain_logit, (cand, E, alive, elog)
+        color_logits, abstain_logit, keep_logits = self.read(alive, h, ba)
+        return color_logits, abstain_logit, (cand, E, alive, elog, keep_logits)
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]

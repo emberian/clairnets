@@ -103,6 +103,20 @@ def check_verifier(k, n_lo, n_hi, n=400, seed=0):
 
 
 # ===================================================================== reward (exact, asymmetric)
+def compute_set_reward(keep, surv):
+    """SET-VALUED verifiable reward (soundness-asymmetric), the RL analog of the asymmetric BCE:
+       keep [BG,K] sampled keep/drop set ; surv [BG,K] EXACT surviving set.
+       * drop ANY survivor (unsound)  -> -1   (the big penalty we most want to kill)
+       * sound                        -> 1 - (#non-survivors kept)/K  in (0,1]  (tight=1, loose lower)
+    So a tight sound set is rewarded, a loose-but-sound set still positive, excluding a survivor
+    heavily punished. For unsat (surv empty) the empty set scores 1 (reporting nothing IS the truth)."""
+    K = keep.size(-1)
+    dropped = (surv * (1 - keep)).sum(-1)                 # survivors excluded -> unsound
+    extra = ((1 - surv) * keep).sum(-1)                   # non-survivors kept -> looseness
+    sound = dropped < 0.5
+    return torch.where(sound, 1.0 - extra / K, torch.full_like(dropped, -1.0))
+
+
 def compute_reward(ab, y, abst, ans):
     """Vectorized exact reward over a flat [BG] batch.
        ab: sampled abstain decision (1=abstain). y: sampled color. abst: 1=unanswerable. ans: true color."""
@@ -117,7 +131,7 @@ def compute_reward(ab, y, abst, ans):
 
 
 # ===================================================================== one GRPO group of rollouts
-def rollout_group(model, ba, G, pin_dist="bernoulli", sample_color=True):
+def rollout_group(model, ba, G, pin_dist="bernoulli", sample_color=True, readout="single"):
     """Compute OLMo states ONCE, then sample G discrete programs + decisions per problem. Returns
     flat [BG] tensors: reward, logprob, entropy, abstain decision, plus (h, cand, elog) for the KL."""
     dev = ba["input_ids"].device
@@ -162,6 +176,21 @@ def rollout_group(model, ba, G, pin_dist="bernoulli", sample_color=True):
     # ---- decision readback ----
     qa = alive[torch.arange(alive.size(0), device=dev), qG]
     qm = qa / qa.sum(-1, keepdim=True).clamp_min(1e-6)
+
+    # ---- SET-VALUED readout: sample a per-value keep/drop set; reward = soundness-asymmetric set ----
+    if readout == "setvalued":
+        keep_logits = model.set_readout(qa)                   # grad -> set_readout + deductor + WRITE
+        kd = Bernoulli(logits=keep_logits)
+        keep = kd.sample()                                    # [BG,K] in {0,1}
+        lp_keep = kd.log_prob(keep).sum(-1)                   # K small & all valid (fixed domain)
+        ent_keep = kd.entropy().sum(-1)
+        survG = rep(ba["surv"])
+        r = compute_set_reward(keep, survG)
+        full = (keep.sum(-1) >= K - 0.5).float()              # reported full domain (no info) — for logging
+        return {"r": r, "logprob": lp_cand + lp_edge + lp_keep,
+                "entropy": ent_cand + ent_edge + ent_keep, "ab": full,
+                "h": h, "cand": cand, "elog": elog}
+
     peak = qm.max(-1).values
     cent = -(qm * (qm + 1e-9).log()).sum(-1)
     nalive = (qm > 0.1).float().sum(-1)
@@ -242,6 +271,9 @@ def main():
                     help="frozen host config: olmo2-1b (default, baseline) | olmo3-7b | raw HF id")
     ap.add_argument("--write_head", choices=["pool", "grounded"], default="pool")
     ap.add_argument("--edge_window", type=int, default=7)
+    ap.add_argument("--readout", choices=["single", "setvalued"], default="single",
+                    help="single (answer-or-abstain, baseline) | setvalued (sample a keep/drop SET, "
+                         "soundness-asymmetric set reward)")
     ap.add_argument("--lr", type=float, default=1e-4)            # lower than SFT; RL is higher-variance
     ap.add_argument("--T", type=int, default=10)
     ap.add_argument("--ent_coef", type=float, default=0.01)
@@ -287,8 +319,9 @@ def main():
           f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
-                            write_head=a.write_head, edge_window=a.edge_window).to(dev)
-    print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}  dev={dev}  write_head={a.write_head}", flush=True)
+                            write_head=a.write_head, edge_window=a.edge_window, readout=a.readout).to(dev)
+    print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}  dev={dev}  write_head={a.write_head}"
+          f"  readout={a.readout}", flush=True)
 
     gap = A.verify_flamingo_noop(olmo, tok, dev)
     print(f"FLAMINGO GATE NO-OP (zero-init gated adapter, max|base-gated|, ~0 expected): {gap:.3e}", flush=True)
@@ -316,7 +349,7 @@ def main():
     ref = None
     if a.kl_coef > 0:
         ref = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T,
-                              write_head=a.write_head, edge_window=a.edge_window).to(dev)
+                              write_head=a.write_head, edge_window=a.edge_window, readout=a.readout).to(dev)
         ref.load_state_dict(model.state_dict())
         for p in ref.parameters():
             p.requires_grad_(False)
@@ -329,9 +362,14 @@ def main():
         print(f"\n=== {tag} (greedy forward) ===", flush=True)
         for key in ["train"] + [int(x) for x in a.test_n.split(",")]:
             r = out[str(key)]
-            print(f"  N={str(key):>5}  overall {r['overall']*100:4.1f}  detAcc {r['det_acc']*100:4.1f}"
-                  f"  abstP/R {r['abstain_prec']*100:3.0f}/{r['abstain_rec']*100:3.0f}"
-                  f"  progEx {r['prog_exact']*100:3.0f}", flush=True)
+            if a.readout == "setvalued":
+                print(f"  N={str(key):>5}  SND {r['soundness']*100:4.1f}  TIGHT {r['tightness']:.2f}"
+                      f"  USE {r['useful_info']*100:4.1f}  setDet {r['set_det_acc']*100:4.1f}"
+                      f"  progEx {r['prog_exact']*100:3.0f}", flush=True)
+            else:
+                print(f"  N={str(key):>5}  overall {r['overall']*100:4.1f}  detAcc {r['det_acc']*100:4.1f}"
+                      f"  abstP/R {r['abstain_prec']*100:3.0f}/{r['abstain_rec']*100:3.0f}"
+                      f"  progEx {r['prog_exact']*100:3.0f}", flush=True)
         return out
 
     start_eval = eval_all("SFT-START (pre-RLVR)")
@@ -346,7 +384,8 @@ def main():
     for s in range(1, a.steps + 1):
         idxs = rng.integers(0, len(train_pool), a.bs).tolist()
         ba = R.batch_from(train_pool, idxs, tok, Nmax, a.k, colors, dev)
-        out = rollout_group(model, ba, a.G, pin_dist=a.pin_dist, sample_color=bool(a.sample_color))
+        out = rollout_group(model, ba, a.G, pin_dist=a.pin_dist, sample_color=bool(a.sample_color),
+                            readout=a.readout)
         r, lp, ent, ab = out["r"], out["logprob"], out["entropy"], out["ab"]
         r2 = r.view(a.bs, a.G); lp2 = lp.view(a.bs, a.G); ent2 = ent.view(a.bs, a.G)
         adv = (r2 - r2.mean(1, keepdim=True)) / (r2.std(1, keepdim=True) + a.adv_eps)

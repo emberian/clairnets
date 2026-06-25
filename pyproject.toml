@@ -3,4 +3,4 @@ name = "clairnets"
 version = "0.1.0"
 description = "Iso-param architecture search: geometric-product & recurrent mixers on a reasoning/algorithmic gauntlet."
 requires-python = ">=3.10"
-dependencies = ["torch>=2.4", "numpy"]
+dependencies = ["torch>=2.4", "numpy", "z3-solver"]  # z3: exact oracle for the clair.smt rung
