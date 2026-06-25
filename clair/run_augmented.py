@@ -188,6 +188,8 @@ def main():
     ap.add_argument("--eval_n", type=int, default=512)
     ap.add_argument("--base_n", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--host", default="olmo2-1b",
+                    help="frozen host config: olmo2-1b (default, baseline) | olmo3-7b | raw HF id")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--no_base", action="store_true")
     ap.add_argument("--out", default=None)
@@ -199,10 +201,13 @@ def main():
     torch.manual_seed(a.seed); np.random.seed(a.seed)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    print("loading OLMo", A.MODEL_ID, flush=True)
-    tok = AutoTokenizer.from_pretrained(A.MODEL_ID)
+    model_id = A.resolve_host(a.host)
+    print("loading host", a.host, "->", model_id, flush=True)
+    tok = AutoTokenizer.from_pretrained(model_id)
     tok.padding_side = "right"
-    olmo = AutoModelForCausalLM.from_pretrained(A.MODEL_ID, dtype=torch.bfloat16).to(dev).eval()
+    olmo = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16).to(dev).eval()
+    print(f"host config: {olmo.config.num_hidden_layers} layers, hidden_size {olmo.config.hidden_size}, "
+          f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T).to(dev)
     # trainable modules stay fp32 (stable Adam); they cast bf16 host activations internally

@@ -36,7 +36,21 @@ from . import induce as I  # reuse gen_problem / _solutions ground truth + Color
 ABSTAIN = I.ABSTAIN
 COLORS = ["red", "green", "blue", "yellow", "orange", "purple", "cyan", "pink"]
 NODES = [chr(ord("A") + i) for i in range(26)]
-MODEL_ID = "allenai/OLMo-2-0425-1B"
+
+# ---- HOST registry: the frozen open-checkpoint LLM. Everything downstream is handled GENERICALLY
+# from the loaded model's config (hidden_size feeds the WRITE head + adapters; num_hidden_layers
+# picks the gate-noop attach depth as a fraction; the tokenizer comes from the same id), so adding a
+# host is just an entry here. Default stays olmo2-1b -> the validated 1B baseline path is unchanged.
+HOSTS = {
+    "olmo2-1b": "allenai/OLMo-2-0425-1B",
+    "olmo3-7b": "allenai/Olmo-3-1025-7B",
+}
+MODEL_ID = HOSTS["olmo2-1b"]
+
+
+def resolve_host(name):
+    """Map a --host config name (e.g. 'olmo3-7b') to a HF model id. A raw HF id passes through."""
+    return HOSTS.get(name, name)
 
 
 # ===================================================================== text rendering
@@ -299,9 +313,15 @@ class AugmentedOLMo(nn.Module):
 
 
 @torch.no_grad()
-def verify_flamingo_noop(olmo, tok, dev, layer=8, Dw=128):
+def verify_flamingo_noop(olmo, tok, dev, layer=None, Dw=128):
     """Confirm the Flamingo coupling is an exact no-op at init: install a zero-init gated adapter on an
-    OLMo layer, feed a random workspace, and check the logits equal base OLMo's. Returns max|diff|."""
+    OLMo layer, feed a random workspace, and check the logits equal base OLMo's. Returns max|diff|.
+    `layer` defaults to ~1/3 depth, computed from the host's num_hidden_layers so it is valid for any
+    host size (OLMo-2-1B has 16 layers, OLMo-3-7B has 32)."""
+    nL = olmo.config.num_hidden_layers
+    if layer is None:
+        layer = nL // 3
+    layer = min(layer, nL - 1)
     text = "Node A is red. Node A and node B must be different colors. Question: what color is node B? Answer:"
     ids = tok(text, return_tensors="pt").to(dev)
     base = olmo(input_ids=ids["input_ids"]).logits.float()

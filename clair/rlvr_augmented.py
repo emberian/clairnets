@@ -238,6 +238,8 @@ def main():
     ap.add_argument("--G", type=int, default=8)                  # rollouts per problem (group size)
     ap.add_argument("--bs", type=int, default=16)                # problems per GRPO step
     ap.add_argument("--k", type=int, default=3)
+    ap.add_argument("--host", default="olmo2-1b",
+                    help="frozen host config: olmo2-1b (default, baseline) | olmo3-7b | raw HF id")
     ap.add_argument("--lr", type=float, default=1e-4)            # lower than SFT; RL is higher-variance
     ap.add_argument("--T", type=int, default=10)
     ap.add_argument("--ent_coef", type=float, default=0.01)
@@ -274,13 +276,19 @@ def main():
             return
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    print("loading OLMo", A.MODEL_ID, flush=True)
-    tok = AutoTokenizer.from_pretrained(A.MODEL_ID)
+    model_id = A.resolve_host(a.host)
+    print("loading host", a.host, "->", model_id, flush=True)
+    tok = AutoTokenizer.from_pretrained(model_id)
     tok.padding_side = "right"
-    olmo = AutoModelForCausalLM.from_pretrained(A.MODEL_ID, dtype=torch.bfloat16).to(dev).eval()
+    olmo = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16).to(dev).eval()
+    print(f"host config: {olmo.config.num_hidden_layers} layers, hidden_size {olmo.config.hidden_size}, "
+          f"{sum(p.numel() for p in olmo.parameters())/1e9:.2f}B params", flush=True)
     Nmax = max(int(x) for x in a.test_n.split(",")) + 1
     model = A.AugmentedOLMo(olmo, tok, Nmax, a.k, T=a.T).to(dev)
     print(f"trainable params {A.n_trainable(model):,}  Nmax={Nmax}  dev={dev}", flush=True)
+
+    gap = A.verify_flamingo_noop(olmo, tok, dev)
+    print(f"FLAMINGO GATE NO-OP (zero-init gated adapter, max|base-gated|, ~0 expected): {gap:.3e}", flush=True)
 
     # ---- build pools (same recipe as run_augmented for comparability) ----
     prng = np.random.default_rng(a.seed + 999)
@@ -380,7 +388,7 @@ def main():
 
     out_path = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "rlvr_augmented.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    json.dump({"args": vars(a), "log": log,
+    json.dump({"args": vars(a), "host": model_id, "gate_noop_gap": gap, "log": log,
                "start_eval": {k: v for k, v in start_eval.items()},
                "final_eval": {k: v for k, v in final_eval.items()}},
               open(out_path, "w"), indent=1)
