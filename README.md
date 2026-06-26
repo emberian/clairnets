@@ -40,6 +40,31 @@ factor-graph program* (variables, domains, factors — **not** a pre-solved answ
 generates** the answer from a hidden state saturated by the deduction; an **exact verifier** supplies the
 reward. The same α/γ pattern hosts the whole organ bank.
 
+### The intuition (why it's shaped this way)
+The host LLM and the deductor are **two alien computers**: one thinks in token-distributions, the other in
+candidate-sets-per-cell. The hard part isn't building either — it's getting them to *talk*. Two principles
+make it work:
+- **Soundness is a *permission*, not a prescription.** The output is checked by an exact verifier, so the
+  organ is *free* to be loose, learned, even emergent — the check at the boundary catches it. We don't have
+  to *prove* the organ correct; we *check* its answer.
+- **Don't cold-co-train alien computers.** If you train α, the organ, γ, and the LLM all at once, the LLM finds
+  a lazy shortcut (guess from the prompt text) *before* the organ-readout ever forms, and never recruits it.
+  The fix is to **stage** it:
+
+```mermaid
+flowchart LR
+  S1["① bootstrap the organ ALONE<br/>(dominate exact dedₚ → near-oracle, sound)"] --> S2["② FREEZE it"]
+  S2 --> S3["③ train the readout (LoRA+γ)<br/>LM learns to GENERATE through the organ<br/>(readout-forcing curriculum first)"]
+  S3 --> S4["④ RLVR — and the organ is<br/>its OWN exact per-step process-reward"]
+```
+
+Make the organ **good** (pretrained) *and* **necessary** (a task the LLM can't shortcut), freeze it, and the
+LLM learns to wield it — even with the answer-text sitting right there in the prompt. That's not a hope; it's
+the demonstrated result below (corrupt the frozen organ's lattice → generation collapses to ~3% *with full
+text present*). The single discipline that keeps us honest: a *sound* organ can still be *bypassed*, so
+**only the causal controls** — shuffle / permute / corrupt the organ and watch accuracy fall — prove the LLM
+is *actually* deducing rather than pattern-matching (the lesson SATNet learned the hard way).
+
 ## What we've found (honest)
 - **The checked-deductor bet works**: a frozen LLM + a checked deductor gains calibrated abstention it
   otherwise lacks (det-acc 88.8% vs base 1.4%). **RLVR** fixes *calibration* (+18-20 abstain-recall OOD), not capacity.
