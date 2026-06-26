@@ -28,7 +28,7 @@ DELIVERABLE MEASUREMENTS (printed + saved):
 """
 from __future__ import annotations
 
-import argparse, contextlib, itertools as it, json, os, time
+import argparse, contextlib, gc, itertools as it, json, os, time
 
 import numpy as np
 import torch
@@ -613,26 +613,43 @@ def train_readout(organ, olmo_ids, tok, dev, a, train_cells, train_full, eval_ce
 
 
 # ============================================================ STAGE 2 (LIVE): live-latent-α woven
-def build_live_pool(rng, rungs, split, per_rung):
+def build_live_pool(rng, rungs, split, per_rung, det_only=False, two_stream=False):
     """Records for the LIVE path: each carries the EXACT dedₚ target (tgt) for the α-grounding aux loss
     AND the oracle survival (surv == dedₚ) for the oracle-override reference. NO privileged organ
-    fixpoint is needed — the lattice is produced LIVE from OLMo hidden by α+organ at train/eval time."""
+    fixpoint is needed — the lattice is produced LIVE from OLMo hidden by α+organ at train/eval time.
+
+    det_only: keep ONLY determined queries (a unique forced answer). The engagement experiment uses
+    this so the causal controls (corrupt/zero the lattice) have a sharp right→wrong signal — the
+    answer genuinely depends on the deduced/searched value, not on an abstain heuristic."""
     recs = []
     for rg in rungs:
-        for _ in range(per_rung):
+        got = tries = 0
+        while got < per_rung and tries < per_rung * 50:
+            tries += 1
             p = make_problem(rng, rg, split)
+            if det_only and not p.determined:
+                continue
             oc = organ_csp(p)
             assert_budget(oc)
             ded = EX.dedP(oc, oc.full())
             rec = make_record(p, ded, "full")          # surv := dedₚ (oracle); prompt has the facts
             rec["tgt"] = surv_from_dom(ded, p.n, K)     # dedₚ target for the dominate-dedₚ aux loss
-            recs.append(rec)
+            if two_stream:
+                # TWO-STREAM backstop: α reads the FULL text (to compile the constraints), but the LM
+                # GENERATES from a fact-ablated CELLS prompt (roster + question only) + the injected
+                # lattice — so the organ is the ONLY route to the answer (the easy text path is removed).
+                cells = make_record(p, ded, "cells")
+                rec["alpha_prompt"] = rec["prompt"]; rec["alpha_mentions"] = rec["mentions"]
+                rec["prompt"] = cells["prompt"]; rec["mentions"] = cells["mentions"]
+            recs.append(rec); got += 1
     rng.shuffle(recs)
     return recs
 
 
-def build_live_batch(recs, tok, dev):
-    """Tokenize prompt+answer (answer-span LM labels) + mention[B,N,T] + vmask[B,N] + dedₚ tgt[B,N,K]."""
+def build_live_batch(recs, tok, dev, two_stream=False):
+    """Tokenize prompt+answer (answer-span LM labels) + mention[B,N,T] + vmask[B,N] + dedₚ tgt[B,N,K].
+    two_stream also tokenizes the α-stream (full-text) prompt + its mentions so α compiles from the
+    facts while the gen-stream (prompt above) is the fact-ablated cells text."""
     Nmax = max(r["n"] for r in recs)
     B = len(recs)
     fulls = [r["prompt"] + " " + r["answer"] for r in recs]
@@ -651,7 +668,15 @@ def build_live_batch(recs, tok, dev):
     for b, r in enumerate(recs):
         vmask[b, : r["n"]] = 1.0
         tgt[b, : r["n"], :] = torch.from_numpy(r["tgt"]).to(dev)
-    return dict(input_ids=ids, attn=attn, labels=labels, mention=mention, vmask=vmask, tgt=tgt)
+    out = dict(input_ids=ids, attn=attn, labels=labels, mention=mention, vmask=vmask, tgt=tgt)
+    if two_stream:
+        a_fulls = [r["alpha_prompt"] for r in recs]
+        aenc = tok(a_fulls, return_offsets_mapping=True, padding=True, return_tensors="pt")
+        a_ids = aenc["input_ids"].to(dev); a_attn = aenc["attention_mask"].to(dev)
+        a_mention = O._mention_tensor([r["alpha_mentions"] for r in recs], aenc["offset_mapping"],
+                                      B, Nmax, a_ids.size(1), dev)
+        out.update(a_input_ids=a_ids, a_attn=a_attn, a_mention=a_mention)
+    return out
 
 
 def verify_noop_live(model, tok, dev, rec):
@@ -674,7 +699,7 @@ def verify_noop_live(model, tok, dev, rec):
 
 @torch.no_grad()
 def score_gen_live(model, recs, tok, dev, control="true", bs=8, perm=None, use_base=False,
-                   fewshot="", override_oracle=False):
+                   fewshot="", override_oracle=False, two_stream=False):
     """GENERATIVE accuracy for the LIVE path. Two forwards per chunk: (1) the bare prompts produce the
     LIVE per-cell lattice from OLMo hidden via α+organ; (2) the legal answers are scored on the expanded
     prompts with that (optionally causally-controlled) lattice injected by γ.
@@ -697,11 +722,15 @@ def score_gen_live(model, recs, tok, dev, control="true", bs=8, perm=None, use_b
                 for b, r in enumerate(chunk):
                     surv[b, : r["n"], :] = torch.from_numpy(r["surv"]).to(dev)
             else:
-                penc = tok([r["prompt"] for r in chunk], return_offsets_mapping=True, padding=True,
-                           return_tensors="pt")
+                # two_stream: α compiles the lattice from the FULL-text prompt; the gen/scoring below
+                # runs on the fact-ablated cells prompt (r["prompt"]) so the lattice is the only route.
+                cap_p = [r.get("alpha_prompt", r["prompt"]) for r in chunk] if two_stream \
+                    else [r["prompt"] for r in chunk]
+                cap_m = [r.get("alpha_mentions", r["mentions"]) for r in chunk] if two_stream \
+                    else [r["mentions"] for r in chunk]
+                penc = tok(cap_p, return_offsets_mapping=True, padding=True, return_tensors="pt")
                 pids = penc["input_ids"].to(dev); pattn = penc["attention_mask"].to(dev)
-                pment = O._mention_tensor([r["mentions"] for r in chunk], penc["offset_mapping"],
-                                          Bp, Nmax, pids.size(1), dev)
+                pment = O._mention_tensor(cap_m, penc["offset_mapping"], Bp, Nmax, pids.size(1), dev)
                 with model.live(pment, pattn, inject=False, capture=True):
                     _ = model.logits(pids, pattn)
                 surv = model._captured_surv[:, :Nmax, :].clone()
@@ -754,7 +783,7 @@ def score_gen_live(model, recs, tok, dev, control="true", bs=8, perm=None, use_b
             "by_rung_n": {k: v[1] for k, v in by_rung.items()}}
 
 
-def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs):
+def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=False):
     """THE live-latent-α woven recipe. Phase A: warm up α + the latent narrower (+LoRA) on dominate-
     dedₚ so the organ actually deduces from OLMo's hidden (the validated design-B grounding). Then
     FREEZE the narrower. Phase B: train LoRA + α + γ on the answer-span LM CE (γ reads the DETACHED
@@ -787,7 +816,16 @@ def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs):
 
     def batch(n):
         idxs = rng.integers(0, len(train_recs), n).tolist()
-        return build_live_batch([train_recs[i] for i in idxs], tok, dev)
+        return build_live_batch([train_recs[i] for i in idxs], tok, dev, two_stream=two_stream)
+
+    def alpha_capture(ba):
+        """Run the α-stream capture forward (full text in two-stream, else the prompt itself)."""
+        if two_stream:
+            with model.live(ba["a_mention"], ba["a_attn"], inject=False, capture=True):
+                _ = model.logits(ba["a_input_ids"], ba["a_attn"])
+        else:
+            with model.live(ba["mention"], ba["attn"], inject=False, capture=True):
+                _ = model.logits(ba["input_ids"], ba["attn"])
 
     # ----- Phase A: warm up α + narrower (+LoRA) on dominate-dedₚ (latent deduction grounding) -----
     optA = torch.optim.AdamW(
@@ -797,15 +835,21 @@ def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs):
     model.train(); t0 = time.time()
     for s in range(1, a.warm_steps + 1):
         ba = batch(a.bs)
-        with model.live(ba["mention"], ba["attn"], inject=False, capture=True):
-            _ = model.logits(ba["input_ids"], ba["attn"])
-        loss = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+        alpha_capture(ba)
+        organ_loss = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+        # J0 (SATNet/Topan grounding): supervise α's RAW compile b0 DIRECTLY against the free exact
+        # dedₚ labels, not only distally through the organ — so α learns to compile the RIGHT
+        # constraints from OLMo's hidden (else removing the easy path just trains a text-mimicking MIME).
+        alpha_loss = LAT.dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
+        loss = organ_loss + a.alpha_sup_w * alpha_loss
         optA.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optA.step()
         if s % max(1, a.warm_steps // 8) == 0 or s == 1:
             rn, rd, fn, fd = LT.narrowing_stats(model._last_sup[-1], ba["tgt"], ba["vmask"])
-            print(f"  [warmup α+organ] step {s:5d}  dedp_loss {loss.item():.3f}  recall "
-                  f"{rn/max(1,rd):.3f}  false_elim {fn/max(1,fd):.4f}  {time.time()-t0:.0f}s", flush=True)
+            an, ad, _, _ = LT.narrowing_stats(model._last_b0, ba["tgt"], ba["vmask"])
+            print(f"  [warmup α+organ] step {s:5d}  organ_dedp {organ_loss.item():.3f}  α_dedp "
+                  f"{alpha_loss.item():.3f}  organ-recall {rn/max(1,rd):.3f}  α-recall {an/max(1,ad):.3f}  "
+                  f"false_elim {fn/max(1,fd):.4f}  {time.time()-t0:.0f}s", flush=True)
     for p in model.organ.parameters():            # FREEZE the narrower (the deduction engine)
         p.requires_grad_(False)
     model.organ.eval()
@@ -820,21 +864,33 @@ def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs):
     alpha_seen_open = False
     for s in range(1, a.steps + 1):
         ba = batch(a.bs)
-        with model.live(ba["mention"], ba["attn"], inject=True, capture=True):
-            logits = model.logits(ba["input_ids"], ba["attn"]).float()
+        if two_stream:
+            # α-stream (full text) -> live lattice + the dedₚ aux losses (grad to α through the organ)
+            alpha_capture(ba)
+            aux = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+            aux_alpha = LAT.dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
+            surv = model._captured_surv[:, : ba["mention"].shape[1], :]   # detached live lattice
+            # gen-stream (fact-ablated cells text) -> LM CE with the lattice injected by γ (the only route)
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=False, override=surv):
+                logits = model.logits(ba["input_ids"], ba["attn"]).float()
+        else:
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=True):
+                logits = model.logits(ba["input_ids"], ba["attn"]).float()
+            aux = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+            # standing J0: keep α's raw compile grounded as LoRA shifts OLMo's hidden under it
+            aux_alpha = LAT.dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
         lm = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                              ba["labels"][:, 1:].reshape(-1), ignore_index=-100)
-        aux = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
-        loss = lm + a.aux_w * aux
+        loss = lm + a.aux_w * aux + a.alpha_sup_w * aux_alpha
         optB.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optB.step()
         gate = float(torch.tanh(model.gamma.alpha))
         alpha_seen_open = alpha_seen_open or (abs(gate) > 1e-3)
         if s % max(1, a.steps // 12) == 0 or s == 1:
-            acc = score_gen_live(model, eval_recs, tok, dev, control="true", bs=a.bs)
-            print(f"  step {s:5d}  lm {lm.item():.3f}  aux {aux.item():.3f}  gate(tanh α) {gate:+.3f}  "
-                  f"live-woven acc {acc['overall']*100:4.1f}% (det {acc['det_acc']*100:.0f})  "
-                  f"{time.time()-t0:.0f}s", flush=True)
+            acc = score_gen_live(model, eval_recs, tok, dev, control="true", bs=a.bs, two_stream=two_stream)
+            print(f"  step {s:5d}  lm {lm.item():.3f}  aux {aux.item():.3f}  α_aux {aux_alpha.item():.3f}  "
+                  f"gate(tanh α) {gate:+.3f}  live-woven acc {acc['overall']*100:4.1f}% "
+                  f"(det {acc['det_acc']*100:.0f})  {time.time()-t0:.0f}s", flush=True)
             model.train()
     # alpha-open monitor: γ.proj params get 0 gradient while the gate is shut, so warn if it never opened
     if not alpha_seen_open:
@@ -848,6 +904,147 @@ def _rrow(rung, e):
     return (f"  {rung:12s} recall {e['recall']*100:5.1f}%  q-exact {e['query_exact']*100:5.1f}%  "
             f"fixpt-match {e['fixpoint_match']*100:5.1f}%  det-solved {e['det_query_solved']*100:5.1f}%  "
             f"FALSE-ELIM {e['false_elim_count']}")
+
+
+# ============================================================ LIVE engagement (the over-index re-aim)
+# Regimes: (rungs, split). The hypothesis: on SMALL/easy CSP the LM solves from text => the γ gate
+# stays shut (WOVEN==TEXT-LoRA, causal-drop≈0). On NON-SHORTCUTABLE instances (long propagation
+# CHAINS, WIDE-N where in-context solving fails) the live-α organ is the only route to the forced
+# answer => the gate should OPEN and the causal controls should DROP.
+LIVE_REGIMES = {
+    "small (shortcutable)": (sorted(CURRIC_RUNGS), "id"),     # N=4..6 — solvable in-context
+    "hard (chains)":        (["eqchain", "forcedcolor"], "ood"),  # L=8,10 long propagation chains
+    "large (wide-N)":       (sorted(CURRIC_RUNGS), "ood"),    # N=8,10 — wide, text shortcut breaks
+}
+_REGIME_ALIAS = {"small": "small (shortcutable)", "hard": "hard (chains)", "large": "large (wide-N)"}
+
+
+@torch.no_grad()
+def _live_controls(model, recs, tok, dev, bs, engage_thr, two_stream=False):
+    """Measure the engagement metrics on `recs`: the causal-control table (true/shuffle/permute/
+    corrupt/zero), the oracle-override reference, the gate magnitude, and the derived causal drop."""
+    out = {}
+    sc = lambda **kw: score_gen_live(model, recs, tok, dev, bs=bs, two_stream=two_stream, **kw)
+    full = sc(control="true")
+    out["true"] = full["overall"]; out["det_acc"] = full["det_acc"]; out["by_rung"] = full["by_rung"]
+    for c in ("shuffle", "permute", "corrupt", "zero"):
+        out[c] = sc(control=c)["overall"]
+    out["oracle"] = sc(control="true", override_oracle=True)["overall"]
+    out["base"] = sc(control="zero", use_base=True, fewshot=FEWSHOT)["overall"]
+    out["gate"] = float(torch.tanh(model.gamma.alpha))
+    out["drop"] = out["true"] - min(out["shuffle"], out["permute"], out["corrupt"])
+    out["lift"] = out["true"] - out["zero"]                  # WOVEN - TEXT-LoRA: does the organ ADD?
+    # WIRED: the LM causally reads/trusts the lattice (corrupting it changes the answer).
+    out["wired"] = bool(out["drop"] * 100 >= engage_thr and abs(out["gate"]) > 1e-2)
+    # NECESSARY: the organ supplies capability the text path lacks (WOVEN beats TEXT-LoRA).
+    out["necessary"] = bool(out["lift"] * 100 >= engage_thr)
+    out["engages"] = bool(out["wired"] and out["necessary"])  # the strong claim: wired AND necessary
+    out["n"] = full["n"]
+    return out
+
+
+def run_live_engagement(a, dev):
+    """Train the LIVE-LATENT-α woven model on each requested regime and report ENGAGEMENT honestly:
+    does training on NON-SHORTCUTABLE tasks make the readout engage (γ gate opens, causal-drop>0)?"""
+    from transformers import AutoTokenizer, AutoConfig
+    mid = "allenai/OLMo-2-0425-1B"
+    print(f"\n################ LIVE-LATENT-α ENGAGEMENT RE-AIM (det_only={bool(a.det_only)}, "
+          f"engage_thr={a.engage_thr}pts) ################", flush=True)
+    print("loading tokenizer/config", mid, flush=True)
+    tok = AutoTokenizer.from_pretrained(mid)
+    tok.padding_side = "right"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    cfg = AutoConfig.from_pretrained(mid)
+    D, nL = cfg.hidden_size, cfg.num_hidden_layers
+    print(f"OLMo: {nL} layers, hidden {D}", flush=True)
+    if a.inject_layer <= a.mid_layer:                     # keep mid < inject within budget
+        a.inject_layer = min(nL - 1, a.mid_layer + 6)
+
+    regimes = [_REGIME_ALIAS.get(r.strip(), r.strip()) for r in a.regime.split(",") if r.strip()]
+    streams = [False, True] if a.two_stream == 2 else ([True] if a.two_stream == 1 else [False])
+    results = {}
+    for name in regimes:
+        if name not in LIVE_REGIMES:
+            print(f"  [skip] unknown regime {name!r}", flush=True); continue
+        rungs, split = LIVE_REGIMES[name]
+        for two in streams:
+            tag = "two-stream(cells-gen)" if two else "single-stream(full-text)"
+            label = f"{name} | {tag}"
+            print(f"\n================ REGIME: {name}  [{tag}]  rungs={rungs} split={split} ========",
+                  flush=True)
+            rng_tr = np.random.default_rng(a.seed + 100)
+            rng_ev = np.random.default_rng(a.seed + 200)
+            train_recs = build_live_pool(rng_tr, rungs, split, a.per_rung_train,
+                                         det_only=bool(a.det_only), two_stream=two)
+            eval_recs = build_live_pool(rng_ev, rungs, split, a.per_rung_eval,
+                                        det_only=bool(a.det_only), two_stream=two)
+            det_tr = sum(r["determined"] for r in train_recs)
+            print(f"  data: {len(train_recs)} train ({det_tr} det) / {len(eval_recs)} eval recs", flush=True)
+            if not train_recs or not eval_recs:
+                print("  [skip] empty pool", flush=True); continue
+            model = train_live_woven((mid, D, nL), tok, dev, a, train_recs, eval_recs, two_stream=two)
+            m = _live_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr, two_stream=two)
+            results[label] = m
+            _report_regime(label, m, a.engage_thr)
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    _engagement_summary(results, a)
+    out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "glados_live_engage.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    json.dump({"args": vars(a), "regimes": results}, open(out, "w"), indent=1, default=float)
+    print("\nwrote", out, flush=True)
+    return results
+
+
+def _report_regime(name, m, engage_thr):
+    print(f"\n  --- ENGAGEMENT [{name}]  (n={m['n']}) ---", flush=True)
+    print(f"    gate(tanh α) {m['gate']:+.3f}   WOVEN {m['true']*100:5.1f}%   TEXT-LoRA "
+          f"{m['zero']*100:5.1f}%   BASE {m['base']*100:5.1f}%   ORACLE-override {m['oracle']*100:5.1f}%",
+          flush=True)
+    print(f"    causal-control:  true {m['true']*100:5.1f}  shuffle {m['shuffle']*100:5.1f}  "
+          f"permute {m['permute']*100:5.1f}  corrupt {m['corrupt']*100:5.1f}  zero {m['zero']*100:5.1f}"
+          f"   => drop {m['drop']*100:+.1f}pts", flush=True)
+    rel = ">" if m["true"] > m["zero"] + 1e-6 else ("<" if m["true"] < m["zero"] - 1e-6 else "~")
+    wn = f"WOVEN {m['true']*100:.0f}% {rel} TEXT-LoRA {m['zero']*100:.0f}%"
+    if m["engages"]:
+        print(f"    VERDICT: ENGAGES (wired AND necessary) — gate {m['gate']:+.3f}, causal-drop "
+              f"{m['drop']*100:.1f}pts (>={engage_thr}), organ-lift {m['lift']*100:+.1f}pts; {wn} "
+              f"=> the LM WIELDS the live lattice AND it supplies capability the text lacks.", flush=True)
+    elif m["wired"]:
+        print(f"    VERDICT: WIRED but NOT NECESSARY — gate {m['gate']:+.3f}, causal-drop "
+              f"{m['drop']*100:.1f}pts (the LM reads/trusts the lattice), but organ-lift "
+              f"{m['lift']*100:+.1f}pts (<{engage_thr}); {wn} => the text path still carries it "
+              f"(or the lattice HURTS when lift<0).", flush=True)
+    else:
+        why = "gate stayed shut" if abs(m["gate"]) <= 1e-2 else "no causal drop"
+        print(f"    VERDICT: NOT WIRED ({why}) — gate {m['gate']:+.3f}, causal-drop "
+              f"{m['drop']*100:.1f}pts (<{engage_thr}); {wn} => the organ is bypassed.", flush=True)
+
+
+def _engagement_summary(results, a):
+    print("\n================ ENGAGEMENT SUMMARY (does the readout engage on non-shortcutable tasks?) ===",
+          flush=True)
+    print(f"  {'regime | stream':40s} {'gate':>7s} {'WOVEN':>7s} {'T-LoRA':>7s} {'ORACLE':>7s} "
+          f"{'lift':>6s} {'drop':>6s} {'wired':>6s} {'necess':>7s}", flush=True)
+    for name, m in results.items():
+        print(f"  {name:40s} {m['gate']:+7.3f} {m['true']*100:6.1f}% {m['zero']*100:6.1f}% "
+              f"{m['oracle']*100:6.1f}% {m['lift']*100:+6.1f} {m['drop']*100:+6.1f} "
+              f"{str(m['wired']):>6s} {str(m['necessary']):>7s}", flush=True)
+    engaged = [n for n in results if results[n]["engages"]]
+    if engaged:
+        print(f"\n  RESULT: the live-α readout ENGAGES (wired AND necessary) on {engaged}. The decisive"
+              " lever is removing the easy text path (two-stream cells-gen) while α stays grounded (direct"
+              " J0 supervision): then WOVEN >> TEXT-LoRA and corrupting the lattice collapses the answer."
+              " Where WOVEN ~< TEXT-LoRA, α's live compile (see ORACLE-override) is the wall, not the readout.",
+              flush=True)
+    else:
+        print("\n  RESULT: nowhere is the organ BOTH wired AND necessary. Compare ORACLE-override vs WOVEN:"
+              " if ORACLE-override >> WOVEN, α's live compile is the wall; the next lever is stronger"
+              " α-grounding (J0) before more J1 forcing.", flush=True)
 
 
 def main():
@@ -871,36 +1068,46 @@ def main():
     ap.add_argument("--greedy_n", type=int, default=24)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--curriculum", default="data/curriculum/curriculum.jsonl")
-    ap.add_argument("--smoke", action="store_true")
-    ap.add_argument("--out", default=None)
-    # ---- #1: load the pretrained organ instead of retraining a fresh one ----
-    ap.add_argument("--organ_ckpt", default="runs/general_organ_full.pt",
-                    help="pretrained general organ to LOAD+FREEZE (skips fresh STAGE-1 training)")
-    ap.add_argument("--skip_organ_train", action="store_true",
-                    help="load --organ_ckpt (if present) instead of training a fresh organ")
-    # ---- the live-latent-α headline path (vs the readout-isolation control) ----
-    ap.add_argument("--mode", choices=["live", "cells"], default="live",
-                    help="live = live-latent-α (headline); cells = readout-isolation control (legacy)")
-    ap.add_argument("--mid_layer", type=int, default=8, help="OLMo layer α reads (must precede inject)")
-    ap.add_argument("--warm_steps", type=int, default=800, help="phase-A α+organ dominate-dedP warmup")
-    ap.add_argument("--aux_w", type=float, default=1.0, help="phase-B auxiliary dominate-dedP weight")
-    ap.add_argument("--alpha_lr", type=float, default=3e-4)
+    # ----- LIVE-LATENT-α engagement mode (the over-index re-aim) -----
+    ap.add_argument("--live", action="store_true",
+                    help="run the LIVE-LATENT-α engagement experiment instead of the frozen-readout path")
+    ap.add_argument("--regime", default="small,hard",
+                    help="comma list of {small,hard,large} regimes to train+measure for engagement")
+    ap.add_argument("--det_only", type=int, default=1,
+                    help="live: keep only DETERMINED queries (cleanest causal signal: a unique forced answer)")
+    ap.add_argument("--warm_steps", type=int, default=400, help="live Phase-A α+organ dedₚ warmup steps")
+    ap.add_argument("--mid_layer", type=int, default=6, help="live: layer α reads OLMo hidden from")
+    ap.add_argument("--dctx", type=int, default=256)
     ap.add_argument("--alpha_dp", type=int, default=384)
     ap.add_argument("--alpha_heads", type=int, default=6)
-    ap.add_argument("--dctx", type=int, default=256)
+    ap.add_argument("--alpha_lr", type=float, default=3e-4)
     ap.add_argument("--organ_d", type=int, default=128)
     ap.add_argument("--organ_heads", type=int, default=4)
     ap.add_argument("--organ_layers", type=int, default=2)
     ap.add_argument("--organ_T", type=int, default=12)
+    ap.add_argument("--aux_w", type=float, default=0.5, help="live Phase-B weight on the α dominate-dedₚ aux loss")
+    ap.add_argument("--alpha_sup_w", type=float, default=1.0,
+                    help="DIRECT α-supervision (J0/SATNet grounding): dominate-dedₚ on α's RAW compile b0 "
+                         "(not just through the organ). 0 disables (ablation).")
+    ap.add_argument("--engage_thr", type=float, default=5.0,
+                    help="causal-drop (pts) above which the readout is declared to ENGAGE")
+    ap.add_argument("--two_stream", type=int, default=2,
+                    help="live: 0=single-stream(full-text, the over-index baseline) 1=two-stream"
+                         "(α=full,gen=cells; the readout-forcing fix) 2=BOTH (the comparison)")
+    ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--out", default=None)
     a = ap.parse_args()
     if a.smoke:
         a.organ_steps = 250; a.steps = 120; a.organ_pool = 64; a.per_rung_train = 60
-        a.per_rung_eval = 24; a.organ_recall_n = 60; a.greedy_n = 8; a.warm_steps = 120
+        a.per_rung_eval = 24; a.organ_recall_n = 60; a.greedy_n = 8
+        a.warm_steps = 60; a.per_rung_train = 40; a.per_rung_eval = 20
     dev = device()
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
     torch.manual_seed(a.seed); np.random.seed(a.seed)
     print(f"device={dev}  budget N={N_MAX} D={D_MAX} M={M_MAX} A={A_MAX}  rungs={RUNGS}", flush=True)
+    if a.live:
+        return run_live_engagement(a, dev)
 
     # ===== DEDP sanity: FastExact == clair.csp.exact_dedP on small instances of every rung =====
     rngc = np.random.default_rng(7)
@@ -912,22 +1119,11 @@ def main():
                 assert HT.fast_dedP(oc) == C.exact_dedP(oc, oc.full()), f"dedP mismatch {rg}"
     print("DEDP CHECK: FastExact.fast_dedP == clair.csp.exact_dedP on all rungs (exact).", flush=True)
 
-    # ===== STAGE 1: LOAD (or bootstrap) + freeze the GENERAL organ =====
+    # ===== STAGE 1: bootstrap + freeze the GENERAL organ =====
     print("\n================ STAGE 1: GENERAL ORGAN (dominate-dedP over the rung MIX) ================",
           flush=True)
-    olog = []
-    if a.skip_organ_train and os.path.exists(a.organ_ckpt):
-        # #1: load the PRETRAINED organ + freeze (do NOT retrain a fresh one).
-        organ, meta = BANK.load_core_organ(a.organ_ckpt, dev=dev)
-        od, opar = meta["d"], meta.get("params", organ.n_params())
-        assert (meta["N_MAX"], meta["D_MAX"], meta["M_MAX"], meta["A_MAX"]) == (N_MAX, D_MAX, M_MAX, A_MAX), \
-            f"organ_ckpt budget {meta} != this run's budget ({N_MAX},{D_MAX},{M_MAX},{A_MAX})"
-        print(f"  LOADED frozen organ {a.organ_ckpt}  d={od} params={opar:,} R={meta['R']}", flush=True)
-    else:
-        if a.skip_organ_train:
-            print(f"  --skip_organ_train but {a.organ_ckpt} missing -> training fresh", flush=True)
-        organ, od, opar, olog = train_organ(dev, RUNGS, target=a.organ_target, steps=a.organ_steps,
-                                            pool=a.organ_pool, R=a.organ_R, lr=a.organ_lr, seed=a.seed)
+    organ, od, opar, olog = train_organ(dev, RUNGS, target=a.organ_target, steps=a.organ_steps,
+                                        pool=a.organ_pool, R=a.organ_R, lr=a.organ_lr, seed=a.seed)
     for p in organ.parameters():
         p.requires_grad_(False)
     organ.eval()
@@ -955,90 +1151,6 @@ def main():
     del probe
     print(f"OLMo: {nL} layers, hidden {D}", flush=True)
 
-    out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "glados_staged.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    organ_blob = {"d_model": od, "params": opar, "log": olog,
-                  "recall": {f"{rg}/{sp}": v for (rg, sp), v in recall.items()}}
-
-    # ============================================================ LIVE-LATENT-α (the HEADLINE path)
-    if a.mode == "live":
-        print("\n  ##### HEADLINE: LIVE-LATENT-α (lattice produced LIVE from OLMo hidden; NO privileged "
-              "CSP injected) #####", flush=True)
-        prng = np.random.default_rng(a.seed + 11)
-        t0 = time.time()
-        train_live = build_live_pool(prng, RUNGS, "id", a.per_rung_train)
-        eval_live_id = build_live_pool(prng, RUNGS, "id", a.per_rung_eval)
-        eval_live_ood = build_live_pool(prng, RUNGS, "ood", a.per_rung_eval)
-        print(f"  live data: {len(train_live)} train / {len(eval_live_id)} eval-id / {len(eval_live_ood)}"
-              f" eval-ood  ({time.time()-t0:.0f}s)", flush=True)
-        model = train_live_woven((mid, D, nL), tok, dev, a, train_live, eval_live_id)
-
-        # ---- DELIVERABLE 1: WOVEN-LIVE vs TEXT-LoRA vs BASE  (+ ORACLE-OVERRIDE reference) ----
-        print("\n  ====== PER-RUNG GENERATIVE ACCURACY (WOVEN-LIVE / TEXT-LoRA / BASE / ORACLE-readout) ======",
-              flush=True)
-        deliverable = {}
-        suites = [("in-dist (full)", eval_live_id), ("OOD-N (full)", eval_live_ood)]
-        for sname, pool in suites:
-            w = score_gen_live(model, pool, tok, dev, control="true", bs=a.bs)
-            tl = score_gen_live(model, pool, tok, dev, control="zero", bs=a.bs)            # LoRA, no inject
-            bs_ = score_gen_live(model, pool, tok, dev, control="zero", use_base=True, fewshot=FEWSHOT,
-                                 bs=a.bs)
-            orc = score_gen_live(model, pool, tok, dev, control="true", override_oracle=True, bs=a.bs)
-            deliverable[sname] = {"woven": w, "textlora": tl, "base": bs_, "oracle": orc}
-            print(f"\n  --- {sname}  (n={w['n']}) ---", flush=True)
-            print(f"    {'rung':12s}  {'WOVEN':>7s}  {'TEXT-LoRA':>9s}  {'BASE':>7s}  {'ORACLE':>7s}", flush=True)
-            for rg in RUNGS:
-                if rg in w["by_rung"]:
-                    print(f"    {rg:12s}  {w['by_rung'][rg]*100:6.1f}%  {tl['by_rung'].get(rg,0)*100:8.1f}%  "
-                          f"{bs_['by_rung'].get(rg,0)*100:6.1f}%  {orc['by_rung'].get(rg,0)*100:6.1f}%",
-                          flush=True)
-            print(f"    {'OVERALL':12s}  {w['overall']*100:6.1f}%  {tl['overall']*100:8.1f}%  "
-                  f"{bs_['overall']*100:6.1f}%  {orc['overall']*100:6.1f}%   (det woven "
-                  f"{w['det_acc']*100:.0f} abst {w['abst_acc']*100:.0f})", flush=True)
-
-        # ---- DELIVERABLE 2: CAUSAL-CONTROL TABLE (live lattice; full text present; TRUE zero) ----
-        print("\n  ====== CAUSAL-CONTROL TABLE (live lattice; full-text present; overall acc %) ======",
-              flush=True)
-        controls = {}
-        print(f"    {'suite':18s}  {'true':>6s} {'shuffle':>8s} {'permute':>8s} {'corrupt':>8s} {'zero':>6s}",
-              flush=True)
-        for sname, pool in suites:
-            row = {c: score_gen_live(model, pool, tok, dev, control=c, bs=a.bs)["overall"]
-                   for c in ("true", "shuffle", "permute", "corrupt", "zero")}
-            controls[sname] = row
-            print(f"    {sname:18s}  {row['true']*100:6.1f} {row['shuffle']*100:8.1f} "
-                  f"{row['permute']*100:8.1f} {row['corrupt']*100:8.1f} {row['zero']*100:6.1f}", flush=True)
-        wfull = deliverable["in-dist (full)"]["woven"]
-        cfull = score_gen_live(model, eval_live_id, tok, dev, control="corrupt", bs=a.bs)
-        print("\n    per-rung TRUE->CORRUPT drop (in-dist full):", flush=True)
-        for rg in RUNGS:
-            if rg in wfull["by_rung"]:
-                dr = (wfull["by_rung"][rg] - cfull["by_rung"].get(rg, 0)) * 100
-                print(f"      {rg:12s}  true {wfull['by_rung'][rg]*100:5.1f}%  corrupt "
-                      f"{cfull['by_rung'].get(rg,0)*100:5.1f}%  drop {dr:5.1f}pts", flush=True)
-
-        print("\n================ VERDICT (LIVE-LATENT-α) ================", flush=True)
-        idf = deliverable["in-dist (full)"]; cc = controls["in-dist (full)"]
-        drop = cc["true"] - min(cc["shuffle"], cc["permute"], cc["corrupt"], cc["zero"])
-        print(f"  in-dist(full): WOVEN-LIVE {idf['woven']['overall']*100:.0f}%  TEXT-LoRA "
-              f"{idf['textlora']['overall']*100:.0f}%  BASE {idf['base']['overall']*100:.0f}%  "
-              f"ORACLE-readout {idf['oracle']['overall']*100:.0f}%  | causal drop true->worst {drop*100:.0f}pts",
-              flush=True)
-        print("  These are the REAL live-α numbers: the lattice is compiled from OLMo hidden by α+organ "
-              "(no ground-truth CSP). The WOVEN-vs-ORACLE gap is α's recall cost; WOVEN-vs-TEXT-LoRA is "
-              "what the live organ adds; the causal drop confirms the LM WIELDS the live lattice.", flush=True)
-        blob = {"args": vars(a), "budget": [N_MAX, D_MAX, M_MAX, A_MAX], "mode": "live", "organ": organ_blob,
-                "deliverable": {k: {kk: {"overall": vv["overall"], "det": vv["det_acc"],
-                                         "abst": vv["abst_acc"], "by_rung": vv["by_rung"]}
-                                    for kk, vv in v.items()} for k, v in deliverable.items()},
-                "controls": controls}
-        json.dump(blob, open(out, "w"), indent=1, default=float)
-        print("\nwrote", out, flush=True)
-        return
-
-    # ============================================================ CELLS: readout-isolation CONTROL (legacy)
-    print("\n  ##### CONTROL: readout-isolation (cells-mode; the PRIVILEGED organ-fixpoint lattice is "
-          "injected — NOT live-α) #####", flush=True)
     # ===== build pools (organ lattice injected); train both cells & full renderings =====
     prng = np.random.default_rng(a.seed + 11)
     t0 = time.time()
@@ -1125,10 +1237,15 @@ def main():
     print(f"  in-dist(full): WOVEN {idf['woven']['overall']*100:.0f}%  TEXT-LoRA "
           f"{idf['textlora']['overall']*100:.0f}%  BASE {idf['base']['overall']*100:.0f}%  "
           f"| causal drop true->worst-control {drop*100:.0f}pts", flush=True)
-    print("  Per-rung: WOVEN beats TEXT-LoRA/BASE where the organ supplies deduction the text-only path"
-          " can't shortcut (chains, determined cells); ~equal where text already suffices or the organ"
-          " recall is low (the honest affine/ordering gaps). Causal controls dropping with text PRESENT"
-          " => the LM causally WIELDS the learned general organ in generation.", flush=True)
+    # honesty: only claim WIELDS if the measured causal drop actually clears the engagement threshold.
+    if drop * 100 >= a.engage_thr:
+        print("  Causal controls DROP with text PRESENT (>= engage_thr) => the LM causally WIELDS the"
+              " learned general organ in generation (WOVEN beats TEXT-LoRA where the organ supplies"
+              " deduction the text-only path can't shortcut).", flush=True)
+    else:
+        print(f"  Causal drop {drop*100:.0f}pts < engage_thr {a.engage_thr:.0f}: the organ is NOT"
+              " causally wielded here — WOVEN ≈ TEXT-LoRA, the LM shortcuts from the text (the"
+              " over-index: small/easy CSP is solvable in-context, so the γ gate need not open).", flush=True)
 
     out = a.out or os.path.join(os.path.dirname(__file__), "..", "runs", "glados_staged.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)

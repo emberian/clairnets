@@ -287,6 +287,7 @@ class LiveLatentWoven(nn.Module):
         self._h_mid = None
         self._captured_surv = None               # live thresholded survival [B,N,K]
         self._last_sup = None                    # organ deep-supervision logits (for the aux dedₚ loss)
+        self._last_b0 = None                     # α's RAW compiled initial lattice (for direct α-sup / J0)
         self._last_vmask = None
         layers = _decoder_layers(peft_model)
         self._mid_handle = layers[mid_layer].register_forward_hook(self._mid_hook)
@@ -305,6 +306,7 @@ class LiveLatentWoven(nn.Module):
         v_mean = torch.einsum("bnt,btd->bnd", m, h) / denom        # [B,N,D] mention-pool cell identity
         b0, ctx = self.alpha(v_mean, h, self._attn.to(h.device))
         vmask = (m.sum(-1) > 0.5).float()                          # cells that have >=1 mention token
+        self._last_b0 = b0                                         # stash α's raw compile for the direct J0 loss
         b, sup = self.organ(b0, ctx, vmask)
         return b, sup, vmask
 
