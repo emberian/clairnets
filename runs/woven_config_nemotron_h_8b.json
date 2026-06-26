@@ -1,0 +1,61 @@
+{
+  "tag": "nemotron_h_8b",
+  "model_id": "nvidia/Nemotron-H-8B-Base-8K",
+  "load_4bit": false,
+  "trust_remote_code": false,
+  "config_class": "NemotronHConfig",
+  "hidden_size": 4096,
+  "num_decoder_layers": 52,
+  "layers_path": "model.layers",
+  "block_kind_sequence": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+  "block_kind_counts": {
+    "MAMBA": 24,
+    "MAMBA+MLP": 24,
+    "MAMBA+ATTN": 4
+  },
+  "block_class_counts": {
+    "NemotronHBlock": 52
+  },
+  "mid_layer": 17,
+  "mid_block": "NemotronHBlock/MAMBA",
+  "inject_layer": 35,
+  "inject_block": "NemotronHBlock/MAMBA",
+  "hook_output_kinds": {
+    "mid": "tensor",
+    "inject": "tensor"
+  },
+  "K": 8,
+  "dctx": 256,
+  "gamma_hidden": 256,
+  "organ_ckpt": "runs/general_organ_full.pt",
+  "organ_ckpt_class": "FactorGraphProposer",
+  "organ_ckpt_params": 304161,
+  "residual_organ_slot": "LatentNarrower(frozen)",
+  "alpha_params": 8270984,
+  "organ_params": 429320,
+  "gamma_params": 1054977,
+  "forward_runs": true,
+  "noop_at_init_maxabs": 0.0,
+  "noop_bitwise": true,
+  "gate_open_moves_maxabs": 0.28125,
+  "gate_open_moves_logits": true,
+  "vram_alloc_GiB": 15.16,
+  "vram_reserved_GiB": 17.22,
+  "vram_peak_GiB": 16.8,
+  "hybrid_override_pattern": "M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-",
+  "block_kind_legend": {
+    "M": "Mamba-2",
+    "*": "attention",
+    "-": "MLP"
+  },
+  "block_kind_counts_true": {
+    "mamba2": 24,
+    "mlp": 24,
+    "attention": 4
+  },
+  "mid_block_true": "layer17=mamba2 (M)",
+  "inject_block_true": "layer35=mamba2 (M)",
+  "block_label_note": "runtime block_kind_* are from a child-name heuristic that over-tagged MAMBA (every NemotronHBlock has a .mixer child); block_kind_counts_true is authoritative from config.hybrid_override_pattern. BOTH mid(17) and inject(35) are Mamba-2 (M) blocks.",
+  "ssm_hybrid_verdict": "CLEAN: residual-stream organ coupling survives the SSM/Mamba hybrid. NemotronHBlock.forward returns the post-residual hidden as a plain tensor (hook kind tensor) for ALL block types; inject landed on a Mamba-2 block (layer 35); bitwise no-op@init (0.0) and gate-open moves logits (0.281). The Mamba-2 SSM is inside the block mixer; the block boundary is a standard residual add, so gamma-delta injection is a clean residual edit regardless of mixer type.",
+  "mamba_kernels": "absent (mamba-ssm build clobbers torch; ran transformers-native torch_forward slow path)"
+}

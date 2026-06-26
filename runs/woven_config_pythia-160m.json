@@ -1,0 +1,22 @@
+{
+  "tag": "pythia-160m",
+  "model_id": "EleutherAI/pythia-160m",
+  "arch": "GPTNeoXForCausalLM",
+  "decoder_layer_path": "gpt_neox.layers",
+  "n_layers": 12,
+  "hidden_dim": 768,
+  "vocab_size": 50304,
+  "K_candidate_dim": 8,
+  "organ_ckpt": "runs/general_organ_full.pt",
+  "mid_layer": 4,
+  "inject_layer": 8,
+  "n_cells": 6,
+  "dtype": "bfloat16",
+  "noop_at_init_max_abs_delta": 0.0,
+  "noop_at_init_bitwise": true,
+  "gate_open_tanh": 0.9950547814369202,
+  "gate_open_max_abs_delta": 4.0,
+  "gate_open_moves_logits": true,
+  "forward_runs": true,
+  "verdict": "PASS"
+}
