@@ -7,6 +7,20 @@ terse, newest-first. Append new entries at the top. Negatives are results.
 
 ## 2026-06-26 — toward real training
 
+- **A-vs-B diversity verdict** (latent organ): wide-N training collapses the OOD *soundness* failure (false-elim
+  8.8%→0.9%) and multi-task recovers *phrasing* (recall 76→88, FE 14%→3%); the narrower is **provably equivariant**
+  (perm/size err = 0) so the leak is in α (text→latent), not the architecture. What diversity does NOT close:
+  OOD-N **recall** stays ~65-74% vs explicit's 93%. → B is a sound, phrasing-robust, credible bitter-lesson path;
+  explicit retains a ~20pt OOD-completeness edge (size-invariant factors for free).
+- **Host decision: OLMo-3-Base-7B** is the standard for the real experiments (Base, not Instruct — RL headroom +
+  honest control; our finding: 7B≈1B on the *organ-coupling*, so 7B buys LM competence not better reading).
+- **Two decisive experiments LAUNCHED** (the architecture-deciders): (box4) **organ-in-RLVR on Base-7B with the
+  organ-as-process-reward** (the LSRL lift — the organ is its own exact per-step grader) → does the organ help a
+  properly-RL-trained model, pass@k OOD vs a random-reward control; (box2) **the next-token exploitation test** —
+  G(t)=organ-ablation ΔLoss over continued next-token CPT on reasoning-dense vs shortcutable vs prose → does
+  ORDINARY training exploit the organ (architecture) or only RL (trick). No published precedent on a checked deductor.
+
+
 - ⭐ **STAGED GENERATIVE GLaDOS WORKS — the deliverable, POSITIVE.** A learned *general* organ causally woven
   into OLMo's generation across 7 reasoning types (coloring/equality/ordering/arithmetic/alldiff/eqchain/
   forcedcolor): **woven 98.8% / base 48% / text-LoRA 25%** in-dist; OOD-phrasing 96.3%; cells(no-facts) 98.7%
