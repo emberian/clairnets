@@ -82,19 +82,29 @@ def _weave_args(base_id, **over):
 
 
 def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, smoke=False,
-          out=None, dev=None, **hp):
-    """STAGE 2: graft the organ into `base_id` and train the woven readout with the FULL engagement
-    mechanism (two-stream lever + J0 α-supervision + calibration / causal-control readout). Returns
-    (woven_model, metrics). `regime` selects (rungs, split) from run_glados_staged.LIVE_REGIMES
-    {small, hard, large}; `hp` overrides any hyperparameter (steps, warm_steps, lr, layers, ...).
+          organ_mode="bank", out=None, dev=None, **hp):
+    """STAGE 2: graft the organ into `base_id` and train the woven readout with the FULL VALIDATED
+    ENGAGEMENT RECIPE BY DEFAULT — two-stream lever + J0 direct-α-supervision + the structured (rich-set)
+    causal-control readout — lifted here out of run_glados_staged's experiment driver so the canonical
+    callable runs the real thing without flags. Returns (woven_model, metrics).
 
-    The host is grafted by clair.organ.graft (which makes train_live_woven model-agnostic via the
-    generalized decoder-layer lookup), so this weaves onto ANY of the 7 proven bases identically."""
+    organ_mode (the blocker-A consolidation, DEFAULT 'bank'):
+      'bank'   — the live organ IS the bank + composer: α compiles the per-cell lattice; the composer
+                 runs the certified ops (Arc/Factor/Modular/GF2/Macro — the soundness FLOOR) PLUS the
+                 pretrained CoreNarrowOrgan (runs/general_organ_full.pt, verifier-gated) PLUS α (gated)
+                 on the problem's true structure; γ reads the COMPOSED lattice. Multi-faculty,
+                 certified-floor-backed, uses the pretrained organ.
+      'latent' — the legacy standalone frozen LatentNarrower path (single-faculty, kept for ablation).
+
+    `regime` selects (rungs, split) from run_glados_staged.LIVE_REGIMES {small, hard, large}; `hp`
+    overrides any hyperparameter. The host graft is model-agnostic (generalized decoder-layer lookup),
+    so this weaves onto ANY of the 7 proven bases identically."""
     import gc
     import numpy as np
     import torch
     from transformers import AutoTokenizer, AutoConfig
     from .. import run_glados_staged as G
+    from . import bank_woven as BW
 
     dev = dev or G.device()
     a = _weave_args(base_id, **hp)
@@ -102,7 +112,8 @@ def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, s
         a.steps, a.warm_steps, a.per_rung_train, a.per_rung_eval, a.bs = 60, 40, 24, 12, 6
         a.lora_r, a.gamma_hidden, a.organ_d, a.organ_T = 8, 128, 96, 8
 
-    print(f"[weave] base={base_id} regime={regime} two_stream={two_stream} smoke={smoke}", flush=True)
+    print(f"[weave] base={base_id} regime={regime} two_stream={two_stream} organ_mode={organ_mode} "
+          f"smoke={smoke}", flush=True)
     tok = AutoTokenizer.from_pretrained(base_id)
     tok.padding_side = "right"
     if tok.pad_token is None:
@@ -123,10 +134,17 @@ def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, s
     print(f"[weave] data: {len(train_recs)} train / {len(eval_recs)} eval recs  (D={D}, nL={nL})",
           flush=True)
 
-    model = G.train_live_woven((base_id, D, nL), tok, dev, a, train_recs, eval_recs,
-                               two_stream=two_stream)
-    metrics = G._live_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr, two_stream=two_stream)
-    G._report_regime(f"{regime} | two_stream={two_stream}", metrics, a.engage_thr)
+    if organ_mode == "bank":
+        model = BW.train_bank_woven((base_id, D, nL), tok, dev, a, train_recs, eval_recs,
+                                    two_stream=two_stream)
+        metrics = BW.bank_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr,
+                                   two_stream=two_stream)
+    else:
+        model = G.train_live_woven((base_id, D, nL), tok, dev, a, train_recs, eval_recs,
+                                   two_stream=two_stream)
+        metrics = G._live_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr,
+                                   two_stream=two_stream)
+    G._report_regime(f"{regime} | {organ_mode} | two_stream={two_stream}", metrics, a.engage_thr)
 
     if out:
         from .. import eval_suite as ES
@@ -142,22 +160,60 @@ def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, s
 
 
 # ============================================================ STAGE 3: RLVR (organ-as-process-reward)
-def rlvr(task="chain_sum", steps=300, *, smoke=False, out="runs/rlvr_pipeline", **over):
-    """STAGE 3: RL-from-verifiable-rewards on the woven policy (TRL Dr.GRPO, exact-verifier reward).
-    Delegates to the validated clair.rlvr_pipeline harness. The ORGAN-AS-PROCESS-REWARD (LSRL-style
-    per-step candidate-set cardinality drop, mixed 0.7·outcome + 0.3·process) plugs in at that file's
-    documented ORGAN INSERTION POINT — swap build_model() for the woven policy; the reward loop is
-    unchanged."""
+def _organ_process_reward_builder(w_outcome=0.7, w_process=0.3, core_ckpt="runs/general_organ_full.pt"):
+    """Build the MIXED reward_func (0.7·outcome + 0.3·organ-process), soundness-gated. The organ-process
+    term is the candidate-set cardinality drop / survival-depth (clair.organ.process_reward) of the
+    emitted answer; it is DENSE even when the outcome is 0. It is active for examples that carry CSP
+    structure in their metadata (the GLaDOS rungs — the organ's native domain); for reasoning-gym text
+    tasks the organ does not apply, so the process term is 0 and the reward reduces to the outcome (a
+    text→CSP compile to extend the process term to NL tasks is the blocker-7 frontier)."""
+    import json
+    from .. import rlvr_pipeline as RL
+    from . import process_reward as PR
+    from .. import csp as C
+    opr = PR.OrganProcessReward(core_ckpt=core_ckpt, use_core=True)
+    base_outcome = RL.make_reward(strict=True)
+
+    def mixed(completions, answer, source, metadata, **kwargs):
+        outcomes = base_outcome(completions, answer, source, metadata, **kwargs)
+        rewards = []
+        for comp, gold, meta_s, oc in zip(completions, answer, metadata, outcomes):
+            proc = 0.0
+            try:
+                meta = json.loads(meta_s) if isinstance(meta_s, str) else (meta_s or {})
+                cspd = meta.get("csp")                         # {cons,n,d,query,emitted}: GLaDOS rungs only
+                if cspd is not None:
+                    csp = C.CSP(cspd["n"], cspd["d"], tuple((tuple(sc), frozenset(map(tuple, al)))
+                                                            for sc, al in cspd["cons"]))
+                    emitted = int(RL.extract_answer(comp)) if str(RL.extract_answer(comp)).lstrip("-").isdigit() \
+                        else cspd.get("emitted", 0)
+                    proc = opr.reward(csp, cspd["query"], emitted).process
+            except Exception:
+                proc = 0.0
+            rewards.append(PR.mix_reward(float(oc), proc, w_outcome, w_process))
+        return rewards
+
+    mixed.__name__ = "organ_process_mixed_reward"
+    return mixed
+
+
+def rlvr(task="chain_sum", steps=300, *, smoke=False, organ_process=True, out="runs/rlvr_pipeline",
+         **over):
+    """STAGE 3: RL-from-verifiable-rewards on the woven policy (TRL Dr.GRPO). The ORGAN-AS-PROCESS-REWARD
+    (LSRL-style per-step candidate-set cardinality drop / survival-depth, mixed 0.7·outcome + 0.3·process,
+    soundness-gated — clair.organ.process_reward) is BUILT HERE and passed into the loop via the pipeline's
+    reward_builder hook (no longer just an insertion point). organ_process=False = pure outcome verifier."""
     from .. import rlvr_pipeline as RL
     argv = ["clair.rlvr_pipeline", "--task", str(task), "--steps", str(steps), "--out", str(out)]
     if smoke:
         argv.append("--smoke")
     for k, v in over.items():
         argv += [f"--{k}", str(v)]
+    builder = _organ_process_reward_builder if organ_process else None
     old = sys.argv
     try:
         sys.argv = argv
-        return RL.main()
+        return RL.main(reward_builder=builder)
     finally:
         sys.argv = old
 
@@ -179,6 +235,9 @@ def main():
     pw = sub.add_parser("weave", help="STAGE 2: graft + train the woven readout (engagement mechanism)")
     pw.add_argument("--base", default="allenai/OLMo-2-0425-1B")
     pw.add_argument("--regime", default="hard", help="small | hard | large (LIVE_REGIMES)")
+    pw.add_argument("--organ_mode", default="bank", choices=["bank", "latent"],
+                    help="bank=bank+composer (multi-faculty, certified-floor, pretrained organ; DEFAULT); "
+                         "latent=legacy standalone LatentNarrower (ablation)")
     pw.add_argument("--two_stream", type=int, default=1, help="1=two-stream (cells-gen) 0=single-stream")
     pw.add_argument("--steps", type=int, default=2500)
     pw.add_argument("--warm_steps", type=int, default=400)
@@ -195,8 +254,8 @@ def main():
     if a.cmd in ("pretrain", "organ"):
         pretrain_organ(out=a.out, steps=a.steps, target=a.target, pool=a.pool, R=a.R, lr=a.lr, seed=a.seed)
     elif a.cmd == "weave":
-        weave(a.base, regime=a.regime, two_stream=bool(a.two_stream), smoke=a.smoke, out=a.out,
-              steps=a.steps, warm_steps=a.warm_steps)
+        weave(a.base, regime=a.regime, two_stream=bool(a.two_stream), organ_mode=a.organ_mode,
+              smoke=a.smoke, out=a.out, steps=a.steps, warm_steps=a.warm_steps)
     elif a.cmd == "rlvr":
         rlvr(task=a.task, steps=a.steps, out=a.out, smoke=a.smoke)
 

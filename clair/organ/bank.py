@@ -173,19 +173,43 @@ class Unification(Reduction):
     state_type = "fol-closure"
 
     def applies(self, state):
-        return isinstance(state, tuple) and len(state) == 2  # (facts, rules)
+        return isinstance(state, tuple) and len(state) in (2, 3)  # (facts, rules[, query])
 
     def reduce(self, state):
+        if len(state) == 3:
+            facts, rules, query = state
+            closure = FOL.forward_chain(facts, rules)        # monotone GROW to the least model
+            return (tuple(closure), rules, query)
         facts, rules = state
-        closure = FOL.forward_chain(facts, rules)            # monotone GROW to the least model
+        closure = FOL.forward_chain(facts, rules)
         return (tuple(closure), rules)
 
     def certificate(self):
         return Certificate(True, "sound-by-construction",
                            "exact least Herbrand model (forward chaining); 3-way entail/contradict/unknown")
 
+    # 3-way entailment label readout (NOT a per-cell survival matrix — the readout-bridge in
+    # clair.organ.readout_bridge.unification_readout exposes the RICH label + derived-fact features to
+    # the LM). survival() here returns the minimal [1,K] label one-hot so it plugs the uniform γ channel.
+    LABELS = ("entail", "contradict", "unknown")
+
+    def label(self, state) -> str:
+        """The 3-way entailment label for a (facts, rules, query) state, via the exact closure."""
+        if len(state) != 3:
+            raise ValueError("Unification.label needs a (facts, rules, query) state with a query atom")
+        facts, rules, query = state
+        return FOL.label_query(FOL.forward_chain(facts, rules), query)
+
     def survival(self, state, K):
-        raise NotImplementedError("Unification reads out as an entailment label, not a per-cell survival matrix")
+        if len(state) != 3:
+            raise NotImplementedError(
+                "Unification reads out as an ENTAILMENT LABEL — pass a (facts, rules, query) state, or use "
+                "clair.organ.readout_bridge.unification_readout for the rich label+derived-fact readout")
+        surv = np.zeros((1, K), dtype=np.float32)
+        li = self.LABELS.index(self.label(state))
+        if li < K:
+            surv[0, li] = 1.0                                # entail/contradict/unknown one-hot
+        return surv
 
 
 # ============================================================ APPROXIMATE, own state type
@@ -212,8 +236,19 @@ class Energy(Reduction):
         return Certificate(False, "approximate",
                            "mean-field descent (sound energy, approx decode); exact via brute_opt oracle")
 
-    def survival(self, state, K):
-        raise NotImplementedError("Energy reads out as a (soft) assignment, not a per-cell survival matrix")
+    def survival(self, state, K, steps=140):
+        """Energy reads out as a (soft) ASSIGNMENT, not a binary candidate set: the per-cell mean-field
+        marginals x*[i] (argmax = the answer, spread = confidence). This is a genuine per-cell readout
+        (soft values in [0,1], NOT {0,1}); the RICH readout (assignment + its energy + a confidence
+        scalar) is clair.organ.readout_bridge.energy_readout."""
+        from .. import energy_organ as EN
+        facs = EN.factor_tensors(state, "cpu")
+        x, _info = EN.relax_decode(facs, state.n, state.d, "cpu", steps=steps)
+        xn = x.cpu().numpy()
+        surv = np.zeros((state.n, K), dtype=np.float32)
+        kd = min(state.d, K)
+        surv[:, :kd] = xn[:, :kd]
+        return surv
 
 
 # ============================================================ NEURAL-GUIDANCE CSP-domain organs

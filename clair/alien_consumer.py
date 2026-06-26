@@ -282,7 +282,8 @@ def train_readout(model, mode, Fin, tok, dev, a, train_recs, eval_recs):
     for s in range(1, a.steps + 1):
         idxs = rng.integers(0, len(train_recs), a.bs).tolist()
         chunk = [train_recs[i] for i in idxs]
-        quals = [QUALITIES[int(rng.integers(0, len(QUALITIES)))] for _ in chunk]  # diverse-quality mix
+        quals = (["clean"] * len(chunk) if getattr(a, "clean_only", False)
+                 else [QUALITIES[int(rng.integers(0, len(QUALITIES)))] for _ in chunk])  # diverse-quality mix (clean_only: train CLEAN-only to establish the clean-lift ceiling)
         ba = build_train_batch(chunk, quals, tok, mode, dev)
         feat = _feat_batch(chunk, quals, mode, dev, rng=rng)
         with model.injection(feat, ba["mention"], enabled=True):
@@ -377,6 +378,9 @@ def main():
     ap.add_argument("--regime", default="small", help="{small,large,hard} (see run_glados LIVE_REGIMES)")
     ap.add_argument("--readout", default="both", choices=["rich", "point", "both"])
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--clean_only", action="store_true",
+                    help="CONTROL: train on CLEAN organ output only (no partial/wrong/corrupted) to "
+                         "establish the clean-lift CEILING before trusting the quality-mix curve")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()

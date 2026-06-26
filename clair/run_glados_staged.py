@@ -634,12 +634,65 @@ def build_live_pool(rng, rungs, split, per_rung, det_only=False, two_stream=Fals
             ded = EX.dedP(oc, oc.full())
             rec = make_record(p, ded, "full")          # surv := dedₚ (oracle); prompt has the facts
             rec["tgt"] = surv_from_dom(ded, p.n, K)     # dedₚ target for the dominate-dedₚ aux loss
+            rec["csp"] = oc                             # the organ_csp structure for the bank+composer
+            if rg in HARD:                              # eqchain/forcedcolor are path-structured
+                rec["tags"] = ("path",)
             if two_stream:
                 # TWO-STREAM backstop: α reads the FULL text (to compile the constraints), but the LM
                 # GENERATES from a fact-ablated CELLS prompt (roster + question only) + the injected
                 # lattice — so the organ is the ONLY route to the answer (the easy text path is removed).
                 cells = make_record(p, ded, "cells")
                 rec["alpha_prompt"] = rec["prompt"]; rec["alpha_mentions"] = rec["mentions"]
+                rec["prompt"] = cells["prompt"]; rec["mentions"] = cells["mentions"]
+            recs.append(rec); got += 1
+    rng.shuffle(recs)
+    return recs
+
+
+def build_diverse_live_pool(rng, jsonl_path, rungs, per_rung, det_only=True, two_stream=True):
+    """REAL-NL live records (the blocker-7 generalization frontier): the α-stream is a held-out Bedrock
+    PHRASING of the problem (r['text']) — α must compile the constraints from natural language it has
+    never seen — while the gen-stream stays the fact-ablated cells prompt. Mirrors build_live_pool but
+    sources the text + facts from the diverse curriculum jsonl. Use with bank_woven.eval_real_nl to
+    measure how far the live α-compile transfers off the canonical templates."""
+    by_rung = {rg: [] for rg in rungs}
+    for line in open(jsonl_path):
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        rg = r["relation"]
+        if rg not in by_rung or r["d"] > D_MAX or r["n"] > N_MAX:
+            continue
+        by_rung[rg].append(r)
+    recs = []
+    for rg in rungs:
+        pool = by_rung[rg]
+        if not pool:
+            continue
+        idx = rng.choice(len(pool), size=min(per_rung * 4, len(pool)), replace=False)
+        got = 0
+        for i in idx:
+            if got >= per_rung:
+                break
+            r = pool[int(i)]
+            facts = _facts_from_record(r)
+            p = CU.Problem(r["relation"], r["n"], r["d"], r["kind"], facts, r["query"], r["answer"],
+                           r["determined"], r["vnames"])
+            if det_only and not p.determined:
+                continue
+            oc = organ_csp(p)
+            try:
+                assert_budget(oc)
+            except AssertionError:
+                continue
+            ded = EX.dedP(oc, oc.full())
+            rec = make_record(p, ded, "full")
+            rec["tgt"] = surv_from_dom(ded, p.n, K); rec["csp"] = oc
+            if two_stream:
+                cells = make_record(p, ded, "cells")
+                drec = make_record(p, ded, "diverse", r["text"])     # REAL NL as α's compile stream
+                rec["alpha_prompt"] = drec["prompt"]; rec["alpha_mentions"] = drec["mentions"]
                 rec["prompt"] = cells["prompt"]; rec["mentions"] = cells["mentions"]
             recs.append(rec); got += 1
     rng.shuffle(recs)
