@@ -45,33 +45,49 @@ from . import permgroup as pg
 
 
 # --------------------------------------------------------------------------- problem generation
-def rand_subgroup_problem(rng: random.Random, n_lo=4, n_hi=6, gap_only=False, tries=40):
-    """Sample a solvable σ∈⟨gens⟩ problem with a couple of unary clues. If gap_only, keep resampling
-    until the certified local fixpoint ABSTAINS below dedₚ (the cases the organ must earn)."""
+# skills (composable certified reductions) the corpus must COVER + chain:
+#   U = unary clues (always on)   O = ordering σ(i)<σ(j)   G = subgroup σ∈⟨gens⟩
+def rand_problem(rng: random.Random, skills, n_lo=4, n_hi=6, gap_only=False, tries=60):
+    """Sample a solvable problem whose ACTIVE skills == `skills` (a subset of {'O','G'}); unary clues
+    always present. If gap_only, require the certified LOCAL fixpoint to abstain below dedₚ (so the
+    instance genuinely needs the reduction(s)). Returns (PermProblem, tag) or (None, None)."""
     for _ in range(tries):
         n = rng.randint(n_lo, n_hi)
         full = tuple(frozenset(range(n)) for _ in range(n))
-        gens = []
-        for _ in range(rng.randint(1, 2)):
-            p = list(range(n)); rng.shuffle(p); gens.append(tuple(p))
+        gens = ()
+        order = ()
+        if "G" in skills:
+            gg = []
+            for _ in range(rng.randint(1, 2)):
+                p = list(range(n)); rng.shuffle(p); gg.append(tuple(p))
+            gens = tuple(gg)
+        if "O" in skills:
+            pts = list(range(n)); rng.shuffle(pts)
+            k = rng.randint(1, max(1, n - 2))
+            order = tuple((pts[t], pts[t + 1]) for t in range(k))
         un = list(full)
         for _ in range(rng.randint(1, 2)):           # clues: fix or forbid an image
             i = rng.randrange(n)
-            if rng.random() < 0.6:
-                un[i] = frozenset({rng.randrange(n)})            # fix σ(i)
+            if rng.random() < 0.55:
+                un[i] = frozenset({rng.randrange(n)})
             else:
-                un[i] = frozenset(v for v in range(n) if v != rng.randrange(n))   # forbid one image
-        prob = pg.PermProblem(n, tuple(un), gens=tuple(gens))
-        sols = pg.brute(prob, limit=1)
-        if not sols:
+                un[i] = frozenset(v for v in range(n) if v != rng.randrange(n))
+        prob = pg.PermProblem(n, tuple(un), order=order, gens=gens)
+        if not pg.brute(prob, limit=1):
             continue
         if gap_only:
             dom, _ = pg.to_fixpoint(pg.certified_step, prob)
-            ex = pg.exact_dedP(prob)
-            if dom == ex:                              # certified already complete -> not interesting
+            if dom == pg.exact_dedP(prob):
                 continue
-        return prob
-    return prob
+        tag = "".join(s for s in ("O", "G") if s in skills) or "U"
+        return prob, tag
+    return None, None
+
+
+def rand_subgroup_problem(rng, n_lo=4, n_hi=6, gap_only=False, tries=40):
+    """Back-compat: a pure subgroup ({'G'}) instance."""
+    p, _ = rand_problem(rng, {"G"}, n_lo, n_hi, gap_only=gap_only, tries=tries)
+    return p
 
 
 def featurize(prob: pg.PermProblem):
@@ -104,9 +120,14 @@ def featurize(prob: pg.PermProblem):
     for i in range(n):
         for v in cert[i]:
             cert_alive[i, v] = 1.0
+    Ord = np.zeros((n, n), np.float32)              # Ord[i,j]=1 iff constraint σ(i)<σ(j)
+    for (i, j) in prob.order:
+        Ord[i, j] = 1.0
     solvable = float(any(len(c) > 0 for c in ex) and all(len(c) > 0 for c in ex))
-    return {"n": n, "A": A, "given": given, "P": P, "orbit": orbit, "Q": Q,
-            "target": target, "cert": cert_alive, "solvable": solvable}
+    tag = "".join(s for s, on in (("O", bool(prob.order)), ("G", bool(prob.gens))) if on) or "U"
+    n_skills = (1 if prob.order else 0) + (1 if prob.gens else 0)
+    return {"n": n, "A": A, "given": given, "P": P, "orbit": orbit, "Q": Q, "Ord": Ord,
+            "target": target, "cert": cert_alive, "solvable": solvable, "tag": tag, "n_skills": n_skills}
 
 
 def collate(items, device, n_max):
@@ -118,6 +139,7 @@ def collate(items, device, n_max):
     target = np.zeros((B, n_max, n_max), np.float32)
     cert = np.zeros((B, n_max, n_max), np.float32)
     Q = np.zeros((B, n_max, n_max, n_max, n_max), np.float32)
+    Ord = np.zeros((B, n_max, n_max), np.float32)
     valid = np.zeros((B, n_max, n_max), np.float32)      # real (i,v) cells
     pvalid = np.zeros((B, n_max), np.float32)            # real points
     solvable = np.zeros(B, np.float32)
@@ -125,11 +147,12 @@ def collate(items, device, n_max):
         n = it["n"]
         A[b, :n, :n] = it["A"]; P[b, :n, :n] = it["P"]; orbit[b, :n, :n] = it["orbit"]
         given[b, :n] = it["given"]; target[b, :n, :n] = it["target"]; cert[b, :n, :n] = it["cert"]
-        Q[b, :n, :n, :n, :n] = it["Q"]
+        Q[b, :n, :n, :n, :n] = it["Q"]; Ord[b, :n, :n] = it["Ord"]
         valid[b, :n, :n] = 1.0; pvalid[b, :n] = 1.0; solvable[b] = it["solvable"]
     t = lambda a: torch.as_tensor(a, device=device)
     return {"A": t(A), "P": t(P), "orbit": t(orbit), "given": t(given), "target": t(target),
-            "cert": t(cert), "Q": t(Q), "valid": t(valid), "pvalid": t(pvalid), "solvable": t(solvable)}
+            "cert": t(cert), "Q": t(Q), "Ord": t(Ord), "valid": t(valid), "pvalid": t(pvalid),
+            "solvable": t(solvable)}
 
 
 # --------------------------------------------------------------------------- the organ
@@ -155,6 +178,7 @@ class PermOrgan(nn.Module):
         self.cell_in = nn.Linear(fin, d)
         self.row_ln = nn.LayerNorm(d); self.col_ln = nn.LayerNorm(d); self.mix_ln = nn.LayerNorm(d)
         self.gproj = nn.Linear(1, d)                        # inject the group-pair support signal
+        self.oproj = nn.Linear(2, d)                        # inject the ordering (σ(i)<σ(j)) support signal
         # context combiner: [self, row(point) ctx, col(value) ctx] -> update
         self.upd = nn.Sequential(nn.Linear(3 * d, d), nn.SiLU(), nn.Linear(d, d))
         self.mixer = SwiGLU(d)
@@ -164,7 +188,13 @@ class PermOrgan(nn.Module):
     def forward(self, ba):
         A, P, orbit, given, valid = ba["A"], ba["P"], ba["orbit"], ba["given"], ba["valid"]
         Q = ba["Q"]                                            # [B,n,n,n,n] pairwise group realizability
+        Ord = ba["Ord"]                                        # [B,n,n] ordering edges σ(i)<σ(j)
         B, n, _ = A.shape
+        vals = torch.arange(n, device=A.device)
+        gt_mask = (vals.view(n, 1) < vals.view(1, n)).float()  # [v,w]=1 if w>v
+        lt_mask = (vals.view(n, 1) > vals.view(1, n)).float()  # [v,w]=1 if w<v
+        out_deg = Ord.sum(2)                                   # # of j with σ(i)<σ(j)
+        in_deg = Ord.sum(1)                                    # # of k with σ(k)<σ(i)
         alive = valid.clone()                                  # start: full grid (masked to real cells)
         gv = given.unsqueeze(-1).expand(-1, -1, n)             # broadcast given flag over values
         feats = torch.stack([alive, A, P, orbit, gv], dim=-1)  # [B,n,n,fin]
@@ -182,6 +212,16 @@ class PermOrgan(nn.Module):
             supp = supp * (1.0 - eye.squeeze(-1))                        # drop j==i
             gsupp = supp.sum(3) / (n - 1 if n > 1 else 1)               # [B,n,n] mean over j
             h = h + self.gproj(gsupp.unsqueeze(-1)) * vmask
+            # ---- dynamic ORDERING support (differentiable bounds-consistency) ----
+            #   for cell (i,v): OUT edges i<j need some w>v alive at j; IN edges k<i need some w<v alive at k
+            gt_j = (belief.unsqueeze(2) * gt_mask.view(1, 1, n, n)).amax(-1)   # [B,j,v]=max alive value >v at j
+            lt_k = (belief.unsqueeze(2) * lt_mask.view(1, 1, n, n)).amax(-1)   # [B,k,v]=max alive value <v at k
+            out_s = torch.einsum("bij,bjv->biv", Ord, gt_j) / out_deg.clamp(min=1).unsqueeze(-1)
+            in_s = torch.einsum("bki,bkv->biv", Ord, lt_k) / in_deg.clamp(min=1).unsqueeze(-1)
+            out_s = torch.where(out_deg.unsqueeze(-1) > 0, out_s, torch.ones_like(out_s))   # neutral if no edges
+            in_s = torch.where(in_deg.unsqueeze(-1) > 0, in_s, torch.ones_like(in_s))
+            osupp = torch.stack([out_s, in_s], dim=-1)                   # [B,n,n,2]
+            h = h + self.oproj(osupp) * vmask
             row_ctx = self.row_ln((h * vmask).sum(2, keepdim=True) / pden).expand(-1, -1, n, -1)  # point ctx
             col_ctx = self.col_ln((h * vmask).sum(1, keepdim=True) / vden).expand(-1, n, -1, -1)  # value ctx
             h = h + self.upd(torch.cat([h, row_ctx, col_ctx], dim=-1)) * vmask
@@ -258,31 +298,39 @@ def evaluate(model, items, device, n_max, bs=128, thr=0.5):
 
 
 # --------------------------------------------------------------------------- data + train
-def gen_items(rng, k, n_lo, n_hi, gap_only=False):
-    return [featurize(rand_subgroup_problem(rng, n_lo, n_hi, gap_only=gap_only)) for _ in range(k)]
+def gen_items(rng, k, n_lo, n_hi, skill_sets, gap_only=False):
+    out = []
+    guard = 0
+    while len(out) < k and guard < k * 50:
+        guard += 1
+        skills = skill_sets[rng.randrange(len(skill_sets))]
+        prob, _ = rand_problem(rng, skills, n_lo, n_hi, gap_only=gap_only)
+        if prob is not None:
+            out.append(featurize(prob))
+    return out
 
 
-def train(model, device, steps, rng, n_max, n_lo, n_hi, bs=64, lr=2e-3, gap_frac=0.5,
+def train(model, device, steps, rng, n_max, n_lo, n_hi, train_skill_sets, bs=64, lr=2e-3, gap_frac=0.5,
           log_every=100, quiet=False):
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     log = []
-    pool = gen_items(rng, max(bs * 6, 384), n_lo, n_hi, gap_only=False)
-    gap_pool = gen_items(rng, max(bs * 4, 256), n_lo, n_hi, gap_only=True)   # upweight the hard gap cases
+    mk = lambda go: gen_items(rng, max(bs * 6, 384), n_lo, n_hi, train_skill_sets, gap_only=go)
+    pool = mk(False)
+    gap_pool = mk(True)             # upweight the hard cases that genuinely need the reduction
     for s in range(1, steps + 1):
         model.train()
         if s % 250 == 0:
-            pool = gen_items(rng, max(bs * 6, 384), n_lo, n_hi, gap_only=False)
-            gap_pool = gen_items(rng, max(bs * 4, 256), n_lo, n_hi, gap_only=True)
+            pool = mk(False); gap_pool = mk(True)
         ng = int(bs * gap_frac)
-        batch = [gap_pool[i] for i in rng.sample(range(len(gap_pool)), ng)] + \
-                [pool[i] for i in rng.sample(range(len(pool)), bs - ng)]
+        batch = [gap_pool[i] for i in rng.sample(range(len(gap_pool)), min(ng, len(gap_pool)))] + \
+                [pool[i] for i in rng.sample(range(len(pool)), bs - min(ng, len(gap_pool)))]
         ba = collate(batch, device, n_max)
         loss, parts = organ_loss(model, ba)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         if not quiet and (s % log_every == 0 or s == 1):
-            ev = evaluate(model, gap_pool[:256], device, n_max)
+            ev = evaluate(model, gap_pool[:256] or pool[:256], device, n_max)
             row = {"step": s, "loss": float(loss), **parts, "fe": ev["false_elim"],
                    "exact": ev["exact_match_rate"], "gap_closed": ev["gap_closed_rate"]}
             log.append(row)
@@ -303,6 +351,8 @@ def main():
     ap.add_argument("--R", type=int, default=6)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=str, default="runs/perm_organ")
+    ap.add_argument("--cover_comp", action="store_true",
+                    help="include the O+G composition in training (coverage arm of the comp-gen study)")
     args = ap.parse_args()
     if args.smoke:
         args.steps, args.bs = 500, 48
@@ -310,43 +360,67 @@ def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     rng = random.Random(args.seed)
     np.random.seed(args.seed); torch.manual_seed(args.seed)
-    n_max = args.n_hi
-    print(f"device={dev}  n∈[{args.n_lo},{args.n_hi}]  d={args.d} R={args.R}  task=subgroup-membership narrowing")
+    n_max = args.n_hi + 1                                          # leave room for OOD n=n_hi+1
+
+    # COMPOSITIONAL-GENERALIZATION setup: train on SINGLE skills only ({O} and {G} seen separately,
+    # NEVER together); hold out the {O,G} composition as the OOD-composition split (arXiv 2507.07207:
+    # the model must compose skills it only ever saw alone).
+    HELDOUT = {"O", "G"}
+    TRAIN_SKILLS = [{"O"}, {"G"}, {"O", "G"}] if args.cover_comp else [{"O"}, {"G"}]
+    print(f"device={dev}  n∈[{args.n_lo},{args.n_hi}]  d={args.d} R={args.R}")
+    print(f"corpus: train skills={[''.join(sorted(s)) for s in TRAIN_SKILLS]} (single-skill); "
+          f"HELD-OUT composition={''.join(sorted(HELDOUT))} (never seen together)")
 
     model = PermOrgan(d=args.d, R=args.R).to(dev)
     print(f"perm-organ params: {sum(p.numel() for p in model.parameters())}")
 
     t0 = time.time()
-    log = train(model, dev, args.steps, rng, n_max, args.n_lo, args.n_hi, bs=args.bs,
-                quiet=False)
+    log = train(model, dev, args.steps, rng, n_max, args.n_lo, args.n_hi, TRAIN_SKILLS, bs=args.bs)
     print(f"train wall: {time.time()-t0:.1f}s")
 
-    print("\nbuilding eval sets ...", flush=True)
-    n_eval = 256 if args.smoke else 1000
-    all_set = gen_items(rng, n_eval, args.n_lo, args.n_hi, gap_only=False)
-    gap_set = gen_items(rng, n_eval, args.n_lo, args.n_hi, gap_only=True)
-    ood_set = gen_items(rng, n_eval // 2, args.n_hi + 1, args.n_hi + 1, gap_only=True)  # OOD larger n
+    print("\nbuilding eval sets (per-skill + held-out composition) ...", flush=True)
+    n_eval = 300 if args.smoke else 800
+    sets = {
+        "seen O (ordering only)":      gen_items(rng, n_eval, args.n_lo, args.n_hi, [{"O"}], gap_only=True),
+        "seen G (subgroup only)":      gen_items(rng, n_eval, args.n_lo, args.n_hi, [{"G"}], gap_only=True),
+        "OOD-COMP O+G (held out)":     gen_items(rng, n_eval, args.n_lo, args.n_hi, [HELDOUT], gap_only=True),
+        f"OOD-COMP O+G, larger n={args.n_hi+1}": gen_items(rng, n_eval // 2, args.n_hi + 1, args.n_hi + 1,
+                                                           [HELDOUT], gap_only=True),
+    }
+    evs = {name: evaluate(model, s, dev, n_max) for name, s in sets.items()}
 
-    ev_all = evaluate(model, all_set, dev, n_max)
-    ev_gap = evaluate(model, gap_set, dev, n_max)
-    ev_ood = evaluate(model, ood_set, dev, args.n_hi + 1)
-
-    print("\n================ SOUNDNESS / COMPLETENESS vs CERTIFIED + EXACT dedₚ ================")
+    print("\n========== SOUNDNESS / COMPLETENESS / COMPOSITIONAL GENERALIZATION (vs exact dedₚ) ==========")
     def show(name, ev):
         print(f"\n[{name}]  n={ev['n']}")
-        print(f"  SOUNDNESS  organ false-elim vs dedₚ : {ev['false_elim']:5d}  (certified: {ev['cert_false_elim']}; both want 0)")
+        print(f"  SOUNDNESS  organ false-elim vs dedₚ : {ev['false_elim']:5d}  (certified: {ev['cert_false_elim']}; want 0)")
         print(f"  COMPLETE   organ==dedₚ exactly       : {ev['exact_match_rate']*100:6.2f}%")
         print(f"  SOLVED     certified={ev['cert_solved']:4d}  organ={ev['organ_solved']:4d}  dedₚ(max)={ev['ded_solved']:4d}")
-        print(f"  GAP-CLOSED organ kills {ev['gap_closed']}/{ev['gap_cells']} of the certified-abstain cells "
+        print(f"  GAP-CLOSED organ kills {ev['gap_closed']}/{ev['gap_cells']} certified-abstain cells "
               f"({ev['gap_closed_rate']*100:.1f}%)")
-    show("ALL solvable subgroup problems", ev_all)
-    show("GAP-ONLY (certified abstains)", ev_gap)
-    show(f"OOD larger n={args.n_hi+1} (gap-only)", ev_ood)
+    for name in sets:
+        show(name, evs[name])
+
+    # ---- organ-grounded reduction TRACE on a sample held-out composition (the chain of skills) ----
+    print("\n---- sample organ-grounded reduction trace (held-out O+G composition) ----")
+    for _ in range(200):
+        prob, tag = rand_problem(rng, HELDOUT, args.n_lo, args.n_hi, gap_only=True)
+        if prob is None:
+            continue
+        dom, trace = pg.certified_trace(prob)
+        ops = [t["op"] for t in trace]
+        if len({"ordering", "group_pair"} & set(ops)) == 2 or len(set(ops)) >= 3:
+            print(f"  n={prob.n} skills={tag}  #constraints: order={len(prob.order)} gens={len(prob.gens)}")
+            for st in trace:
+                print(f"    -> {st['op']:12s} removed {st['removed']:2d}  (alive now {st['alive_after']})")
+            print(f"    final outcome: {pg.status(dom)}  (the chained reductions reach dedₚ: "
+                  f"{dom == pg.exact_dedP(prob)})")
+            break
 
     out = Path(args.out + ("_smoke" if args.smoke else "") + ".json")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"args": vars(args), "train_log": log,
-                               "all": ev_all, "gap": ev_gap, "ood": ev_ood}, indent=2))
+    out.write_text(json.dumps({"args": vars(args), "train_skills": [sorted(s) for s in TRAIN_SKILLS],
+                               "heldout": sorted(HELDOUT), "train_log": log,
+                               "eval": {k: v for k, v in evs.items()}}, indent=2))
     ckpt = Path(args.out + ("_smoke" if args.smoke else "") + ".pt")
     torch.save({"state_dict": model.state_dict(), "args": vars(args)}, ckpt)
     print(f"\nwrote {out} and {ckpt}")
