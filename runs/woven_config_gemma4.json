@@ -1,0 +1,26 @@
+{
+  "model": "google/gemma-4-12B-it",
+  "model_type": "gemma4_unified",
+  "architectures": [
+    "Gemma4UnifiedForConditionalGeneration"
+  ],
+  "loader": "AutoModelForCausalLM",
+  "peft_lora": true,
+  "n_layers": 48,
+  "hidden_dim": 3840,
+  "K": 8,
+  "mid_layer": 23,
+  "inject_layer": 35,
+  "decoder_layers_path": "language_model.layers",
+  "layer_types": [
+    "full_attention",
+    "sliding_attention"
+  ],
+  "quant": "bnb-nf4 double-quant, bf16 compute",
+  "dtype": "bfloat16",
+  "noop_max_abs": 0.0,
+  "gate_open_max_abs": 35.845375061035156,
+  "forward_ok": true,
+  "vram_peak_gb": 11.7,
+  "noop_bitwise": true
+}
