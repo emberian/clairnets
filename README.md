@@ -13,6 +13,33 @@ Grounded in: the Lattice Deduction Transformer (arXiv 2605.08605) + its **Lean**
 free if checked; completeness = lattice-level × problem-width — *proven*); CliffordNet's geometric product
 (2601.06793); the automata-shortcuts paper (computation distributes across depth). See `notes/`.
 
+## Architecture (target)
+
+```mermaid
+flowchart TB
+  P["problem (text)"] --> E["OLMo layers 1 … k"]
+  E -->|"hidden state at layer k"| G(("residual add"))
+  E -. read .-> W["WRITE head:<br/>extract constraint program"]
+  W --> O["organ: narrow / chain / energy<br/>checked · differentiable"]
+  O -. "certified state · zero-init gate" .-> G
+  G --> L["OLMo layers k+1 … N"]
+  L --> H["LM head → answer token(s)"]
+  H --> V{"exact verifier"}
+  V -->|"verifiable reward"| T["train: LoRA + organ"]
+  T -. grad .-> W
+  T -. grad .-> O
+  T -. "LoRA" .-> L
+```
+
+Read it as one forward pass up the layer stack: OLMo runs layers `1…k`; at layer `k` the **WRITE head**
+reads the hidden state and compiles a constraint program; the **organ** narrows/derives it (checked,
+differentiable); its certified state is **added back into the same hidden state** through a zero-init gate
+(so it's a no-op until trained); OLMo runs the remaining layers `k+1…N` on that modified state and its
+**LM head generates the answer token(s)**; an **exact verifier** checks the output and feeds the
+**verifiable reward** that trains the organ + LoRA. Solid arrows = the forward pass; dotted = the organ's
+read / write-back / gradients. *(Today's code is the terminal-readout subset; woven + generative +
+multi-organ are the live tracks.)*
+
 ## What we've found (honest)
 - **The (d) bet works**: a frozen LLM + a checked deductor gains calibrated abstention it otherwise lacks
   (augmented det-acc 88.8% vs base OLMo 1.4%). **RLVR** (GRPO on the *exact* verifiable reward) fixes
