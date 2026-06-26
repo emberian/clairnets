@@ -19,6 +19,12 @@ terse, newest-first. Append new entries at the top. Negatives are results.
 - **Parallel deductor training + new ideas** (5 boxes): depth-vs-affine-wall R-sweep (interim: blade ahead at
   R=2; F₄ macro distills 100% with capacity), general-deductor→excellence, macro-deduction (log-depth shortcut),
   A-vs-B diversity, staged generative assembly.
+- **Macro-deduction → YES (with a precise caveat).** Checked macros give sublinear-depth sound reasoning:
+  `⌈log₂L⌉` macro-applications replace ~L base steps, identical exact dedₚ fixpoint, **0 false-elim, verified to
+  L=256** (32× @ L=256). The compression is the *symbolic transition-monoid composition* (graph-squaring), not
+  the neural net (which is a fidelity probe — sound to k=8). Cost is poly in state space `S=k^w`, so it only
+  works on the **bounded-width** side — *width is the wall, bounded-width depth is a log-depth shortcut.* Geometry
+  gave no edge on these (too-simple) automata transitions (honest null for GA-helps-macro).
 - **Code optimizations**: backtracking `exact_dedP` (was `d^n`, hung at n≈5; 14-cell/5-val chain now 0.1ms) →
   unblocks hard/large-N. `infra/box_run.sh` helper. Contributor docs (README rewrite + CONTRIBUTING + GLOSSARY).
 
