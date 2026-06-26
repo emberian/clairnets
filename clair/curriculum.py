@@ -85,10 +85,42 @@ def fact_constraint(fact, d):
     if k == "sum":
         _, a, b, c = fact
         return C._rel((a, b, c), lambda t, d=d: (t[0] + t[1]) % d == t[2], d)
+    if k == "xor":
+        _, a, b, c = fact
+        return C._rel((a, b, c), lambda t: (t[0] ^ t[1] ^ t[2]) == 0, d)
+    if k == "par":                                       # variadic parity: XOR over the scope == 0
+        scope = tuple(fact[1])
+        return C._rel(scope, lambda t: sum(t) % 2 == 0, d)
     if k == "alldiff":
         scope = tuple(fact[1])
         return C._rel(scope, lambda t: len(set(t)) == len(t), d)
     raise ValueError(f"unknown fact kind {k!r}")
+
+
+def gen_parity_k(rng, n_lo=5, n_hi=8, kmin=3, kmax=5, pin_frac=0.7):
+    """Boolean (d=2) AFFINE constraints of TUNABLE ARITY k in [kmin,kmax]: each non-input cell is the
+    XOR of (k-1) earlier cells, so the k cells (k-1 inputs + output) satisfy a k-ary parity == 0.
+    Witness-first ⇒ always solvable. Set kmin=kmax=K for a pure arity-K rung (the higher-grade /
+    unseen-arity probe). Same affine 'wall' as xor, lifted to arbitrary arity."""
+    n = int(rng.integers(n_lo, n_hi + 1))
+    d = 2
+    s = rng.integers(0, 2, n)
+    facts = []
+    kmax = min(kmax, n)                                       # need k cells available
+    for c in range(max(kmin, 2), n):                         # define each later cell as a parity
+        k = int(rng.integers(kmin, kmax + 1))
+        k = min(k, c + 1)                                    # need (k-1) earlier cells + c
+        if k < 2:
+            continue
+        inputs = list(rng.choice(c, size=k - 1, replace=False))
+        s[c] = 0
+        for a in inputs:
+            s[c] ^= int(s[a])
+        facts.append(("par", tuple(inputs + [c])))
+    for i in range(min(kmin, n)):                            # pin a subset of the early inputs
+        if rng.random() < pin_frac:
+            facts.append(("pin", i, int(s[i])))
+    return n, d, "number", facts, s
 
 
 def facts_satisfied_by(facts, s, d) -> bool:
@@ -216,6 +248,27 @@ def gen_arithmetic(rng, n_lo=3, n_hi=5, d_lo=4, d_hi=7, pin_frac=0.7):
     return n, d, "number", facts, s
 
 
+def gen_xor(rng, n_lo=3, n_hi=5, pin_frac=0.7):
+    """Boolean parity (AFFINE, d=2): each non-input cell is the XOR of two earlier cells, so
+    a^b^c==0 over the triple — the fully-symmetric arity-3 affine relation. This is the
+    unbounded-width 'XOR wall' (clair.csp.polymorphism_signature: affine, no majority): per-cell
+    AC must ABSTAIN, the level-2 factor lattice solves. Distinct from `arithmetic` (modular sum
+    over d>2): same arity-3 affine STRUCTURE, different table — the unseen-relation transfer probe."""
+    n = int(rng.integers(n_lo, n_hi + 1))
+    d = 2
+    s = rng.integers(0, 2, n)
+    facts = []
+    n_inputs = max(2, n - int(rng.integers(1, max(2, n - 1))))
+    for c in range(n_inputs, n):                              # define each non-input as a parity
+        a, b = rng.choice(c, size=2, replace=False)
+        s[c] = int(s[a]) ^ int(s[b])
+        facts.append(("xor", int(a), int(b), c))
+    for i in range(n_inputs):                                # pin a subset of inputs
+        if rng.random() < pin_frac:
+            facts.append(("pin", i, int(s[i])))
+    return n, d, "number", facts, s
+
+
 def gen_alldiff(rng, n_lo=4, n_hi=6, pin_frac=0.4):
     """One all-different block over the cells + some pins (latin-ish forcing)."""
     n = int(rng.integers(n_lo, n_hi + 1))
@@ -233,6 +286,7 @@ GENERATORS = {
     "equality": gen_equality,
     "ordering": gen_ordering,
     "arithmetic": gen_arithmetic,
+    "xor": gen_xor,
     "alldiff": gen_alldiff,
 }
 
@@ -273,6 +327,11 @@ def _fact_sentence(p: Problem, f) -> str:
         return f"{E(f[1])} comes before {E(f[2])} or in the same position."
     if k == "sum":
         return f"{E(f[1])} plus {E(f[2])} equals {E(f[3])} (modulo {p.d})."
+    if k == "xor":
+        return f"{E(f[1])}, {E(f[2])} and {E(f[3])} have even parity (XOR is 0)."
+    if k == "par":
+        names = ", ".join(E(i) for i in f[1])
+        return f"{names} have even parity (XOR is 0)."
     if k == "alldiff":
         names = ", ".join(E(i) for i in f[1])
         return f"{names} all take different values."
@@ -317,6 +376,10 @@ def norm_facts(facts) -> frozenset:
         elif k == "sum":
             a, b = sorted((f[1], f[2]))                       # a+b commutes
             out.add(("sum", a, b, f[3]))
+        elif k == "xor":
+            out.add(("xor",) + tuple(sorted((f[1], f[2], f[3]))))  # a^b^c==0 fully symmetric
+        elif k == "par":
+            out.add(("par", tuple(sorted(f[1]))))             # variadic parity fully symmetric
         else:                                                 # lt, le directional
             out.add((k, f[1], f[2]))
     return frozenset(out)
