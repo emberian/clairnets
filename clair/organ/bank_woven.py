@@ -144,18 +144,25 @@ class BankWoven(nn.Module):
     frozen/certified bank (no trainable organ params). α is grounded by the direct J0 dominate-dedₚ."""
 
     def __init__(self, peft_model, D, K, alpha, composer: BankComposerOrgan, mid_layer, inject_layer,
-                 gamma_hidden=256, theta=0.5):
+                 gamma_hidden=256, theta=0.5, rich=True):
         super().__init__()
         from ..oracle_readout import _decoder_layers
         self.model = peft_model
         self.alpha = alpha                       # DenseLatentProjector (trainable)
         self.composer = composer                 # BankComposerOrgan (frozen / certified)
-        self.gamma = OracleGamma(D, K, gamma_hidden)
+        # RICH-STATE readout (DEFAULT, the alien-consumer finding): γ reads the FULL composed candidate
+        # SET per cell PLUS [|set|/d, reliability] — reliability = narrowing fraction (1.0 = singleton,
+        # 0 = full domain). The LM mines the partial lattice + discounts low-reliability cells, so an
+        # α-miscompile degrades gracefully instead of dragging the LM off a cliff. rich=False collapses
+        # to the bare set (the ablation).
+        self.rich = rich
+        self.Fin = K + 2 if rich else K
+        self.gamma = OracleGamma(D, self.Fin, gamma_hidden)
         self.D, self.K = D, K
         self.mid_layer, self.inject_layer = mid_layer, inject_layer
         self.theta = theta
         self._mention = self._attn = None
-        self._csps = None
+        self._csps = self._dvec = None
         self._inject = False
         self._capture = False
         self._override = None
@@ -166,6 +173,22 @@ class BankWoven(nn.Module):
         layers = _decoder_layers(peft_model)
         self._mid_handle = layers[mid_layer].register_forward_hook(self._mid_hook)
         self._inj_handle = layers[inject_layer].register_forward_hook(self._inj_hook)
+
+    def _rich_from_set(self, surv_set, dvec):
+        """[B,N,K] composed candidate SET (+ per-instance domain sizes dvec[B]) → the rich feature
+        [B,N,K+2] = [set(K), |set|/d, reliability]. reliability = 1-(|set|-1)/(d-1) (the alien-consumer
+        rich-state encoding; reused so the bridge readouts and the narrow readout share one schema)."""
+        B, N, K = surv_set.shape
+        card = surv_set.sum(-1)                                       # [B,N]
+        if dvec is None:
+            d = torch.full((B, 1), float(K), device=surv_set.device)
+        else:
+            d = dvec.to(surv_set.device).float().clamp_min(1.0).view(B, 1)
+        feat = surv_set.new_zeros(B, N, K + 2)
+        feat[..., :K] = surv_set
+        feat[..., K] = (card / d).clamp(0.0, 1.0)
+        feat[..., K + 1] = (1.0 - (card - 1).clamp_min(0.0) / (d - 1).clamp_min(1.0)).clamp(0.0, 1.0)
+        return feat
 
     # ---- hooks ----
     def _mid_hook(self, module, args, output):
@@ -196,21 +219,24 @@ class BankWoven(nn.Module):
             surv = self._captured_surv
         if not self._inject:
             return output
-        delta = self.gamma.delta(surv.to(hs.device), self._mention.to(hs.device))
+        feat = self._rich_from_set(surv, self._dvec) if self.rich else surv      # rich-state readout
+        delta = self.gamma.delta(feat.to(hs.device), self._mention.to(hs.device))
         hs = hs + (torch.tanh(self.gamma.alpha) * delta).to(hs.dtype)
         return (hs,) + tuple(output[1:]) if isinstance(output, tuple) else hs
 
     # ---- context manager ----
     @contextlib.contextmanager
-    def live(self, mention, attn, *, inject, capture=False, override=None, csps=None):
-        old = (self._mention, self._attn, self._inject, self._capture, self._override, self._csps)
+    def live(self, mention, attn, *, inject, capture=False, override=None, csps=None, dvec=None):
+        old = (self._mention, self._attn, self._inject, self._capture, self._override, self._csps,
+               self._dvec)
         self._mention, self._attn = mention, attn
-        self._inject, self._capture, self._override, self._csps = inject, capture, override, csps
+        self._inject, self._capture, self._override, self._csps, self._dvec = (
+            inject, capture, override, csps, dvec)
         try:
             yield
         finally:
-            (self._mention, self._attn, self._inject, self._capture, self._override,
-             self._csps) = old
+            (self._mention, self._attn, self._inject, self._capture, self._override, self._csps,
+             self._dvec) = old
 
     def logits(self, input_ids, attn):
         return self.model(input_ids=input_ids, attention_mask=attn).logits
@@ -253,6 +279,7 @@ def _bank_batch(recs, tok, dev, two_stream):
     from .. import run_glados_staged as G
     ba = G.build_live_batch(recs, tok, dev, two_stream=two_stream)
     ba["csps"] = [csp_spec_for_record(r) for r in recs]
+    ba["dvec"] = torch.tensor([len(r["vnames"]) for r in recs], device=dev)   # domain size per instance
     return ba
 
 
@@ -263,14 +290,15 @@ def verify_noop_bank(model, tok, dev, rec):
     ids = enc["input_ids"].to(dev); attn = torch.ones_like(ids)
     mention = _mention_tensor([rec["mentions"]], enc["offset_mapping"], 1, rec["n"], ids.size(1), dev)
     csps = [csp_spec_for_record(rec)]
+    dvec = torch.tensor([len(rec["vnames"])], device=dev)
     with torch.no_grad():
         base = model.model(input_ids=ids, attention_mask=attn).logits.float()
-    with torch.no_grad(), model.live(mention, attn, inject=True, capture=True, csps=csps):
+    with torch.no_grad(), model.live(mention, attn, inject=True, capture=True, csps=csps, dvec=dvec):
         g0 = model.logits(ids, attn).float()
     noop = float((base - g0).abs().max())
     with torch.no_grad():
         saved = model.gamma.alpha.data.clone(); model.gamma.alpha.data.fill_(2.0)
-        with model.live(mention, attn, inject=True, capture=True, csps=csps):
+        with model.live(mention, attn, inject=True, capture=True, csps=csps, dvec=dvec):
             g1 = model.logits(ids, attn).float()
         model.gamma.alpha.data.copy_(saved)
     return noop, float((base - g1).abs().max())
@@ -293,6 +321,7 @@ def score_bank_woven(model, recs, tok, dev, control="true", bs=8, perm=None, use
     by_rung = {}
     for i in range(0, len(recs), bs):
         chunk = recs[i:i + bs]; Bp = len(chunk); Nmax = max(r["n"] for r in chunk)
+        dvec = torch.tensor([len(r["vnames"]) for r in chunk], device=dev)
         surv = None
         if inject:
             if override_oracle:
@@ -308,10 +337,10 @@ def score_bank_woven(model, recs, tok, dev, control="true", bs=8, perm=None, use
                 pids = penc["input_ids"].to(dev); pattn = penc["attention_mask"].to(dev)
                 pment = _mention_tensor(cap_m, penc["offset_mapping"], Bp, Nmax, pids.size(1), dev)
                 csps = [csp_spec_for_record(r) for r in chunk]
-                with model.live(pment, pattn, inject=False, capture=True, csps=csps):
+                with model.live(pment, pattn, inject=False, capture=True, csps=csps, dvec=dvec):
                     _ = model.logits(pids, pattn)
                 surv = model._captured_surv[:, :Nmax, :].clone()
-            surv = G.apply_control_ext(surv, chunk, control, K, perm)
+            surv = G.apply_control_ext(surv, chunk, control, K, perm)            # control the K-set
         fulls, plens, spans, prob_of = [], [], [], []
         shift = len(fewshot)
         for pi, r in enumerate(chunk):
@@ -325,8 +354,10 @@ def score_bank_woven(model, recs, tok, dev, control="true", bs=8, perm=None, use
         offsets = enc["offset_mapping"]; T = ids.size(1)
         if inject:
             mention = _mention_tensor(spans, offsets, len(fulls), Nmax, T, dev)
-            surv_exp = surv[torch.tensor(prob_of, device=dev)]
-            ctx = model.live(mention, attn, inject=True, capture=False, override=surv_exp)
+            prob_of_idx = torch.tensor(prob_of, device=dev)
+            surv_exp = surv[prob_of_idx]
+            ctx = model.live(mention, attn, inject=True, capture=False, override=surv_exp,
+                             dvec=dvec[prob_of_idx])               # rich channels recomputed from controlled set
         else:
             ctx = model.live(None, None, inject=False)
         base_ctx = model.model.disable_adapter() if (use_base and hasattr(model.model, "disable_adapter")) \
@@ -383,7 +414,8 @@ def bank_controls(model, recs, tok, dev, bs, engage_thr, two_stream=True):
 
 
 # ============================================================ training the bank-woven readout
-def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=True, composer=None):
+def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=True, composer=None,
+                     rich=True):
     """Train the bank-woven readout. Phase A: warm α (+LoRA) on the DIRECT J0 dominate-dedₚ (the SATNet
     grounding fix) so α compiles a real per-cell lattice from host hidden. Phase B: train LoRA + α + γ on
     the answer-span LM CE (γ reads the DETACHED bank-COMPOSED lattice) + the standing J0 α-supervision.
@@ -406,12 +438,13 @@ def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=Tr
         composer = BankComposerOrgan(dev="cpu",
                                      core_ckpt=getattr(a, "core_ckpt", "runs/general_organ_full.pt"),
                                      use_core=getattr(a, "use_core", True))
-    model = BankWoven(peft_model, D, G.K, alpha, composer, mid, inj, gamma_hidden=a.gamma_hidden).to(dev)
+    model = BankWoven(peft_model, D, G.K, alpha, composer, mid, inj, gamma_hidden=a.gamma_hidden,
+                      rich=rich).to(dev)
     model.alpha.float(); model.gamma.float()
     noop, live = verify_noop_bank(model, tok, dev, eval_recs[0])
     from ..oracle_readout import n_trainable
-    print(f"\n  BANK-WOVEN  mid {mid} -> inject {inj}/{nL}  faculties={composer.faculties()}  "
-          f"trainable {n_trainable(model):,}", flush=True)
+    print(f"\n  BANK-WOVEN  mid {mid} -> inject {inj}/{nL}  readout={'rich(set+card+reliability)' if rich else 'set'}"
+          f"  faculties={composer.faculties()}  trainable {n_trainable(model):,}", flush=True)
     print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",
           flush=True)
     lora_params = [p for n, p in model.model.named_parameters() if p.requires_grad]
@@ -423,10 +456,12 @@ def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=Tr
 
     def alpha_capture(ba):
         if two_stream:
-            with model.live(ba["a_mention"], ba["a_attn"], inject=False, capture=True, csps=ba["csps"]):
+            with model.live(ba["a_mention"], ba["a_attn"], inject=False, capture=True,
+                            csps=ba["csps"], dvec=ba["dvec"]):
                 _ = model.logits(ba["a_input_ids"], ba["a_attn"])
         else:
-            with model.live(ba["mention"], ba["attn"], inject=False, capture=True, csps=ba["csps"]):
+            with model.live(ba["mention"], ba["attn"], inject=False, capture=True,
+                            csps=ba["csps"], dvec=ba["dvec"]):
                 _ = model.logits(ba["input_ids"], ba["attn"])
 
     # ----- Phase A: warm α (+LoRA) on the direct J0 dominate-dedₚ -----
@@ -461,10 +496,12 @@ def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=Tr
             alpha_capture(ba)                          # α-stream (full text) → composed lattice + b0
             aux_alpha = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
             surv = model._captured_surv[:, : ba["mention"].shape[1], :]
-            with model.live(ba["mention"], ba["attn"], inject=True, capture=False, override=surv):
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=False, override=surv,
+                            dvec=ba["dvec"]):
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
         else:
-            with model.live(ba["mention"], ba["attn"], inject=True, capture=True, csps=ba["csps"]):
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=True, csps=ba["csps"],
+                            dvec=ba["dvec"]):
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
             aux_alpha = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
         lm = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
