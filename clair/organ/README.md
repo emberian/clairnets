@@ -88,26 +88,32 @@ the **blade/grade prior for affine** is `blade_affine_organ` (`runs/modular_orga
 The meet of sound narrowings is sound, so the composite stays sound by construction; `verify=True`
 asserts false-elim 0 vs the exact oracle as a belt-and-braces check.
 
-## Train it / weave it (`train.py`)
+## Train it / weave it / RL it (`train.py`, `graft.py`, `eval.py`)
 
-One entry point, two clean calls (both delegate to the validated recipes, nothing re-prototyped):
+The canonical pipeline is **pretrain_organ → weave → rlvr** (each call delegates to the validated
+recipe, nothing re-prototyped). The single front-door map with full prose is [`GLADOS.md`](../../GLADOS.md).
 
 ```bash
-# (a) organ-side training: dominate-dedP of the general narrow organ over the 7-rung MIX (STAGE 1),
-#     saved in the {'state','meta'} format bank.load_core_organ reads.
-python -m clair.organ.train organ --steps 1500 --out runs/general_organ_full.pt
+# STAGE 1 — pretrain the organ (dominate-dedₚ over the 7-rung MIX; recipe ~1.5M params, R=12, ~30% composed)
+python -m clair.organ.train pretrain --steps 1500 --out runs/general_organ_full.pt
 
-# (b) weave into OLMo for full-training: the STAGED woven recipe (bootstrap → freeze → γ-readout →
-#     generate) with the causal-control table — delegates to clair.run_glados_staged.
-python -m clair.organ.train weave --organ_steps 1500 --steps 2500 --out runs/glados_staged.json
-python -m clair.organ.train weave --smoke      # tiny end-to-end woven smoke (loads OLMo-2-1B)
+# STAGE 2 — graft into ANY of the 7 bases (clair.organ.graft) + train the woven readout with the
+#           engagement mechanism (two-stream lever + J0 α-supervision + causal-control readout)
+python -m clair.organ.train weave --base allenai/OLMo-2-0425-1B --regime hard --steps 2500 --out runs/woven.pt
+python -m clair.organ.train weave --smoke         # tiny end-to-end woven smoke (loads OLMo-2-1B)
+
+# STAGE 3 — RLVR (Dr.GRPO, exact-verifier reward; organ-as-process-reward at the insertion point)
+python -m clair.organ.train rlvr --task chain_sum --steps 300
+
+# EVAL — the arbiter (Tier-1/2/3 + causal controls + pass@k)
+python -m clair.organ.eval --base allenai/OLMo-2-0425-1B --woven_ckpt runs/woven.pt
 ```
 
 The training corpus is produced on the fly by the witness-first rung generators (so
 `data/glados_corpus` is optional); the diverse Bedrock phrasings at
-`data/curriculum/curriculum.jsonl` feed the OOD-phrasing eval. STAGE 2 hosts OLMo-2-1B (frozen +
-LoRA) and trains the zero-init γ that injects the frozen organ's narrowed lattice into a late
-residual layer.
+`data/curriculum/curriculum.jsonl` feed the OOD-phrasing eval. `graft_organ` is residual-stream-agnostic
+(it splices onto `model.layers` / `gpt_neox.layers` / `language_model.layers` / hybrids), so STAGE 2
+hosts any base — frozen + LoRA + latent-α + frozen organ + the zero-init γ readout.
 
 ## Test it (`selftest.py`)
 
