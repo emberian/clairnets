@@ -31,27 +31,80 @@ class CSP:
         return tuple(V for _ in range(self.n))
 
 
-# --------------------------------------------------------------------- exact solving
-def solutions(csp: CSP, dom=None):
-    """All assignments s (tuple len n) with s[i] in dom[i] satisfying every constraint.
-    Brute force with per-constraint checking — exact, intended for SMALL CSPs (the ground truth)."""
+# --------------------------------------------------------------------- exact solving (backtracking)
+class _Stop(Exception):
+    pass
+
+
+def _backtrack(csp: CSP, dom, on_solution):
+    """DFS with forward constraint-checking: each constraint is checked the moment its last cell is
+    assigned, and cells are visited smallest-domain-first. Far faster than the old d^n product on
+    constrained instances, so the harness scales past n≈5. on_solution(tuple) may raise _Stop to halt."""
+    n = csp.n
+    order = sorted(range(n), key=lambda i: len(dom[i]))          # MRV-ish: smallest domain first
+    rank = {c: k for k, c in enumerate(order)}
+    checks = {k: [] for k in range(n)}                            # order-position -> constraints to test there
+    for sc, al in csp.cons:
+        checks[max(rank[c] for c in sc)].append((sc, al))
+    assign = [None] * n
+
+    def rec(k):
+        if k == n:
+            on_solution(tuple(assign)); return
+        cell = order[k]; ck = checks[k]
+        for v in sorted(dom[cell]):
+            assign[cell] = v
+            if all(tuple(assign[c] for c in sc) in al for sc, al in ck):
+                rec(k + 1)
+        assign[cell] = None
+
+    try:
+        rec(0)
+    except _Stop:
+        pass
+
+
+def solutions(csp: CSP, dom=None, limit=None):
+    """All assignments with s[i] in dom[i] satisfying every constraint, via backtracking. Pass limit=k
+    to stop after k solutions (limit=1 = a satisfiability check). Exact ground truth."""
     dom = dom or csp.full()
-    sols = []
-    # order cells by smallest domain for light pruning
-    for s in it.product(*[sorted(dom[i]) for i in range(csp.n)]):
-        if all(tuple(s[i] for i in sc) in al for sc, al in csp.cons):
-            sols.append(s)
-    return sols
+    out = []
+    def collect(s):
+        out.append(s)
+        if limit and len(out) >= limit:
+            raise _Stop
+    _backtrack(csp, dom, collect)
+    return out
+
+
+_DEDP_CACHE = {}
 
 
 def exact_dedP(csp: CSP, dom):
-    """The EXACT best per-cell transformer dedₚ(a) = α(γ(a) ∩ solutions): for each cell, the set of
-    values used by SOME full solution consistent with the current domains. The strongest SOUND
-    per-cell narrowing (requires enumerating solutions). a_next ⊆ a always."""
-    sols = solutions(csp, dom)
-    if not sols:
-        return tuple(frozenset() for _ in range(csp.n))      # ⊥ : unsatisfiable under dom
-    return tuple(frozenset(s[i] for s in sols) for i in range(csp.n))
+    """The EXACT best per-cell transformer dedₚ(a) = α(γ(a) ∩ solutions): for each cell, the values used
+    by SOME full solution consistent with `dom`. Strongest SOUND per-cell narrowing; a_next ⊆ a always.
+    Backtracking with witness accumulation + early-stop (once every alive value is witnessed, dedₚ==dom so
+    we halt); memoized by (cons, dom)."""
+    key = (csp.cons, dom)
+    hit = _DEDP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    surv = [set() for _ in range(csp.n)]
+    need = sum(len(d) for d in dom)
+    seen = [0]
+    def witness(s):
+        for i in range(csp.n):
+            if s[i] not in surv[i]:
+                surv[i].add(s[i]); seen[0] += 1
+        if seen[0] >= need:                                       # every alive value reachable -> dedₚ == dom
+            raise _Stop
+    _backtrack(csp, dom, witness)
+    res = (tuple(frozenset() for _ in range(csp.n)) if seen[0] == 0       # unsat -> ⊥
+           else tuple(frozenset(surv[i]) for i in range(csp.n)))
+    if len(_DEDP_CACHE) > 300_000:                                 # bound memory on long runs
+        _DEDP_CACHE.clear()
+    _DEDP_CACHE[key] = res
+    return res
 
 
 # --------------------------------------------------------------------- arc consistency (level 0, cheap)
