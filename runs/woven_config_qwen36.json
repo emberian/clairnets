@@ -1,0 +1,24 @@
+{
+  "model": "Qwen/Qwen3.6-27B",
+  "model_type": "qwen3_5_text",
+  "architectures": null,
+  "loader": "AutoModelForCausalLM",
+  "peft_lora": true,
+  "n_layers": 64,
+  "hidden_dim": 5120,
+  "K": 8,
+  "mid_layer": 31,
+  "inject_layer": 47,
+  "decoder_layers_path": "layers",
+  "layer_types": [
+    "full_attention",
+    "linear_attention"
+  ],
+  "quant": "bnb-nf4 double-quant, bf16 compute",
+  "dtype": "bfloat16",
+  "noop_max_abs": 0.0,
+  "gate_open_max_abs": 0.4784909188747406,
+  "forward_ok": true,
+  "vram_peak_gb": 25.3,
+  "noop_bitwise": true
+}
