@@ -7,6 +7,22 @@ terse, newest-first. Append new entries at the top. Negatives are results.
 
 ## 2026-06-26 — toward real training
 
+- ⭐ **STAGED GENERATIVE GLaDOS WORKS — the deliverable, POSITIVE.** A learned *general* organ causally woven
+  into OLMo's generation across 7 reasoning types (coloring/equality/ordering/arithmetic/alldiff/eqchain/
+  forcedcolor): **woven 98.8% / base 48% / text-LoRA 25%** in-dist; OOD-phrasing 96.3%; cells(no-facts) 98.7%
+  vs chance; **corrupt→2.7% WITH FULL TEXT PRESENT** (LM ignores text, wields organ; per-rung true→corrupt drop
+  85-100pts incl hard propagation chains base/text-LoRA can't shortcut → woven 100%). OOD-N limited by the
+  *organ's own* recall, not the readout. The staged recipe (bootstrap→freeze→readout-forcing curriculum) is
+  *demonstrated*, not hoped. (`clair/run_glados_staged.py`)
+- **Research crystallized the next phase** (`notes/{rl_design_lessons,exploitation_question,nesy_lessons}.md`):
+  RL-design → report **pass@k not pass@1** (RLVR elicits not expands) with a **ProRL long-RL + random-reward**
+  control on OLMo; looped depth provably solves addition/p-hop/group-comp (validates affine=width/depth-beatable,
+  but can't manufacture the per-step ternary primitive). Exploitation-question → the decisive experiment is a
+  **2×3 {next-token-CPT, process-RLVR}×{reasoning-dense-nonshortcutable, shortcutable, prose}**, metric =
+  organ-ablation ΔLoss G(t); "no published work tests next-token CPT on a checked deductor — the most decisive
+  single experiment." NeSy → **SATNet's "learned logic" was label-leakage**; "reasoning shortcuts are loss
+  optima" (Marconato 2023) — *a sound organ can still be bypassed; only the controls prove deduction.* Our edge
+  = the discipline + the 5-way novelty combination, not the organ alone.
 - **RLVR base pipeline DE-RISKED** (`clair/rlvr_pipeline.py`). TRL-GRPO + reasoning-gym + our exact-verifier
   reward + OLMo-2-1B **runs and learns** on one L40S: reward EMA 0.20→0.72 over 250 steps (chain_sum), no OOM.
   Stack: trl 1.7.0, `use_vllm=False` (organ-compatible rollout), Dr.GRPO, beta=0 (no ref-model), LoRA all-linear.
