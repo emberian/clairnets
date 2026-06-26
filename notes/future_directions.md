@@ -55,3 +55,22 @@ After the architecture-specific curriculum installs+trains the organ, RE-RUN OLM
 general behavior. Only possible because OLMo is fully open. This is the answer to "will it use the organ
 during normal reasoning" — don't hope it transfers; generalize it by re-running the general recipe with
 the organ present.
+
+## 5. Future base architectures (the organ is residual-stream-agnostic → grafts onto any transformer)
+The dense-γ readback lives at the residual stream, so mechanically the organ ports to any transformer. The
+*interesting* question is which non-standard bases are worth the complexity:
+
+- **DiffusionGemma (diffusion LM on Gemma-4 26B-A4B MoE) — the most sympathetic + novel.** It generates by
+  ITERATIVE DENOISING of the whole sequence (non-autoregressive). That's the *same shape* as the organ's
+  iterative narrowing → couple them **in lockstep**: the lattice narrows AS the sequence denoises, both
+  fixed-point processes informing each other. The organ becomes a *parallel refinement*, not an awkward
+  autoregressive side-loop. Nobody has woven a checked deductor into a diffusion LM — the "iterative-marriage"
+  paper. Honestly the graft I'd most want to try post-OLMo-validation.
+- **MoE bases (Laguna M.1 = 225B/23B-active coding MoE; DeepSeek V4 = MoE+MLA+MTP; Gemma-4 A4B) → organ as a
+  routed EXPERT.** An MoE already routes tokens to specialists; a **checked-deductor-expert** the router invokes
+  on constraint-shaped tokens is a natural addition — and it's the clean framing for our organ BANK
+  (narrow/chain/energy = routed deductor-experts). Conceptually beautiful; 225B/V4 scale is compute-prohibitive
+  for us (and MLA/MTP add grafting complexity). **Gemma-4-2B/4B** is tractable as a non-OLMo transformer control.
+- **Honesty caveat:** Gemma/DeepSeek/Laguna are open-WEIGHTS, not open-RECIPE (unlike OLMo) → RLVR/consolidation
+  gains are harder to *attribute* (cf. the spurious-rewards finding). **OLMo-Base-7B stays the research base for
+  the paper's claims**; the exotic bases are the scaling/future story, DiffusionGemma the genuinely-novel bet.
