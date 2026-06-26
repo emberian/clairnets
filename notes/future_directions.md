@@ -36,6 +36,19 @@ The lattice is the most-structured/most-sound; others trade structure for genera
 a router over a bank of checked organs — narrower for CSPs, chainer for entailment, optimizer for planning —
 all woven into the forward pass, all sound at the output.
 
+## 3b. Geometric algebra, finally placed (not as a generic mixer)
+GA was the orphaned opening thread — null as a channel mixer (ties SwiGLU/MLP, language & vision). Its REAL
+home is the GENERAL FACTOR DEDUCTOR, via the mapping **geometric-product GRADES ↔ lattice abstraction LEVELS**:
+- grade-0 (inner u·v, coherence) ↔ per-cell / unary
+- grade-2 (wedge u∧v, "these two can't coexist") ↔ pairwise — *literally* the binary-constraint operator (≠,=)
+- grade-3 (trivector u∧v∧w = the scalar triple product, already prototyped as geom_lm `geom_g3`) ↔ triple —
+  the 3-way antisymmetric / AFFINE structure that breaks the per-cell wall (levels.py: arithmetic=affine=needs L2)
+- higher grades ↔ higher-arity factors.
+So the factor deductor should compute its arity-k constraint interactions as grade-k geometric products: the
+wedge IS the exclusion operator, the trivector IS the parity/affine operator. The grades MEAN the constraint
+arities → the antisymmetric structure is load-bearing, not decorative. This is why it failed as a generic
+mixer (arbitrary dims vs SwiGLU) but is principled here (structure-matched). Fold into the general-deductor track.
+
 ## 4. Consolidation (how the narrow skill becomes general behavior)
 After the architecture-specific curriculum installs+trains the organ, RE-RUN OLMo's OWN open recipe
 (Dolma continued-pretrain + instruction-tune + RL-Zero) WITH the organ in place, so organ-use folds into
