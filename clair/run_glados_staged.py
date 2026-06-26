@@ -39,6 +39,9 @@ from . import csp as C
 from . import curriculum as CU
 from . import hard_tasks as HT
 from . import oracle_readout as O
+from . import latent_organ as LAT
+from . import latent_tasks as LT
+from .organ import bank as BANK
 from .proposer import FactorGraphProposer, size_for
 
 
@@ -144,6 +147,22 @@ def relation_table(scope, al):
     return t.reshape(-1)
 
 
+def assert_budget(csp, dom=None):
+    """#5: FAIL LOUDLY (don't silently drop) if an instance exceeds the tensorization budget. The old
+    featurize truncated factors past M_MAX and clipped values >= D_MAX silently, corrupting the lattice
+    the readout reads. Raise BEFORE tensorization instead."""
+    assert csp.n <= N_MAX, f"n={csp.n} exceeds N_MAX={N_MAX}"
+    assert csp.d <= D_MAX, f"d={csp.d} exceeds D_MAX={D_MAX} (K={K})"
+    assert len(csp.cons) <= M_MAX, f"#cons={len(csp.cons)} exceeds M_MAX={M_MAX}"
+    for sc, al in csp.cons:
+        assert len(sc) <= A_MAX, f"factor arity {len(sc)} exceeds A_MAX={A_MAX}"
+        for tup in al:
+            assert all(v < D_MAX for v in tup), f"relation value >= D_MAX={D_MAX} in factor {sc}"
+    if dom is not None:
+        for c in dom:
+            assert all(v < D_MAX for v in c), f"domain value >= D_MAX={D_MAX}"
+
+
 def featurize(items, dev):
     B = len(items)
     var_mask = np.zeros((B, N_MAX, D_MAX), np.float32)
@@ -155,6 +174,7 @@ def featurize(items, dev):
     edge_var = np.full((B, M_MAX, A_MAX), N_MAX, np.int64)
     edge_valid = np.zeros((B, M_MAX, A_MAX), np.float32)
     for bi, (csp, dom) in enumerate(items):
+        assert_budget(csp, dom)                 # #5: raise on overflow, never silently truncate
         for i in range(csp.n):
             var_valid[bi, i] = 1.0
             for v in dom[i]:
@@ -162,8 +182,6 @@ def featurize(items, dev):
             if len(dom[i]) == 1:
                 given[bi, i] = 1.0
         for fi, (sc, al) in enumerate(csp.cons):
-            if fi >= M_MAX:
-                break
             fac_valid[bi, fi] = 1.0
             fac_arity[bi, fi, len(sc) - 1] = 1.0
             fac_rel[bi, fi] = relation_table(sc, al)
@@ -292,6 +310,9 @@ def organ_fixpoint(m, csps, dev, theta=0.5, R_max=64, chunk=128):
         vm = feat["var_mask"].clone()
         done = torch.zeros(len(sub), dtype=torch.bool, device=dev)
         for _ in range(R_max):
+            # #3: recompute `given` each pass from the CURRENT lattice so inference matches the
+            # re-featurized training distribution (newly-singleton cells are marked given).
+            feat["given"] = (vm.sum(-1) == 1).float() * feat["var_valid"]
             b, cls, _ = fwd(m, feat, vm)
             new_vm = meet(vm, b, theta)
             changed = (new_vm != vm).any(-1).any(-1)
@@ -470,6 +491,11 @@ def score_gen(model, recs, tok, dev, control="true", inject=True, fewshot="", bs
     model.eval()
     if perm is None:
         perm = tuple(list(range(1, K)) + [0])
+    # #4: a TRUE zero condition. OracleGamma.proj has biased Linears, so injecting a zero survival
+    # vector still emits proj(0) = a constant delta (NOT zero). The honest "zero" causal control must
+    # be NO injection at all => disable the gate, so the LM falls back to the pure base+LoRA path.
+    if control == "zero":
+        inject = False
     correct = tot = det_t = det_r = ab_t = ab_r = 0
     by_rung = {}
     for i in range(0, len(recs), bs):
@@ -583,6 +609,237 @@ def train_readout(organ, olmo_ids, tok, dev, a, train_cells, train_full, eval_ce
                   f"cells-readout acc {acc['overall']*100:4.1f}% (det {acc['det_acc']*100:.0f})  "
                   f"{time.time()-t0:.0f}s", flush=True)
             model.train()
+    return model
+
+
+# ============================================================ STAGE 2 (LIVE): live-latent-α woven
+def build_live_pool(rng, rungs, split, per_rung):
+    """Records for the LIVE path: each carries the EXACT dedₚ target (tgt) for the α-grounding aux loss
+    AND the oracle survival (surv == dedₚ) for the oracle-override reference. NO privileged organ
+    fixpoint is needed — the lattice is produced LIVE from OLMo hidden by α+organ at train/eval time."""
+    recs = []
+    for rg in rungs:
+        for _ in range(per_rung):
+            p = make_problem(rng, rg, split)
+            oc = organ_csp(p)
+            assert_budget(oc)
+            ded = EX.dedP(oc, oc.full())
+            rec = make_record(p, ded, "full")          # surv := dedₚ (oracle); prompt has the facts
+            rec["tgt"] = surv_from_dom(ded, p.n, K)     # dedₚ target for the dominate-dedₚ aux loss
+            recs.append(rec)
+    rng.shuffle(recs)
+    return recs
+
+
+def build_live_batch(recs, tok, dev):
+    """Tokenize prompt+answer (answer-span LM labels) + mention[B,N,T] + vmask[B,N] + dedₚ tgt[B,N,K]."""
+    Nmax = max(r["n"] for r in recs)
+    B = len(recs)
+    fulls = [r["prompt"] + " " + r["answer"] for r in recs]
+    plens = [len(r["prompt"]) for r in recs]
+    enc = tok(fulls, return_offsets_mapping=True, padding=True, return_tensors="pt")
+    ids = enc["input_ids"].to(dev); attn = enc["attention_mask"].to(dev)
+    offsets = enc["offset_mapping"]; T = ids.size(1)
+    labels = ids.clone()
+    for b in range(B):
+        for ti, (lo, hi) in enumerate(offsets[b].tolist()):
+            if not ((lo != hi) and (lo >= plens[b]) and (attn[b, ti] > 0.5)):
+                labels[b, ti] = -100
+    mention = O._mention_tensor([r["mentions"] for r in recs], offsets, B, Nmax, T, dev)
+    vmask = torch.zeros(B, Nmax, device=dev)
+    tgt = torch.zeros(B, Nmax, K, device=dev)
+    for b, r in enumerate(recs):
+        vmask[b, : r["n"]] = 1.0
+        tgt[b, : r["n"], :] = torch.from_numpy(r["tgt"]).to(dev)
+    return dict(input_ids=ids, attn=attn, labels=labels, mention=mention, vmask=vmask, tgt=tgt)
+
+
+def verify_noop_live(model, tok, dev, rec):
+    """Bitwise no-op at init: the zero-init γ gate => the live injection moves the logits by 0."""
+    enc = tok(rec["prompt"], return_offsets_mapping=True, return_tensors="pt")
+    ids = enc["input_ids"].to(dev); attn = torch.ones_like(ids)
+    mention = O._mention_tensor([rec["mentions"]], enc["offset_mapping"], 1, rec["n"], ids.size(1), dev)
+    with torch.no_grad():
+        base = model.model(input_ids=ids, attention_mask=attn).logits.float()
+    with torch.no_grad(), model.live(mention, attn, inject=True, capture=True):
+        g0 = model.logits(ids, attn).float()
+    noop = float((base - g0).abs().max())
+    with torch.no_grad():
+        saved = model.gamma.alpha.data.clone(); model.gamma.alpha.data.fill_(2.0)
+        with model.live(mention, attn, inject=True, capture=True):
+            g1 = model.logits(ids, attn).float()
+        model.gamma.alpha.data.copy_(saved)
+    return noop, float((base - g1).abs().max())
+
+
+@torch.no_grad()
+def score_gen_live(model, recs, tok, dev, control="true", bs=8, perm=None, use_base=False,
+                   fewshot="", override_oracle=False):
+    """GENERATIVE accuracy for the LIVE path. Two forwards per chunk: (1) the bare prompts produce the
+    LIVE per-cell lattice from OLMo hidden via α+organ; (2) the legal answers are scored on the expanded
+    prompts with that (optionally causally-controlled) lattice injected by γ.
+
+    control 'zero' => NO injection (the TRUE zero, since γ.proj is biased); use_base => disable LoRA;
+    override_oracle => inject the EXACT dedₚ (record['surv']) instead of the live lattice (the oracle-
+    readout reference: isolates α's recall gap from the readout)."""
+    model.eval()
+    if perm is None:
+        perm = tuple(list(range(1, K)) + [0])
+    inject = control != "zero"
+    correct = tot = det_t = det_r = ab_t = ab_r = 0
+    by_rung = {}
+    for i in range(0, len(recs), bs):
+        chunk = recs[i:i + bs]; Bp = len(chunk); Nmax = max(r["n"] for r in chunk)
+        surv = None
+        if inject:
+            if override_oracle:
+                surv = torch.zeros(Bp, Nmax, K, device=dev)
+                for b, r in enumerate(chunk):
+                    surv[b, : r["n"], :] = torch.from_numpy(r["surv"]).to(dev)
+            else:
+                penc = tok([r["prompt"] for r in chunk], return_offsets_mapping=True, padding=True,
+                           return_tensors="pt")
+                pids = penc["input_ids"].to(dev); pattn = penc["attention_mask"].to(dev)
+                pment = O._mention_tensor([r["mentions"] for r in chunk], penc["offset_mapping"],
+                                          Bp, Nmax, pids.size(1), dev)
+                with model.live(pment, pattn, inject=False, capture=True):
+                    _ = model.logits(pids, pattn)
+                surv = model._captured_surv[:, :Nmax, :].clone()
+            surv = apply_control_ext(surv, chunk, control, K, perm)
+        fulls, plens, spans, prob_of = [], [], [], []
+        shift = len(fewshot)
+        for pi, r in enumerate(chunk):
+            cands = [" " + v for v in r["vnames"]] + [" " + O.ABSTAIN_STR]
+            for cand in cands:
+                fulls.append(fewshot + r["prompt"] + cand); plens.append(shift + len(r["prompt"]))
+                spans.append({k: [(x + shift, y + shift) for (x, y) in v] for k, v in r["mentions"].items()})
+                prob_of.append(pi)
+        enc = tok(fulls, return_offsets_mapping=True, padding=True, return_tensors="pt")
+        ids = enc["input_ids"].to(dev); attn = enc["attention_mask"].to(dev)
+        offsets = enc["offset_mapping"]; T = ids.size(1)
+        if inject:
+            mention = O._mention_tensor(spans, offsets, len(fulls), Nmax, T, dev)
+            surv_exp = surv[torch.tensor(prob_of, device=dev)]
+            ctx = model.live(mention, attn, inject=True, capture=False, override=surv_exp)
+        else:
+            ctx = model.live(None, None, inject=False)
+        base_ctx = model.model.disable_adapter() if (use_base and hasattr(model.model, "disable_adapter")) \
+            else contextlib.nullcontext()
+        with base_ctx, ctx:
+            logits = model.logits(ids, attn).float()
+        lp = torch.log_softmax(logits[:, :-1], -1)
+        tok_lp = lp.gather(-1, ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+        scores = torch.full((len(fulls),), -1e9, device=dev)
+        for row in range(len(fulls)):
+            offs = offsets[row].tolist(); mask = torch.zeros(T - 1, device=dev)
+            for ti in range(1, T):
+                lo, hi = offs[ti]
+                if lo != hi and lo >= plens[row] and attn[row, ti] > 0.5:
+                    mask[ti - 1] = 1.0
+            denom = mask.sum().clamp_min(1.0)
+            scores[row] = (tok_lp[row] * mask).sum() / denom
+        prob_of_t = torch.tensor(prob_of, device=dev)
+        for pi, r in enumerate(chunk):
+            rows = (prob_of_t == pi).nonzero().flatten()
+            pred = int(rows[int(scores[rows].argmax())] - rows[0])
+            ok = int(pred == r["gold_idx"]); correct += ok; tot += 1
+            d = by_rung.setdefault(r["relation"], [0, 0]); d[0] += ok; d[1] += 1
+            if r["determined"]:
+                det_t += 1; det_r += ok
+            else:
+                ab_t += 1; ab_r += ok
+    return {"overall": correct / max(1, tot), "det_acc": det_r / max(1, det_t),
+            "abst_acc": ab_r / max(1, ab_t), "n": tot,
+            "by_rung": {k: v[0] / max(1, v[1]) for k, v in by_rung.items()},
+            "by_rung_n": {k: v[1] for k, v in by_rung.items()}}
+
+
+def train_live_woven(olmo_ids, tok, dev, a, train_recs, eval_recs):
+    """THE live-latent-α woven recipe. Phase A: warm up α + the latent narrower (+LoRA) on dominate-
+    dedₚ so the organ actually deduces from OLMo's hidden (the validated design-B grounding). Then
+    FREEZE the narrower. Phase B: train LoRA + α + γ on the answer-span LM CE (γ reads the DETACHED
+    live lattice) + an auxiliary dominate-dedₚ on α (so the lattice stays a real narrowing as LoRA
+    shifts OLMo). Returns the trained LiveLatentWoven."""
+    from transformers import AutoModelForCausalLM
+    from peft import LoraConfig, get_peft_model
+    mid_id, D, nL = olmo_ids
+    olmo = AutoModelForCausalLM.from_pretrained(mid_id, dtype=torch.bfloat16).to(dev).eval()
+    for p in olmo.parameters():
+        p.requires_grad_(False)
+    lconf = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.0, bias="none",
+                       target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                       "gate_proj", "up_proj", "down_proj"], task_type="CAUSAL_LM")
+    peft_model = get_peft_model(olmo, lconf)
+    mid = min(a.mid_layer, nL - 1); inj = min(a.inject_layer, nL - 1)
+    assert mid < inj, f"mid_layer ({mid}) must precede inject_layer ({inj}) so α reads a clean layer"
+    alpha = LAT.DenseLatentProjector(D, K, dctx=a.dctx, dp=a.alpha_dp, heads=a.alpha_heads)
+    organ = LAT.LatentNarrower(K, a.dctx, d=a.organ_d, heads=a.organ_heads, n_layers=a.organ_layers,
+                               T=a.organ_T, ds=max(1, a.organ_T // 2), mixer="ffn", monotone=True)
+    model = O.LiveLatentWoven(peft_model, D, K, alpha, organ, mid, inj, gamma_hidden=a.gamma_hidden).to(dev)
+    model.alpha.float(); model.organ.float(); model.gamma.float()
+    noop, live = verify_noop_live(model, tok, dev, eval_recs[0])
+    print(f"\n  LIVE-LATENT WOVEN  mid {mid} -> inject {inj}/{nL}  trainable {O.n_trainable(model):,}",
+          flush=True)
+    print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",
+          flush=True)
+    lora_params = [p for n, p in model.model.named_parameters() if p.requires_grad]
+    rng = np.random.default_rng(a.seed + 3)
+
+    def batch(n):
+        idxs = rng.integers(0, len(train_recs), n).tolist()
+        return build_live_batch([train_recs[i] for i in idxs], tok, dev)
+
+    # ----- Phase A: warm up α + narrower (+LoRA) on dominate-dedₚ (latent deduction grounding) -----
+    optA = torch.optim.AdamW(
+        [{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
+         {"params": list(model.alpha.parameters()) + list(model.organ.parameters()),
+          "lr": a.alpha_lr, "weight_decay": 0.0}], betas=(0.9, 0.95))
+    model.train(); t0 = time.time()
+    for s in range(1, a.warm_steps + 1):
+        ba = batch(a.bs)
+        with model.live(ba["mention"], ba["attn"], inject=False, capture=True):
+            _ = model.logits(ba["input_ids"], ba["attn"])
+        loss = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+        optA.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optA.step()
+        if s % max(1, a.warm_steps // 8) == 0 or s == 1:
+            rn, rd, fn, fd = LT.narrowing_stats(model._last_sup[-1], ba["tgt"], ba["vmask"])
+            print(f"  [warmup α+organ] step {s:5d}  dedp_loss {loss.item():.3f}  recall "
+                  f"{rn/max(1,rd):.3f}  false_elim {fn/max(1,fd):.4f}  {time.time()-t0:.0f}s", flush=True)
+    for p in model.organ.parameters():            # FREEZE the narrower (the deduction engine)
+        p.requires_grad_(False)
+    model.organ.eval()
+
+    # ----- Phase B: train LoRA + α + γ on LM CE (γ reads the DETACHED live lattice) + aux dedₚ -----
+    optB = torch.optim.AdamW(
+        [{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
+         {"params": list(model.alpha.parameters()), "lr": a.alpha_lr, "weight_decay": 0.0},
+         {"params": list(model.gamma.parameters()), "lr": a.gamma_lr, "weight_decay": 0.0}],
+        betas=(0.9, 0.95))
+    model.train(); t0 = time.time()
+    alpha_seen_open = False
+    for s in range(1, a.steps + 1):
+        ba = batch(a.bs)
+        with model.live(ba["mention"], ba["attn"], inject=True, capture=True):
+            logits = model.logits(ba["input_ids"], ba["attn"]).float()
+        lm = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
+                             ba["labels"][:, 1:].reshape(-1), ignore_index=-100)
+        aux = LAT.dominate_dedp_loss(model._last_sup, ba["tgt"], ba["vmask"])
+        loss = lm + a.aux_w * aux
+        optB.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optB.step()
+        gate = float(torch.tanh(model.gamma.alpha))
+        alpha_seen_open = alpha_seen_open or (abs(gate) > 1e-3)
+        if s % max(1, a.steps // 12) == 0 or s == 1:
+            acc = score_gen_live(model, eval_recs, tok, dev, control="true", bs=a.bs)
+            print(f"  step {s:5d}  lm {lm.item():.3f}  aux {aux.item():.3f}  gate(tanh α) {gate:+.3f}  "
+                  f"live-woven acc {acc['overall']*100:4.1f}% (det {acc['det_acc']*100:.0f})  "
+                  f"{time.time()-t0:.0f}s", flush=True)
+            model.train()
+    # alpha-open monitor: γ.proj params get 0 gradient while the gate is shut, so warn if it never opened
+    if not alpha_seen_open:
+        print("  [WARN] γ gate (tanh α) NEVER opened during training — the readout received no gradient; "
+              "the woven path is effectively text-only. Check inject wiring / gamma_lr.", flush=True)
     return model
 
 

@@ -252,6 +252,97 @@ def n_trainable(m):
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
 
+# ===================================================================== LIVE-LATENT-α woven model
+class LiveLatentWoven(nn.Module):
+    """THE live-latent-α woven GLaDOS (replaces the readout-isolation cheat).
+
+    Forward, ONE OLMo pass (no repeated passes), via two decoder-layer hooks:
+      * at MID layer: capture the host hidden h (read-only).
+      * at INJECT layer (> mid): α=DenseLatentProjector(h, mention) -> (b0, latent ctx) -> the FROZEN
+        LatentNarrower narrows b0 using ctx (NO explicit factors, NO symbolic extraction) -> per-cell
+        survival lattice; OracleGamma scatters it (zero-init tanh gate) into the residual -> LM head.
+
+    The lattice is produced LIVE from OLMo's hidden — there is no privileged CSP object injected (that
+    was the cheat). Training: LoRA + α + γ; the organ (narrower) is FROZEN. The lattice that reaches γ
+    is DETACHED (γ + LoRA learn to READ it via LM CE); α is grounded by an auxiliary dominate-dedₚ loss
+    on the organ's deep-supervised output (grad flows through the frozen organ into α). The organ is
+    thus actually USED, and its output is honestly the live-α lattice (distinct from the oracle one)."""
+
+    def __init__(self, peft_model, D, K, alpha, organ, mid_layer, inject_layer, gamma_hidden=256,
+                 theta=0.5):
+        super().__init__()
+        self.model = peft_model
+        self.alpha = alpha                       # DenseLatentProjector (trainable)
+        self.organ = organ                       # LatentNarrower (FROZEN after warmup)
+        self.gamma = OracleGamma(D, K, gamma_hidden)
+        self.D, self.K = D, K
+        self.mid_layer, self.inject_layer = mid_layer, inject_layer
+        self.theta = theta
+        # injection state (set by the .live() context manager)
+        self._mention = self._attn = None
+        self._inject = False
+        self._capture = False
+        self._override = None
+        # captured / stashed per forward
+        self._h_mid = None
+        self._captured_surv = None               # live thresholded survival [B,N,K]
+        self._last_sup = None                    # organ deep-supervision logits (for the aux dedₚ loss)
+        self._last_vmask = None
+        layers = _decoder_layers(peft_model)
+        self._mid_handle = layers[mid_layer].register_forward_hook(self._mid_hook)
+        self._inj_handle = layers[inject_layer].register_forward_hook(self._inj_hook)
+
+    # ---- hooks -------------------------------------------------------------------------------------
+    def _mid_hook(self, module, args, output):
+        self._h_mid = output[0] if isinstance(output, tuple) else output
+        return output
+
+    def _run_organ(self):
+        """α(mid hidden) -> frozen narrower -> (survival logits b, deep-sup list, vmask)."""
+        h = self._h_mid.float()
+        m = self._mention.to(h.device)
+        denom = m.sum(-1, keepdim=True).clamp_min(1e-6)
+        v_mean = torch.einsum("bnt,btd->bnd", m, h) / denom        # [B,N,D] mention-pool cell identity
+        b0, ctx = self.alpha(v_mean, h, self._attn.to(h.device))
+        vmask = (m.sum(-1) > 0.5).float()                          # cells that have >=1 mention token
+        b, sup = self.organ(b0, ctx, vmask)
+        return b, sup, vmask
+
+    def _inj_hook(self, module, args, output):
+        if not (self._inject or self._capture):
+            return output
+        hs = output[0] if isinstance(output, tuple) else output
+        surv = self._override
+        if surv is None:
+            b, sup, vmask = self._run_organ()
+            self._last_sup, self._last_vmask = sup, vmask
+            surv_live = (torch.sigmoid(b) >= self.theta).float() * vmask.unsqueeze(-1)
+            self._captured_surv = surv_live.detach()
+            surv = self._captured_surv
+        if not self._inject:
+            return output
+        delta = self.gamma.delta(surv.to(hs.device), self._mention.to(hs.device))
+        hs = hs + (torch.tanh(self.gamma.alpha) * delta).to(hs.dtype)
+        return (hs,) + tuple(output[1:]) if isinstance(output, tuple) else hs
+
+    # ---- context manager ---------------------------------------------------------------------------
+    @contextlib.contextmanager
+    def live(self, mention, attn, *, inject, capture=False, override=None):
+        old = (self._mention, self._attn, self._inject, self._capture, self._override)
+        self._mention, self._attn = mention, attn
+        self._inject, self._capture, self._override = inject, capture, override
+        try:
+            yield
+        finally:
+            self._mention, self._attn, self._inject, self._capture, self._override = old
+
+    def logits(self, input_ids, attn):
+        return self.model(input_ids=input_ids, attention_mask=attn).logits
+
+    def trainable_parameters(self):
+        return [p for p in self.parameters() if p.requires_grad]
+
+
 # ===================================================================== causal-control transforms
 def apply_control(surv, recs, control, K, perm=(1, 2, 0)):
     """Return a transformed copy of surv[B,Nmax,K] for a causal control.
