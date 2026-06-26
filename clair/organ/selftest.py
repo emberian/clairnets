@@ -1,0 +1,227 @@
+"""clair/organ/selftest.py — the CONSOLIDATED organ smoke (the assembly's single proof).
+
+One run that exercises the whole package:
+  [1] each registered CERTIFIED reduction is SOUND on its domain (false-elim 0 vs the exact verifier),
+      and the specialized ops match their own exact authority (Modular vs brute, GF2 vs gf2_forced,
+      Macro vs dedP); the standalone certified/approx beasts (Unification, Energy) pass their checks;
+  [2] the COMPOSER chains across >= 2 domains SOUNDLY (modular + GF(2)), and the reduced product
+      narrows where any single local op abstains;
+  [3] the structured-gamma READOUT is a bitwise NO-OP at init (the zero-init gate);
+  [4] the WOVEN entry point runs: the organ-side training entry trains+saves a tiny union organ, it
+      loads back as the CoreNarrowOrgan and is verifier-gated sound by the composer; (with --woven the
+      full OLMo staged smoke is run too).
+
+  python -m clair.organ.selftest            # core smoke (no OLMo)
+  python -m clair.organ.selftest --woven    # + the full staged woven smoke (loads OLMo-2-1B)
+"""
+from __future__ import annotations
+
+import argparse
+
+import numpy as np
+
+from .. import csp as C
+from .. import modular as MOD
+from .. import xor_wall as XW
+from .. import macro_deduct as MAC
+from .. import fol as FOL
+from .. import hard_tasks as HT
+from . import bank as B
+from .protocol import CSPState, exact_oracle, false_elim
+from .compose import reduced_product
+
+
+def _sound(state_after: CSPState, state_full: CSPState) -> int:
+    return false_elim(state_after, exact_oracle(state_full))
+
+
+# ============================================================ [1] per-reduction soundness
+def test_certified_reductions():
+    print("\n[1] each CERTIFIED reduction sound on its domain")
+    rng = np.random.default_rng(0)
+
+    # ArcConsistency on a coloring instance (it solves nothing unsound)
+    col = C.coloring(4, [(0, 1), (1, 2), (2, 3), (0, 2)], k=3)
+    s0 = CSPState.full(col)
+    out = B.ArcConsistency().reduce(s0)
+    assert out.issub(s0) and _sound(out, s0) == 0
+    print("    arc_consistency      sound (false-elim 0) on coloring")
+
+    # FactorConsistency solves the affine xor_parity at level-2 where AC abstains
+    xr = C.xor_parity()
+    sx = CSPState.full(xr)
+    ac = B.ArcConsistency().reduce(sx)
+    fac = B.FactorConsistency(k=3).reduce(sx)
+    assert _sound(fac, sx) == 0 and _sound(ac, sx) == 0
+    assert fac.alive() < ac.alive(), "factor consistency should out-narrow AC on affine parity"
+    print(f"    factor_consistency   sound; narrows xor_parity to alive={fac.alive()} (AC stalls at {ac.alive()})")
+
+    # ExactDedP == the oracle by definition
+    assert B.ExactDedP().reduce(sx).dom == exact_oracle(sx).dom
+    print("    exact_dedP           == exact verifier (the spine ground truth)")
+
+    # Modular: certified SNF solver vs brute, on the modular parity wall
+    bad = 0
+    for _ in range(40):
+        m = int(rng.choice([3, 5, 6, 7])); n = int(rng.integers(3, 6))
+        sysm = MOD.gen_cyclic(rng, m, n)
+        cspm = MOD.to_csp(sysm)
+        st = CSPState.full(cspm, system=sysm, tags={"modular"})
+        out = B.Modular().reduce(st)
+        bres, _ = MOD.brute_solve(sysm)
+        bad += int(tuple(out.dom) != bres)
+    assert bad == 0, f"Modular mismatched brute on {bad}/40 systems"
+    print("    modular_snf          == brute residues on 40 modular-parity systems (sound+complete)")
+
+    # GF2: row-space exact affine dedP vs gf2_forced, where AC abstains
+    bad = 0; beats = 0
+    for _ in range(30):
+        n = int(rng.integers(6, 12)); band = int(rng.choice([3, 4, 6]))
+        d = XW.gen_xor_system(rng, n, max(2, n // 2), band)
+        cspx = d["csp"]
+        st = CSPState.full(cspx, system=("gf2", d["A"], d["b"]), tags={"xor"})
+        out = B.GF2RowSpace().reduce(st)
+        forced = XW.gf2_forced(d["A"], d["b"], n)[0]
+        bad += int(tuple(out.dom) != tuple(forced))
+        ac = B.ArcConsistency().reduce(st)
+        beats += int(out.alive() < ac.alive())
+    assert bad == 0, f"GF2 mismatched gf2_forced on {bad}/30 systems"
+    print(f"    gf2_rowspace         == gf2_forced on 30 XOR systems; out-narrows AC on {beats}/30")
+
+    # Macro: reach-doubling path solver == exact dedP
+    bad = 0
+    for L in (3, 4, 5):
+        cspc, w = MAC.gen_eqchain(L, k=3, rng=np.random.default_rng(L), determined=True)
+        st = CSPState.full(cspc, system=w, tags={"path"})
+        out = B.Macro().reduce(st)
+        bad += int(tuple(out.dom) != tuple(HT.fast_dedP(cspc)))
+    assert bad == 0
+    print("    macro_reach          == exact dedP on eqchain L in {3,4,5} (O(log L) depth)")
+
+    # Unification (own state): least Herbrand model exact
+    assert FOL.self_check(verbose=False) is True
+    print("    unification_chain    == brute least Herbrand model (fol.self_check)")
+
+    # Energy (own state, approximate decode but solves the determined chain)
+    from .. import energy_organ as EN
+    ch = C.chain_eq(4)
+    assign = B.Energy().reduce(ch, device="cpu", steps=140)
+    assert EN.feasible(ch, assign) and assign == C.solutions(ch)[0]
+    print("    energy_optimise      solves determined chain_eq(4) (mean-field; brute_opt = exact oracle)")
+
+
+# ============================================================ [2] composer across >= 2 domains
+def test_composer():
+    print("\n[2] composer (verifier-gated reduced product) chains across >= 2 domains soundly")
+    bank = B.build_bank(load_neural=False)
+    certified = B.certified_csp_reductions(bank)
+    rng = np.random.default_rng(7)
+
+    # domain A: modular parity wall
+    okA = 0
+    for _ in range(20):
+        m = int(rng.choice([3, 5, 7])); n = int(rng.integers(3, 6))
+        sysm = MOD.gen_cyclic(rng, m, n)
+        st = CSPState.full(MOD.to_csp(sysm), system=sysm, tags={"modular"})
+        out, tr = reduced_product(st, certified, verify=True)
+        bres, _ = MOD.brute_solve(sysm)
+        okA += int(tr.sound and tuple(out.dom) == bres)
+    assert okA == 20
+    print(f"    modular domain: {okA}/20 composed runs sound AND == brute residues")
+
+    # domain B: GF(2) affine wall
+    okB = 0; solved = 0
+    for _ in range(20):
+        n = int(rng.integers(6, 11)); band = int(rng.choice([3, 4, 6]))
+        d = XW.gen_xor_system(rng, n, max(2, n // 2), band)
+        st = CSPState.full(d["csp"], system=("gf2", d["A"], d["b"]), tags={"xor"})
+        out, tr = reduced_product(st, certified, verify=True)
+        okB += int(tr.sound and tuple(out.dom) == tuple(XW.gf2_forced(d["A"], d["b"], n)[0]))
+        solved += int(out.status() == "solved")
+    assert okB == 20
+    print(f"    GF(2) domain:   {okB}/20 composed runs sound AND == gf2_forced ({solved}/20 fully solved)")
+
+    # the reduced product narrows where local AC alone abstains (the point of composing): the
+    # modular parity wall is designed so local residue-AC proves nothing, yet the certified SNF solves
+    sysm = MOD.gen_cyclic(np.random.default_rng(2), 5, 4)
+    st = CSPState.full(MOD.to_csp(sysm), system=sysm, tags={"modular"})
+    ac_only = B.ArcConsistency().reduce(st)
+    comp, _ = reduced_product(st, certified, verify=True)
+    assert comp.alive() < ac_only.alive(), (ac_only.alive(), comp.alive())
+    print(f"    composing narrows alive {ac_only.alive()} (AC abstains) -> {comp.alive()} "
+          f"(AC+factor+modular), soundly")
+
+
+# ============================================================ [3] readout no-op at init
+def test_readout_noop():
+    print("\n[3] structured-gamma readout is a bitwise no-op at init")
+    import torch
+    from .. import oracle_readout as O
+    D, K, n = 64, 8, 4
+    gamma = O.OracleGamma(D, K).float()
+    col = C.coloring(n, [(0, 1), (1, 2)], k=3)
+    st = CSPState.full(col)
+    surv = torch.from_numpy(B.ArcConsistency().survival(st, K)).unsqueeze(0)          # [1,n,K]
+    mention = torch.zeros(1, n, 5); mention[:, :, 1] = 1.0
+    delta = gamma.delta(surv, mention)
+    injected = torch.tanh(gamma.alpha) * delta                                         # the hook math
+    assert float(injected.abs().max()) == 0.0, "zero-init gate must make the readout a bitwise no-op"
+    with torch.no_grad():
+        gamma.alpha.fill_(2.0)
+    live = float((torch.tanh(gamma.alpha) * gamma.delta(surv, mention)).abs().max())
+    assert live > 0.0, "with the gate open the readout must move the residual stream"
+    print(f"    no-op at init (max|delta|=0.0); gate-open moves residual ({live:.3e})  [readout signature]")
+
+
+# ============================================================ [4] woven entry point runs
+def test_woven(full=False):
+    print("\n[4] woven entry point runs")
+    import os, tempfile, torch
+    from . import train as T
+    from .. import run_glados_staged as G
+    assert callable(G.main), "the staged woven recipe entry must be importable"
+
+    # organ-side training entry: train + save a tiny union organ, load it back, gate it sound
+    dev = G.device()
+    tmp = os.path.join(tempfile.gettempdir(), "organ_selftest_core.pt")
+    organ, meta = T.train_organ(out=tmp, steps=30, target=1.2e5, pool=48, R=6, seed=0, dev=dev)
+    core = B.CoreNarrowOrgan(ckpt=tmp, dev=dev)
+    # exercise on an in-budget coloring instance, verifier-gated by the composer
+    col = C.coloring(5, [(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)], k=3)
+    st = CSPState.full(col)
+    raw = core.reduce(st)
+    assert raw.issub(st), "the loaded core organ must produce a narrowing of the input"
+    out, tr = reduced_product(st, B.certified_csp_reductions(B.build_bank(load_neural=False)) + [core],
+                              verify=True)
+    assert tr.sound
+    g = core.guidance(st)
+    assert "survival_logits" in g
+    print(f"    organ trained+saved ({tmp}), reloaded as core_narrow_organ, verifier-gated sound; "
+          f"guidance logits shape {g['survival_logits'].shape}")
+    os.remove(tmp)
+
+    if full:
+        print("    running the FULL staged woven smoke (OLMo-2-1B)...", flush=True)
+        T.weave(["--smoke"])
+        print("    full staged woven smoke completed")
+    else:
+        print("    (skip full OLMo staged smoke; pass --woven to run it)")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--woven", action="store_true", help="also run the full OLMo staged woven smoke")
+    a = ap.parse_args()
+    print("================ GLaDOS ORGAN — consolidated self-test ================")
+    bank = B.build_bank(load_neural=True)
+    print(f"registry: {len(bank)} reductions -> {sorted(bank)}")
+    test_certified_reductions()
+    test_composer()
+    test_readout_noop()
+    test_woven(full=a.woven)
+    print("\nALL CHECKS PASS — clair/organ is the assembled GLaDOS organ: certified bank sound on "
+          "domain, composer sound across >=2 domains, readout no-op at init, woven entry runs.")
+
+
+if __name__ == "__main__":
+    main()
