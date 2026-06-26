@@ -1,0 +1,79 @@
+{
+ "args": {
+  "steps": 2500,
+  "bs": 12,
+  "lora_lr": 0.0002,
+  "gamma_lr": 0.001,
+  "lora_r": 16,
+  "inject_layer": 12,
+  "gamma_hidden": 256,
+  "per_rung_train": 400,
+  "per_rung_eval": 80,
+  "regime": "small",
+  "readout": "both",
+  "seed": 0,
+  "clean_only": true,
+  "smoke": false,
+  "out": "runs/alien_clean.json"
+ },
+ "gold_in": {
+  "partial": 1.0,
+  "wrong": 0.0
+ },
+ "results": {
+  "rich": {
+   "textlora": 0.2675,
+   "base": 0.0,
+   "per_quality": {
+    "clean": {
+     "woven": 1.0,
+     "woven_det": 1.0,
+     "lift": 0.7324999999999999
+    },
+    "partial": {
+     "woven": 0.4625,
+     "woven_det": 0.4625,
+     "lift": 0.195
+    },
+    "wrong": {
+     "woven": 0.0,
+     "woven_det": 0.0,
+     "lift": -0.2675
+    },
+    "corrupted": {
+     "woven": 0.245,
+     "woven_det": 0.245,
+     "lift": -0.02250000000000002
+    }
+   },
+   "n": 400
+  },
+  "point": {
+   "textlora": 0.24,
+   "base": 0.0,
+   "per_quality": {
+    "clean": {
+     "woven": 1.0,
+     "woven_det": 1.0,
+     "lift": 0.76
+    },
+    "partial": {
+     "woven": 0.24,
+     "woven_det": 0.24,
+     "lift": 0.0
+    },
+    "wrong": {
+     "woven": 0.0,
+     "woven_det": 0.0,
+     "lift": -0.24
+    },
+    "corrupted": {
+     "woven": 0.2425,
+     "woven_det": 0.2425,
+     "lift": 0.0025000000000000022
+    }
+   },
+   "n": 400
+  }
+ }
+}
