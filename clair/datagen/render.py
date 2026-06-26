@@ -345,12 +345,22 @@ class Rendering:
     question: str
 
 
-def render_problem(p, rng, aggregate=True) -> Rendering:
-    """Render one curriculum.Problem (or hard_tasks.Problem) into varied natural English."""
+def render_problem(p, rng, aggregate=True, allowed=None) -> Rendering:
+    """Render one curriculum.Problem (or hard_tasks.Problem) into varied natural English.
+
+    `allowed` (a set of skin keys) restricts which skins may dress this problem — used by the
+    dataset driver to keep a fixed pool of skins for train and a DISJOINT pool held out for the
+    OOD-phrasing split. The restriction is applied before any rng draw; callers that need a strict
+    guarantee should check `rendering.skin in allowed` and drop records that fell back."""
     factkinds = {("alldiff" if f[0] == "alldiff" else f[0]) for f in p.facts}
     cands = SK.skins_for(p.kind, factkinds)
+    if allowed is not None:
+        cands = [s for s in cands if s.key in allowed]
     if not cands:                                # fall back to any skin of the right kind
-        cands = [s for s in SK.SKINS if s.kind == p.kind] or SK.SKINS
+        cands = [s for s in SK.SKINS if s.kind == p.kind]
+        if allowed is not None:
+            cands = [s for s in cands if s.key in allowed] or cands
+        cands = cands or SK.SKINS
     skin = cands[int(rng.integers(len(cands)))]
 
     surfs, scheme, noun = _entity_surfaces(skin, p.n, rng)

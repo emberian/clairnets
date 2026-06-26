@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "fields": {
+    "id": "str \u2014 unique record id (split-prefixed content hash)",
+    "split": "str \u2014 train|val|ood_n|ood_phrasing|ood_relation",
+    "family": "str \u2014 generator family (coloring/equality/ordering/arithmetic/alldiff/parity_k/eqchain/forcedcolor)",
+    "domain_kind": "str \u2014 color|ordinal|number",
+    "skin": "str \u2014 story-world skin key used to render the problem",
+    "n": "int \u2014 number of CSP cells (entities)",
+    "d": "int \u2014 domain size (values 0..d-1)",
+    "n_facts": "int \u2014 number of ground-truth facts (>= 2)",
+    "determined": "bool \u2014 is the queried cell uniquely forced",
+    "text": "str \u2014 the rendered natural-language problem (the model input)",
+    "question": "str \u2014 the question sentence (also the tail of `text`)",
+    "answer": "str \u2014 value SURFACE of the answer, or 'cannot be determined'",
+    "answer_index": "int \u2014 value index 0..d-1, or -1 (ABSTAIN)",
+    "trace": "str \u2014 exact, organ-grounded reasoning trace (sound AC narrowing + exact closer)",
+    "query": "int \u2014 queried cell index",
+    "entities": "list[str] \u2014 surface per entity index (JSON in parquet)",
+    "values": "list[str] \u2014 surface per value index (JSON in parquet)",
+    "facts": "list \u2014 structured ground-truth facts (JSON in parquet)",
+    "cons": "list \u2014 extensional CSP (scope, allowed-tuples) for re-verification (JSON in parquet)",
+    "naming_scheme": "str \u2014 entity naming scheme used",
+    "structure": "str \u2014 layout structure (prose/semicolon/bullets/numbered)",
+    "seed": "int \u2014 shard seed that produced the record"
+  },
+  "exact_verification": "rebuild clair.csp.CSP from `cons`, run clair.hard_tasks.fast_dedP, confirm cell[query] == answer_index (singleton) or ABSTAIN."
+}

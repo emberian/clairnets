@@ -1,0 +1,344 @@
+{
+  "schema_version": "1.0",
+  "seed": 0,
+  "scale": 1.0,
+  "sizes": {
+    "train": 40000,
+    "val": 4000,
+    "ood_n": 4000,
+    "ood_phrasing": 4000,
+    "ood_relation": 4000
+  },
+  "total": 56000,
+  "verified": 56000,
+  "verify_mismatches": 0,
+  "dedup_dropped": {
+    "train": 0,
+    "val": 0,
+    "ood_n": 0,
+    "ood_phrasing": 0,
+    "ood_relation": 0
+  },
+  "splits": {
+    "train": {
+      "n": 40000,
+      "distinct_1": 0.0002,
+      "distinct_2": 0.0103,
+      "distinct_3": 0.1012,
+      "self_bleu": 0.1096,
+      "len_mean": 59.5,
+      "len_min": 10,
+      "len_max": 204,
+      "skins": {
+        "graph_coloring": 5213,
+        "map_regions": 5232,
+        "race": 5527,
+        "lockbox": 4466,
+        "scheduling": 5278,
+        "arithmetic": 5227,
+        "register_alloc": 7032,
+        "circuit": 2025
+      },
+      "structures": {
+        "semicolon": 8654,
+        "bullets": 8569,
+        "prose": 17259,
+        "numbered": 5518
+      },
+      "schemes": {
+        "bare_pool": 10855,
+        "noun_pool": 11042,
+        "noun_num": 10769,
+        "bare_letters": 7334
+      },
+      "collapse": {
+        "n_skeletons": 39971,
+        "top_share": 7.5e-05,
+        "top": [
+          [
+            "<E>, <E>, <E> and <E> are mutually distinct; <E> is <V>. What is the value of <E",
+            3
+          ],
+          [
+            "A few terms are linked by sums modulo <N>. <E> = <V>; <E> = <V>; <E>, <E>, <E>, ",
+            2
+          ],
+          [
+            "- <E>, <E>, <E> and <E> are pairwise distinct.\n- <E> = <V>.\n- <E> has the value ",
+            2
+          ],
+          [
+            "<E>, <E>, <E> and <E> are pairwise distinct; <E> holds <V>. What does <E> equal?",
+            2
+          ],
+          [
+            "<E> holds <V>; <E>, <E>, <E> and <E> are mutually distinct. What is the value of",
+            2
+          ]
+        ]
+      },
+      "families": {
+        "coloring": 8764,
+        "equality": 8713,
+        "ordering": 10805,
+        "arithmetic": 5532,
+        "alldiff": 6186
+      },
+      "determined_frac": 0.381
+    },
+    "val": {
+      "n": 4000,
+      "distinct_1": 0.0017,
+      "distinct_2": 0.0666,
+      "distinct_3": 0.2908,
+      "self_bleu": 0.118,
+      "len_mean": 59.7,
+      "len_min": 12,
+      "len_max": 200,
+      "skins": {
+        "graph_coloring": 500,
+        "scheduling": 533,
+        "circuit": 209,
+        "arithmetic": 541,
+        "register_alloc": 715,
+        "map_regions": 524,
+        "race": 531,
+        "lockbox": 447
+      },
+      "structures": {
+        "numbered": 527,
+        "semicolon": 864,
+        "prose": 1705,
+        "bullets": 904
+      },
+      "schemes": {
+        "noun_num": 1093,
+        "noun_pool": 1127,
+        "bare_pool": 1055,
+        "bare_letters": 725
+      },
+      "collapse": {
+        "n_skeletons": 4000,
+        "top_share": 0.00025,
+        "top": [
+          [
+            "<N>. <E> and <E> share an edge and must be colored differently.\n<N>. <E> is not ",
+            1
+          ],
+          [
+            "<E> starts before <E> or in the same slot; <E> is before <E> or ties with <E>; <",
+            1
+          ],
+          [
+            "A small logic board wires several gates together. The sum of <E> and <E> is <E>,",
+            1
+          ],
+          [
+            "Several variables satisfy modular equations. <E> equals <V>; <E> = <V>. <E>, <E>",
+            1
+          ],
+          [
+            "Consider a graph whose vertices each need a color.\n- <E> cannot equal <E>.\n- <E>",
+            1
+          ]
+        ]
+      },
+      "families": {
+        "equality": 849,
+        "ordering": 1064,
+        "arithmetic": 571,
+        "alldiff": 626,
+        "coloring": 890
+      },
+      "determined_frac": 0.388
+    },
+    "ood_n": {
+      "n": 4000,
+      "distinct_1": 0.0007,
+      "distinct_2": 0.0382,
+      "distinct_3": 0.2163,
+      "self_bleu": 0.1902,
+      "len_mean": 155.3,
+      "len_min": 29,
+      "len_max": 411,
+      "skins": {
+        "register_alloc": 827,
+        "race": 646,
+        "graph_coloring": 660,
+        "scheduling": 636,
+        "map_regions": 620,
+        "arithmetic": 264,
+        "circuit": 238,
+        "lockbox": 109
+      },
+      "structures": {
+        "numbered": 666,
+        "bullets": 816,
+        "prose": 1683,
+        "semicolon": 835
+      },
+      "schemes": {
+        "bare_pool": 1048,
+        "noun_pool": 1134,
+        "noun_num": 1067,
+        "bare_letters": 751
+      },
+      "collapse": {
+        "n_skeletons": 4000,
+        "top_share": 0.00025,
+        "top": [
+          [
+            "Allocate registers to the temporarys below.\n<N>. <E> is assigned <V>.\n<N>. <E> a",
+            1
+          ],
+          [
+            "Allocate registers to the variables below.\n<N>. <E> and <E> interfere and must l",
+            1
+          ],
+          [
+            "A race has just finished; here is what we know about the order.\n- <E> is at or b",
+            1
+          ],
+          [
+            "We assign machine registers to a set of temporarys. <E> and <E> take different v",
+            1
+          ],
+          [
+            "We must color the vertices of a small graph.\n- <E> and <E> are equal.\n- <E> and ",
+            1
+          ]
+        ]
+      },
+      "families": {
+        "coloring": 1052,
+        "equality": 1055,
+        "ordering": 1282,
+        "arithmetic": 611
+      },
+      "determined_frac": 0.561
+    },
+    "ood_phrasing": {
+      "n": 4000,
+      "distinct_1": 0.0014,
+      "distinct_2": 0.0579,
+      "distinct_3": 0.2334,
+      "self_bleu": 0.1683,
+      "len_mean": 61.8,
+      "len_min": 13,
+      "len_max": 206,
+      "skins": {
+        "frequency": 924,
+        "social_teams": 1312,
+        "timeline": 357,
+        "sensors": 778,
+        "prereqs": 629
+      },
+      "structures": {
+        "prose": 1679,
+        "bullets": 789,
+        "numbered": 665,
+        "semicolon": 867
+      },
+      "schemes": {
+        "bare_letters": 647,
+        "noun_num": 1114,
+        "noun_pool": 1101,
+        "bare_pool": 1138
+      },
+      "collapse": {
+        "n_skeletons": 4000,
+        "top_share": 0.00025,
+        "top": [
+          [
+            "<E> broadcasts on <V>, while <E>, <E> and <E> must all take different values. <E",
+            1
+          ],
+          [
+            "- <E> and <E> insist on sharing a team.\n- <E> differs from <E>.\n- <E> and <E> ta",
+            1
+          ],
+          [
+            "<E> is at <V>, while <E> occurred at <V>. In addition, <E> is at <V>, while <E> ",
+            1
+          ],
+          [
+            "No two of <E>, <E>, <E>, <E> and <E> are the same, and <E> holds <V>; <E> holds ",
+            1
+          ],
+          [
+            "No two of <E>, <E> and <E> are the same, and <E> and <E> cannot broadcast on the",
+            1
+          ]
+        ]
+      },
+      "families": {
+        "coloring": 1121,
+        "equality": 1115,
+        "ordering": 986,
+        "alldiff": 778
+      },
+      "determined_frac": 0.321
+    },
+    "ood_relation": {
+      "n": 4000,
+      "distinct_1": 0.0011,
+      "distinct_2": 0.045,
+      "distinct_3": 0.2167,
+      "self_bleu": 0.1901,
+      "len_mean": 67.9,
+      "len_min": 24,
+      "len_max": 210,
+      "skins": {
+        "boolean_logic": 1249,
+        "circuit": 751,
+        "graph_coloring": 589,
+        "register_alloc": 840,
+        "map_regions": 571
+      },
+      "structures": {
+        "bullets": 877,
+        "prose": 1776,
+        "semicolon": 956,
+        "numbered": 391
+      },
+      "schemes": {
+        "noun_pool": 1044,
+        "noun_num": 1065,
+        "bare_pool": 1059,
+        "bare_letters": 832
+      },
+      "collapse": {
+        "n_skeletons": 4000,
+        "top_share": 0.00025,
+        "top": [
+          [
+            "We track boolean signals under XOR constraints.\n- The parity of <E>, <E> and <E>",
+            1
+          ],
+          [
+            "<E>, <E>, <E> and <E> have even parity, and the parity of <E>, <E> and <E> is ev",
+            1
+          ],
+          [
+            "- The parity over <E>, <E>, <E> and <E> is even.\n- <E> reads <V>.\n- The parity o",
+            1
+          ],
+          [
+            "<E>, <E>, <E>, <E> and <E> XOR together to zero; <E> reads <V>; the parity over ",
+            1
+          ],
+          [
+            "Some bits are linked by parity; deduce the rest. <E> reads <V>; <E>, <E> and <E>",
+            1
+          ]
+        ]
+      },
+      "families": {
+        "parity_k": 2000,
+        "eqchain": 1009,
+        "forcedcolor": 991
+      },
+      "determined_frac": 0.644
+    }
+  }
+}

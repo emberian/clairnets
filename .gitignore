@@ -4,3 +4,4 @@ runs/
 *.json.tmp
 .DS_Store
 venv/
+data/glados_corpus/
