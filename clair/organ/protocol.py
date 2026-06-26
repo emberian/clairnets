@@ -92,6 +92,8 @@ class Reduction(ABC):
     name: str = "reduction"
     domain: str = ""                  # human label of what it reasons about
     state_type: str = "csp-domain"    # which State it consumes; csp-domain organs reduced-product
+    verifier_only: bool = False       # True => the ORACLE/verifier (e.g. exact_dedP), NOT a deployable
+                                      #         runtime reduction; excluded from certified_csp_reductions
 
     # -- core narrowing --------------------------------------------------------------------------
     @abstractmethod

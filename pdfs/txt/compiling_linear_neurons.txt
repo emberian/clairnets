@@ -1,0 +1,3572 @@
+Compiling to linear neurons
+
+arXiv:2511.13769v1 [cs.LG] 14 Nov 2025
+
+JOEY VELEZ-GINORIO, University of Pennsylvania, USA
+NADA AMIN, Harvard University, USA
+KONRAD PAUL KORDING, University of Pennsylvania, USA
+STEVE ZDANCEWIC, University of Pennsylvania, USA
+We don’t program neural networks directly. Instead, we rely on an indirect style where learning algorithms,
+like gradient descent, determine a neural network’s function by learning from data. This indirect style is often
+a virtue; it empowers us to solve problems that were previously impossible. But it lacks discrete structure. We
+can’t compile most algorithms into a neural network—even if these algorithms could help the network learn.
+This limitation occurs because discrete algorithms are not obviously differentiable, making them incompatible
+with the gradient-based learning algorithms that determine a neural network’s function. To address this, we
+introduce Cajal: a typed, higher-order and linear programming language intended to be a minimal vehicle for
+exploring a direct style of programming neural networks. We prove Cajal programs compile to linear neurons,
+allowing discrete algorithms to be expressed in a differentiable form compatible with gradient-based learning.
+With our implementation of Cajal, we conduct several experiments where we link these linear neurons against
+other neural networks to determine part of their function prior to learning. Linking with these neurons allows
+networks to learn faster, with greater data-efficiency, and in a way that’s easier to debug. A key lesson is that
+linear programming languages provide a path towards directly programming neural networks, enabling a rich
+interplay between learning and the discrete structures of ordinary programming.
+CCS Concepts: • Theory of computation → Type theory; Denotational semantics; • Software and its
+engineering → Compilers; • Computing methodologies → Machine learning.
+
+1
+
+INTRODUCTION
+
+This paper reduces the problem of directly programming neural
+networks to a question of compiling: when do neural networks
+implement discrete algorithms? As a case study, we focus on a
+restricted but expressive class of discrete algorithms, those defined over boolean data. To illustrate the challenge, we present a
+simple example that exposes the gap between direct and indirect
+programming—a gap that ultimately stems from difficulties with
+compiling.
+Consider how we could train a neural network to solve the
+task in Fig. 1. We need a function which conditionally transforms
+an input image 𝑥:
+⊲ If 𝑥 is a 1, return 𝑥
+
+f(
+
+)
+
+f(
+
+)
+
+f(
+
+)
+
+f(
+
+)
+
+Fig. 1. Transforming MNIST digits
+
+⊲ If 𝑥 isn’t a 1, transform 𝑥 to a 1
+A simple approach is to define a 3-layer neural network, using data1 like those shown in Fig. 1
+to train the network. An advantage here is ease of specification. Fig. 2a shows how we could
+program this network; it’s just a composition of functions between vectors. Our efforts lie instead
+on heuristic adjustments to learning, so that the network adequately learns our task. This indirect
+style of programming is typical in machine learning, where we defer to learning algorithms to
+1 These data are from the Modified National Institute of Standards and Technology (MNIST) database [17].
+
+Authors’ addresses: Joey Velez-Ginorio, joeyv@seas.upenn.edu, University of Pennsylvania, USA; Nada Amin, namin@seas.
+harvard.edu, Harvard University, USA; Konrad Paul Kording, kording@upenn.edu, University of Pennsylvania, USA; Steve
+Zdancewic, stevez@seas.upenn.edu, University of Pennsylvania, USA.
+
+2
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+f :: Real(784) -> Real(784)
+f = w2 . relu . w1
+where w1 x = _
+w2 x = _
+
+f :: Real(784) -> Real(784)
+f image = if one image then image else toOne image
+where one
+x = _
+toOne x = _
+
+(a) Indirectly programmed neurons
+
+(b) Directly programmed neurons
+
+Fig. 2. Programming style and its impact on program structure
+
+determine a neural network’s function [6, 16]. And it continues to perform remarkable feats. Neural
+networks can learn to identify objects in an image, write code, or even respond sensibly2 to most
+questions [2, 15]. But this deferral to learning comes at a cost. We lack control over the algorithms
+neural networks will learn, how long it can take to learn them, or how to debug them when they
+behave inadequately [7, 26].
+We could instead define a neural network where we specify a part of the algorithm it will learn,
+like in Fig. 2b. The program first checks if the input image is a 1. If so, it returns the image. If
+the input isn’t a 1, it transforms the input into a 1. This programming style directly specifies part
+of the algorithm: a conditional. It then defers to learning where we lack algorithmic intuition,
+for detecting whether an image is a 1, or transforming an image into a 1. An important point
+about the direct style is its retreat to ordinary programming. We don’t just program with vectors,
+but also discrete structures—booleans. Yet no one programs neural networks this way. We lack
+programming languages where you can.3
+
+⊗
+W1
+
+W2
+
+(a) Indirectly programmed neurons
+
+one
+toOne
+
+⊗
+
++
+
+(b) Directly programmed neurons
+Fig. 3. Programming style and its impact on neural network structure
+
+The issue is our compilers. To define a neural network, your program must, at the very least,
+compile into a function between vectors. For the indirect style, compiling is simpler. A program
+like Fig. 2a is already a function between vectors: essentially no translation occurs when compiling
+it to Fig. 3a. But for the direct style, compiling is tricky. A program like Fig. 2b uses both vectors
+and booleans: these booleans and conditionals must translate to vectors and functions over vectors
+when compiling to Fig. 3b. Of course, the compiler could be wrong. Yet no compiler correctness
+theory clarifies what it means for a compiler like this to be wrong, or correct.4 Beyond correctness,
+2 Sensible but not necessarily correct.
+3 Later we discuss related works which are trying to change this (Section 6).
+4 There are no compiler correctness theorems or proofs concerning these kinds of compilers.
+
+Compiling to linear neurons
+
+3
+
+this theory could change how we build and understand neural networks, allowing a rich interplay
+between learning and the discrete structures of ordinary programming.
+We think this theory is hiding in plain sight—the theory of linear programming languages [30].
+These languages restrict how a program can use its variables. For example, the Rust programming
+language restricts the way its programs can reference memory, which eliminates entire classes
+of memory-related bugs [19]. But a lesser known property of linear programming languages is
+that their programs can compile to linear maps: a function between vectors also subject to certain
+restrictions [27]. In other words, you can define linear maps using programs, even if they contain
+discrete structures. This is especially powerful when you recognize that neural networks are full of
+linear maps—in the form of linear neurons [25]. It leads to the most important idea of this paper:
+We can use linear programming languages to directly program neural networks.
+Exploring this idea led us to Cajal, a minimal, typed, higher-order and linear programming
+language whose programs compile to linear neurons. This paper explains its design and implementation. Specifically, our contributions are:
+⊲ We specify the syntax, evaluation, and typing of Cajal programs (Section 4.1).
+⊲ We prove that Cajal programs compile correctly to linear neurons (Section 4.2), also discussing the limits of what we can expect of a compiler correctness theorem (Section 4.3).
+⊲ We implement Cajal, directly programming a neural network to solve the conditional
+transform task from Fig. 1 and a conditional classification task (Section 5).
+Cajal is intended as a minimal vehicle for exploring a theory of directly programming neural
+networks. Such a theory would help us address which types may be difficult, if impossible to add, or
+to understand which kinds of neurons can even be programmed. By contrast, prior work on direct
+programming has been primarily empirical, focusing on experiments that test whether directly
+programmed neural networks learn more effectively (Section 6). These experiments are essential.
+But they do not address the central question of our work: when do neural networks implement
+discrete algorithms?
+2
+
+LINEAR NEURONS
+
+Before we introduce Cajal, we want to make clear what linear neurons are. They are linear maps, a
+special kind of function between vector spaces5 . For example, consider the function 𝑓 : R3 → R2 .
+ 𝑥 1   2 · 𝑥 + 4 · 𝑥 
+1
+2
+𝑓 𝑥 2  =
+𝑥
+3
+𝑥 3 
+ 
+It is linear because it satisfies the following property.
+𝑧 1  
+ 𝑦1 
+ 𝑦1  
+ 𝑧 1  
+ 
+
+
+
+
+
+
+𝑓 𝛼 · 𝑦2  + 𝛽 · 𝑧 2  = 𝛼 · 𝑓 𝑦2  + 𝛽 · 𝑓 𝑧 2 
+𝑦3 
+𝑧 3 
+𝑦3 
+𝑧 3 
+ 
+ 
+ 
+ 
+A powerful consequence of this property is that we can understand 𝑓 in terms of simpler parts.
+5 A vector space is a set 𝑉 with a vector addition + and scalar multiplication · on 𝑉 , more details in [4].
+
+4
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+ 0 
+ 0 
+ 1 
+ 1 
+
+
+
+
+
+
+𝑓 2 = 1 · 𝑓 0 + 2 · 𝑓 1 + 3 · 𝑓 0
+1
+0
+0
+3
+ 
+ 
+ 
+ 
+Notice how we can decompose the output of 𝑓 in terms of three observations—its basis. Any
+basis of a vector space allows you to do this decomposition, and for any input.
+ 1  2
+𝑓 0 =
+0
+0
+ 
+
+ 0  4
+𝑓 1 =
+0
+0
+ 
+
+ 0  0
+𝑓 0 =
+1
+1
+ 
+
+For any linear map, it’s enough to know how it behaves on the basis. This leads to a powerful
+alternative for defining linear maps: a matrix. You can define the matrix 𝑊 of 𝑓 by stacking columnwise the output of 𝑓 on each basis vector, as we do in Fig. 5. To compute 𝑓 (𝑥) you can instead
+compute a matrix multiplication 𝑊 𝑥. This is also how linear neurons compute their output. The
+entries of a matrix denote the strength of connections between neurons, and their output on an
+input is exactly 𝑊 𝑥. Fig. 5 summarizes the correspondence: linear neurons are linear maps.
+
+𝑥1
+ 𝑥 1   2 · 𝑥 + 4 · 𝑥 
+1
+2
+𝑓 𝑥 2  =
+𝑥
+3
+𝑥 3 
+ 
+
+
+
+2
+0
+
+4
+0
+
+0
+1
+
+𝑥2
+
+4
+𝑦2
+
+𝑥3
+Linear Map
+
+2
+𝑦1
+
+
+
+Matrix
+
+1
+
+Linear neural network
+
+Fig. 4. Correspondence between a linear map, matrix, and linear neural network
+
+If we consider linear maps between matrices, we can extend this correspondence to hypernetworks,
+neural networks whose outputs are neural networks [13]. For example, consider the following
+linear map 𝑔 which maps a real number 𝑟 ∈ R to a matrix 𝑊 ∈ R2×2 . Later, we will see that these
+hypernetworks can implement higher-order programs (Section 4.2.3).
+However, these neat correspondences break for nonlinear maps and nonlinear neural networks.
+It’s not enough to know how a nonlinear map behaves on a basis. We cannot reduce its behavior
+to simpler observations as before. There is no analog of a matrix for nonlinear maps. As a result,
+directly constructing a nonlinear neural network from a nonlinear map is difficult. Universal
+approximation theorems6 for neural networks sometimes rely on constructive techniques for
+directly building neural networks which approximate nonlinear maps [11]. But they are difficult to
+exploit in practice, due to their asymptotics [10]. This is why nonlinear neural networks are typically
+built through learning. Nevertheless, nonlinear neural networks contain lots of linear structure,
+and the overarching theme of this work is that the linear structure can be directly programmed.
+6 These theorems identify the class of functions a neural network can learn to approximate.
+
+Compiling to linear neurons
+
+5
+
+3
+
+𝑥1
+    3 · 𝑥
+𝑔 𝑥 =
+0
+
+0
+0
+
+3
+ 
+0
+ 
+0
+ 
+0
+ 
+
+
+
+Linear Map
+
+Matrix
+
+𝑦1
+
+𝑧1
+
+𝑦2
+
+𝑧2
+
+Linear hypernetwork
+
+Fig. 5. Correspondence between a linear map, matrix, and linear hypernetwork
+
+3
+
+LINEAR PROGRAMS
+
+Cajal is a linear programming language—a language with linear types [30]. These types ensure
+that programs use a variable exactly once when they evaluate. 7 This means linear programs can’t
+duplicate or discard their variables. It’s what links linear programs and linear maps.
+fls :: Bool -> Bool
+fls x = if x then False else x
+
+fls :: Bool -> Bool
+fls x = if x then False else False
+
+(a) Programming nonlinearly
+
+(b) Programming linearly
+
+Fig. 6. Programming with and without duplicating/discarding variables
+
+Consider the linear and nonlinear version of fls in Fig. 6. The nonlinear version in Fig. 6a
+duplicates x for each branch. If applied to an argument, the function will use x when checking
+the condition and when returning a value. But the linear version in Fig. 6b doesn’t duplicate x. If
+applied to an argument, the function will only use x when checking the condition. Additionally, the
+nonlinear version in Fig. 6a discards the duplicated x (from its available context) when returning ff
+in the then branch of the conditional. But the linear version in Fig. 6b doesn’t discard anything.
+
+✗
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+𝑥 : 2 ⊢ ff : 2
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+𝑥 : 2 ⊢ if 𝑥 then ff else 𝑥 : 2
+
+✓
+
+∅ ⊢ 𝜆𝑥 .if 𝑥 then ff else 𝑥 : 2 → 2
+
+(a) Typing nonlinearly
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+∅ ⊢ ff : 2
+
+∅ ⊢ ff : 2
+
+𝑥 : 2 ⊢ if 𝑥 then ff else ff : 2
+∅ ⊢ 𝜆𝑥 .if 𝑥 then ff else ff : 2 ⊸ 2
+
+(b) Typing linearly
+
+Fig. 7. Typing with and without duplicating/discarding variables
+
+Typing can detect variable duplication and discarding. The nonlinear typing in Fig. 7a duplicates
+the variable 𝑥 : 2 when typing the conditional. It shares a context across each subprogram. But
+7 There are some exceptions, but the intuition is sound for this paper.
+
+6
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+the linear typing in Fig. 7b doesn’t duplicate 𝑥 : 2 when typing the conditional. It splits a context
+across each subprogram. Additionally, the nonlinear typing in Fig. 7a discards the variable 𝑥 : 2
+when typing ff in the then branch of the conditional. But the linear typing in Fig. 7b doesn’t discard
+anything across each subprogram.
+To enforce these restrictions generally, linear typing must ensure that the structural rules of
+contraction and weakening are not permissible. [23] Their impermissibility establish a remarkable
+connection between linear programs, linear maps, and linear neurons. However, not just any linear
+programming language can compile to linear neurons. Beyond maintaining a connection to linear
+maps, a linear programming language must ensure its connection is to linear maps between vector
+spaces over real numbers, and that these linear maps are effectively computable8 . These are the
+central tensions in balance when designing Cajal.
+4
+
+CAJAL (2, ⊸)
+
+̸⇓
+
+(𝜆𝑥 .𝑥)tt
+
+ff
+
+⇓
+tt
+
+⟦−⟧
+
+⟦−⟧
+
+
+
+1 0
+0 1
+
+≠
+
+ 
+1
+0
+
+⟦−⟧
+
+=
+
+ 
+0
+1
+
+ 
+1
+0
+Fig. 8. Predicting the behavior of compiled neurons
+
+Cajal programs compile correctly to linear neurons. In this section we clarify what that means
+and how to prove it. Fig. 8 details what we want. If we know how Cajal programs will (⇓) and
+won’t (̸⇓) evaluate, we should be able to predict how their compiled neurons will (=) and won’t
+(≠) evaluate. If the compiler (⟦−⟧) permits these predictions, then we say it is correct.
+4.1
+
+Defining
+
+4.1.1 Syntax. Cajal is a minimal, typed, higher-order and linear programming language. Fig. 9
+details its syntax, equivalent to a simply-typed lambda calculus with booleans (2). We want Cajal
+to be easy to understand and iterate from. Hence we focus on a minimal language, the simplest
+functional programming language where you can directly program neural networks. In Section
+7 we discuss simple extensions. They are absent here because they obscure the theory for little
+benefit.
+4.1.2 Evaluating. The big-step evaluation relation in Fig. 10 defines how Cajal expressions evaluate.
+We chose a big-step relation because it simplifies proofs of type soundness and compiler correctness.
+The choice of call-by-value evaluation strategy was arbitrary. Nothing we discuss in this section
+8 There shouldn’t be exponential scaling hiding somewhere.
+
+Compiling to linear neurons
+
+7
+
+Syntax
+𝑒 ∈ Expression
+𝑒 B
+
+𝑥 ∈ Var
+| tt
+| ff
+| if 𝑒 1 then 𝑒 2 else 𝑒 3
+| 𝜆𝑥 .𝑒
+| 𝑒 1𝑒 2
+
+variable
+true
+false
+conditional
+linear map
+linear application
+
+𝜏 ∈ Type
+𝜏 B 2
+| 𝜏1 ⊸ 𝜏2
+
+𝑣 ∈ Value
+𝑣 B tt
+| ff
+| 𝜆𝑥 .𝑒
+
+boolean
+linear map
+
+Δ ∈ Context
+true
+false
+linear map
+
+Δ B ∅
+| Δ, 𝑥 :𝜏
+
+empty
+binder
+
+Fig. 9. Syntax of Cajal ( 2, ⊸)
+
+hinges on that choice. The notation {𝑥 ↦→ 𝑣 }(𝑒) describes a substitution, where 𝑥 is a variable
+replaced by the value 𝑣 in the expression 𝑒. To simplify the proofs we assume every variable name
+is unique, eliding details concerning variable capture [5].
+
+Evaluating
+𝑒 ⇓ 𝑣 ⇐⇒ expression 𝑒 evaluates to 𝑣
+𝑒 1 ⇓ tt
+𝑣 ⇓𝑣
+
+𝑒2 ⇓ 𝑣 2
+
+𝑒 1 ⇓ ff
+
+if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 2
+𝑒 1 ⇓ 𝜆𝑥 .𝑒
+
+𝑒2 ⇓ 𝑣 2
+
+𝑒3 ⇓ 𝑣 3
+
+if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 3
+{𝑥 ↦→ 𝑣 2 }(𝑒) ⇓ 𝑣
+
+𝑒 1𝑒 2 ⇓ 𝑣
+
+Fig. 10. Evaluating Cajal ( 2, ⊸) programs
+
+4.1.3 Typing. The typing relation in Fig. 11 defines what a Cajal program is. Throughout this
+paper, programs always refer to a typing derivation Δ ⊢ 𝑒 : 𝜏. And these programs are similar
+to those from a simply-typed lambda calculus. However, the key difference is the presence of a
+context splitting relation ◦ which takes two contexts and ensures their domains are disjoint. For
+example, (𝑥 : 2, 𝑦 : 2) ◦ (𝑧 : 2) because {𝑥, 𝑦} and {𝑦} are disjoint sets. However, (𝑥 : 2, 𝑦 : 2) ◦ (𝑦 : 2)
+is not in the context splitting relation because {𝑥, 𝑦} and {𝑦} both contain 𝑦 (see Appendix A.1
+for definition of Δ1 ◦ Δ2 ). The context splitting relation allows us to ensure contraction (variable
+duplication) is not permissible in our programs (Section 3).
+With the typing relation we can identify the expressions with behavior (can evaluate to values).
+For example, ∅ ⊢ (𝜆𝑥 .𝑥)tt : 2 is a program. It evaluates to tt because (𝜆𝑥 .𝑥)tt ⇓ tt. Even expressions
+with free variables can evaluate, so long as we provide a source environment 𝜎 that maps free
+variables to values. For example, 𝜎 (𝑥) ⇓ tt if the source environment 𝜎 is {𝑥 ↦→ tt} (see Appendix
+
+8
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Typing
+Δ ⊢ 𝑒 : 𝜏 ⇐⇒ program 𝑒 has type 𝜏
+
+𝑥 :𝜏 ⊢ 𝑥 : 𝜏
+
+∅ ⊢ tt : 2
+
+∅ ⊢ ff : 2
+
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2
+Δ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2
+
+Δ1 ⊢ 𝑒 1 : 2 Δ2 ⊢ 𝑒 2 : 𝜏 Δ2 ⊢ 𝑒 3 : 𝜏
+Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+
+Δ1 ⊢ 𝑒 1 : 𝜏 1 ⊸ 𝜏 2 Δ2 ⊢ 𝑒 2 : 𝜏 1
+Δ1 ◦ Δ2 ⊢ 𝑒 1 𝑒 2 : 𝜏 2
+
+Fig. 11. Typing Cajal ( 2, ⊸) programs
+
+A.2 for definition of 𝜎). This is important because the values programs evaluate to can be used to
+generate predictions for what compiled neurons should do. It’s essential to our notion of compiler
+correctness. The following theorem ensures every program has values that can be used as a
+basis for this prediction. Note that the relation Δ ⊢ 𝜎 ensures that source environments map
+variables to values of the type specified in the context (also defined in Appendix A.2). For example,
+𝑥 : 2 ⊢ {𝑥 ↦→ tt} is in the relation. However, 𝑥 : 2 ⊢ {𝑥 ↦→ 𝜆𝑦.𝑦} is not because 𝜆𝑦.𝑦 is not type 2.
+Theorem 1: (Programs evaluate to values)
+If Δ ⊢ 𝑒 : 𝜏 and Δ ⊢ 𝜎 , then ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+Outline of Proof.
+The proof is nearly identical to the logical relations proof of termination for simply-typed lambda
+calculus [23]. It differs only due to context splitting Δ1 ◦ Δ2 . A detailed proof is in Appendix B.5.
+4.2
+
+Compiling
+
+Compiling to linear neurons requires us to map programs to linear maps. Before presenting our
+solution, it’s helpful to first consider an incorrect approach. This allows us to sketch out the
+important choices en route to our compiler correctness theorem.
+4.2.1 An incorrect approach. The first key choice our compiler makes is to map each type to a
+vector space of finite dimension. The vector space’s dimension relates to the number of neurons
+needed to implement values of that type. Therefore, vector spaces with infinite dimension are a
+non-starter, they would need an infinite number of neurons. Additionally, their dimension, even if
+finite, must scale effectively as a function of types. The number of neurons needed to implement a
+value of a type should not grow exponentially as types grow more complex. Otherwise to implement
+simple higher-order functions may quickly require too many neurons. With this in mind, let’s try
+the following. We map all types to vector spaces whose dimension is 1.
+⟦2⟧ = R
+1×1
+
+⟦𝜏1 ⊸ 𝜏2 ⟧ = R
+
+= {1, 4, . . .}
+   
+= { 3 , 8 , . . .}
+
+The second key choice our compiler makes is to map each value to a vector in the vector space
+determined by its type. Correctness hinges on how we map tt and ff. They must9 injectively map
+9 Later, we discuss how to relax this requirement (Section 7).
+
+Compiling to linear neurons
+
+9
+
+to a basis. Otherwise it won’t be possible to find linear maps that correspond to functions over
+booleans. For example, consider this attempt.
+⊲ For tt we pick arbitrarily from R,
+⟦tt⟧ = 2
+⊲ For ff we pick arbitrarily from R,
+⟦ff⟧ = 5
+⊲ For 𝜆𝑥 .𝑥 we need a matrix 𝑊 where 𝑊 ⟦tt⟧ = ⟦tt⟧ and 𝑊 ⟦ff⟧ = ⟦ff⟧,
+ 
+⟦𝜆𝑥 .𝑥⟧ = 1
+⊲ For 𝜆𝑥 .if 𝑥 then tt else tt we need a matrix 𝑊 where 𝑊 ⟦tt⟧ = ⟦tt⟧ and 𝑊 ⟦ff⟧ = ⟦tt⟧. But
+this 𝑊 cannot exist because it would violate both the preservation of vector addition and
+scalar multiplication by linear maps.
+These issues arise because we didn’t injectively map tt and ff to a basis; {2, 5} is not a basis for
+R. Worse, a basis for R contains only one vector. Therefore no such injective map exists. But we
+can correct these issues, so long as we compile types to vector spaces whose dimension match
+the number of distinct 10 values of a type. As a result, we can always find an injective map from
+values to a basis. In turn, there will be linear maps whose behavior mirrors Cajal programs. Let’s
+try again.
+4.2.2 A correct approach. Recall the first key choice our compiler makes is to map each type to a
+vector space of finite dimension. The type 2 has two distinct values tt and ff. Therefore we need a
+vector space whose basis contains at least two elements—R2 is a natural choice. The type 𝜏1 ⊸ 𝜏2 ,
+if it really defines linear maps, contains 𝑚 · 𝑛 distinct values, where dim(𝜏2 ) = 𝑚 is the number of
+distinct values at input type 𝜏1 and dim(𝜏1 ) = 𝑛 is the number of distinct values at input type 𝜏1 . At
+this type R𝑚×𝑛 is a natural choice—a vector space of matrices with 𝑚 rows and 𝑛 columns. The
+next few examples demonstrate this.
+⟦2⟧ = R2
+
+dim(2) = 2
+
+dim(𝜏2 ) × dim(𝜏1 )
+
+dim(𝜏1 ⊸ 𝜏2 ) = dim(𝜏1 ) · dim(𝜏2 )
+
+⟦𝜏1 ⊸ 𝜏2 ⟧ = R
+
+Recall the second key choice our compiler makes is to map each value to a vector in the vector
+space determined by its type. By an informed choice on compiling types, we elide issues from the
+incorrect approach.
+⊲ For tt we pick injectively from a basis11 of R2 ,
+ 
+1
+⟦tt⟧ =
+0
+⊲ For ff we pick injectively from a basis of R2 ,
+ 
+0
+⟦ff⟧ =
+1
+10 Distinct values aren’t contextually equivalent.
+11 Throughout this paper we use orthonormal bases [4], which simplify the process of extracting the coefficients of matrices.
+
+10
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ For 𝜆𝑥 .𝑥 we need a matrix 𝑊 where 𝑊 ⟦tt⟧ = ⟦tt⟧ and 𝑊 ⟦ff⟧ = ⟦ff⟧,
+
+
+1 0
+⟦𝜆𝑥 .𝑥⟧ =
+0 1
+⊲ For 𝜆𝑥 .if 𝑥 then tt else tt we need a matrix 𝑊 where 𝑊 ⟦tt⟧ = ⟦tt⟧ and 𝑊 ⟦ff⟧ = ⟦tt⟧.
+
+
+1 1
+⟦𝜆𝑥 .if 𝑥 then tt else tt⟧ =
+0 0
+4.2.3 A formal approach. The compiler in Fig. 12 turns these intuitions into an algorithm for
+compiling Cajal programs to linear neurons. It also addresses the last key choice our compiler makes,
+how to compile expressions. The compiler maps a program Δ ⊢ 𝑒 : 𝜏 and a target environment 𝜎® to
+neurons 𝑒®.12 These target environments
+ ⊺ denoted by
+  ⊺map variables 𝑥 to vectors in the vectorspace
+its type. For example, 𝑥 : 2 ⊢ {𝑥 ↦→ 4 8 } is a target environment mapping 𝑥 to 4 8 ∈ ⟦2⟧ (see
+Appendix A.3 for definition of Δ ⊢ 𝜎® ). The compiler is only well-behaved on target environments
+satisfying this relation. We will demonstrate the compiler’s behavior with several examples, and
+then a theorem justifying that it is correct.
+
+Compiling
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 ) = 𝑒® ⇐⇒ program 𝑒 compiles to neurons 𝑒®
+
+⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣® }) = 𝑣®
+
+ ⊺
+⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+
+∀ bin
+𝑗 ∈ basis⟦𝜏1 ⟧,
+
+ ⊺
+⟦∅ ⊢ ff : 2⟧(∅) = 0 1
+
+b𝑖out ∈ basis⟦𝜏2 ⟧
+Í
+out
+⟦Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = 𝑒®1
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝑒®2
+
+⟦Δ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 ) = [𝛼𝑖 𝑗 ]
+
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧(𝜎®1 ◦ 𝜎®2 ) = 𝑒®1 (𝑒®2 )𝜏2
+
+
+⊺
+⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 ) = 𝛼 1 𝛼 2
+⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 ) = 𝑒®2
+⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 ) = 𝑒®3
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(𝜎®1 ◦ 𝜎®2 ) = 𝛼 1 · 𝑒®2 + 𝛼 2 · 𝑒®3
+
+Fig. 12. Compiling Cajal ( 2, ⊸) programs to linear neurons
+
+Compiling variables and constants is straight-forward. Variables map to whatever the environment 𝜎® specifies, and the constants tt and ff are injectively mapped to a basis of R2 . But functions
+are more subtle. Consider how we compile ∅ ⊢ 𝜆𝑥 .𝑥 : 2 ⊸ 2 below. Functions compile to matrices,
+and the challenge is determining the coefficients of the matrix 𝛼𝑖 𝑗 . It’s similar to determining the
+matrix of a linear map. We must observe how the body of a function
+ compiles
+ ⊺when under an
+⊺ 
+1
+0
+0
+1
+environment that maps 𝑥 to each basis element 𝑏 in
+∈
+basis⟦2⟧
+=
+{
+,
+}. The function
+𝑗
+13
+basis⟦𝜏⟧ just generates the standard basis for the vector space denoted by a type (see Appendix
+12 Technically, the compiler is a relation. But we refer to it as mapping programs throughout the paper, consistent with how
+
+an implementation would behave.
+13 See [4] for more details on the standard basis.
+
+Compiling to linear neurons
+
+11
+
+A.9 for definition). After decomposing the output of the compiler in terms of basis⟦2⟧, we can
+extract the coefficients of the matrix.
+
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧({𝑥 ↦→
+
+ 
+ 
+ 
+ 
+1
+1
+1
+0
+}) =
+=1·
++0·
+0
+0
+0
+1
+
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧({𝑥 ↦→
+
+
+⟦∅ ⊢ 𝜆𝑥 .𝑥 : 2⟧(∅) =
+
+1 0
+0 1
+
+ 
+ 
+ 
+ 
+0
+0
+1
+0
+}) =
+=0·
++1·
+1
+1
+0
+1
+
+
+
+Compiling application is simpler. The function compiles to a matrix, the argument compiles to
+a vector, and the application compiles into a matrix-vector multiplication [4]. The subscript on
+𝑒®1 (𝑒®2 )𝜏 determines the vector space of the output, which is needed to ensure matrix multiplication
+behaves correctly. For example, a 4 × 2 matrix might be describing the linear map 𝑓 : R2 ⊸ R4 or
+𝑓 : R2 ⊸ R2×2 . To correctly model application of the linear map, the matrix multiplication must
+know the intended range. But when it is clear from context, we omit the subscript 𝜏 on matrix
+multiplication (see Appendix A.10 for definition).
+The next example demonstrates how applications are compiled for the program ∅ ⊢ (𝜆𝑥 .𝑥)tt : 2.
+To be correct, it must preserve the behavior of the original program; we should be able to predict
+what compiled neurons will and won’t do. To generate our predictions we just run the original
+program and observe what it does and doesn’t evaluate to. Since (𝜆𝑥 .𝑥)tt ⇓ tt and (𝜆𝑥 .𝑥)tt ̸⇓ ff, we
+must check that ⟦(𝜆𝑥 .𝑥)tt⟧ = ⟦tt⟧ and ⟦(𝜆𝑥 .𝑥)tt⟧ ≠ ⟦ff⟧. Both hold, so the example is correct.
+···
+
+⟦∅ ⊢ 𝜆𝑥 .𝑥 : 2 ⊸ 2⟧(∅) =
+
+1 0
+0 1
+
+
+⟦∅ ⊢ tt : 2⟧(∅) =
+
+
+⟦∅ ⊢ (𝜆𝑥 .𝑥)tt : 2⟧(∅) =
+
+1 0
+0 1
+
+ 
+1
+0
+
+ 
+1
+0 2
+
+Compiling conditionals is interesting because there appear to be reasonable alternatives. Preserving the behavior of the original program is important, but it turns out a correct compiler to
+neurons must do more. Let’s consider an alternative for compiling conditionals.
+
+⊺
+⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 ) = 𝛼 1 𝛼 2
+
+✗
+
+⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 ) = 𝑒®2
+⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 ) = 𝑒®3
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(𝜎®1 ◦ 𝜎®2 ) =
+
+(
+𝑒®2
+𝑒®3
+
+if 𝛼 1 = 1
+otherwise
+
+Essentially all programming languages for defining neural networks, if they support conditionals,
+implement a rule like this—a hard branching conditional [9, 21]. If 𝑒 1 evaluates to tt, you compile the
+true branch 𝑒 2 , otherwise you compile the false branch 𝑒 3 . In a sense it’s not incorrect, it preserves the
+behavior of programs. For example, if tt then tt else tt ⇓ tt and if tt then tt else tt ̸⇓ ff, and using the
+hard branching conditional ensures ⟦if tt then tt else tt⟧ = ⟦tt⟧ and ⟦if tt then tt else tt⟧ ≠ ⟦ff⟧.
+This is useful if, once a neural network is trained, you want to switch between using different
+neural networks depending on some condition. However, before training, a hard branch breaks
+differentiation.
+As a result, you can’t jointly train a neural network that produces the condition
+
+⊺
+𝛼 1 𝛼 2 and the outcomes of each branch 𝑒®2 and 𝑒®3 ; it can’t be used to solve the conditional
+transform task with the data from Fig. 1. The central issue is that the output, outside the boundary
+
+12
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+
+⊺
+
+⊺
+condition 𝛼 1 = 1, does not depend on 𝛼 1 𝛼 2 . Therefore the gradient with respect to 𝛼 1 𝛼 2
+is zero almost everywhere.
+ As a⊺result, gradient-based learning techniques can’t train a neural
+network that determines 𝛼 1 𝛼 2 . This is why we opt for the following soft branching conditional.
+
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧({𝑥 ↦→ 𝑣® }) =
+
+✓
+
+ 
+𝛼1
+𝛼2
+
+⟦∅ ⊢ tt : 2⟧(∅) =
+
+ 
+1
+0
+
+⟦∅ ⊢ ff : 2⟧(∅) =
+
+⟦𝑥 : 2 ⊢ if 𝑥 then tt else tt : 2⟧({𝑥 ↦→ 𝑣® }) = 𝛼 1 ·
+
+ 
+0
+1
+
+ 
+ 
+1
+0
++ 𝛼2 ·
+0
+1
+
+
+⊺
+The soft branching conditional weights the output according to the compiled condition 𝛼 1 𝛼 2 .
+It’s correct in the sense that it preserves the behavior of programs. But it also won’t break learning.
+We use it to train a neural network like Fig. 3b to solve the conditional transform task from Fig. 1
+(Section 5).
+Our last example before discussing the compiler correctness theorem will be higher-order: a
+linearly typed variant of a Church encoded ff. These Church encodings provide ways of representing discrete data using higher-order functions [23]. For our compiler, they allow us to
+embed discrete data (in this case, booleans) into vector spaces of varying dimension, and in
+non-obvious ways. They also compile to linear hypernetworks (Section 2) because its matrix denotes a linear map 𝑓 : R2 ⊸ R2×2 . To simplify things, we present the derivation in two parts.
+First, we compile a subprogram 𝑥 : 2 ⊢ 𝜆𝑦.if 𝑥 then 𝑦 else 𝑦 : 2 ⊸ 2, and then the full encoding
+∅ ⊢ 𝜆𝑥 .𝜆𝑦.if 𝑦 then 𝑥 else 𝑥 : 2 ⊸ 2 ⊸ 2.
+
+ 
+ 
+ 
+ 
+1
+1
+1
+1
+}) =
+⟦𝑦 : 2 ⊢ 𝑦 : 2⟧({𝑦 ↦→
+}) =
+0
+0
+0
+0
+ 
+ 
+ 
+ 
+ 
+1
+1
+1
+1
+0
+⟦𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then 𝑦 else 𝑦 : 2⟧({𝑥 ↦→ 𝑣®, 𝑦 ↦→
+}) = 𝛼 1 ·
++ 𝛼2 ·
+= (𝛼 1 + 𝛼 2 ) ·
++0·
+0
+0
+0
+0
+1
+
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧({𝑥 ↦→ 𝑣® }) =
+
+ 
+𝛼1
+𝛼2
+
+⟦𝑦 : 2 ⊢ 𝑦 : 2⟧({𝑦 ↦→
+
+ 
+𝛼1
+𝛼2
+
+⟦𝑦 : 2 ⊢ 𝑦 : 2⟧({𝑦 ↦→
+
+ 
+ 
+ 
+ 
+0
+0
+0
+0
+}) =
+⟦𝑦 : 2 ⊢ 𝑦 : 2⟧({𝑦 ↦→
+}) =
+1
+1
+1
+1
+ 
+ 
+ 
+ 
+ 
+0
+0
+0
+1
+0
+⟦𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then 𝑦 else 𝑦 : 2⟧({𝑥 ↦→ 𝑣®, 𝑦 ↦→
+}) = 𝛼 1 ·
++ 𝛼2 ·
+=0·
++ (𝛼 1 + 𝛼 2 ) ·
+1
+1
+1
+0
+1
+
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧({𝑥 ↦→ 𝑣® }) =
+
+(id𝑥:2 )
+
+
+⟦𝑥 : 2 ⊢ 𝜆𝑦.if 𝑥 then 𝑦 else 𝑦 : 2 ⊸ 2⟧({𝑥 ↦→ 𝑣® }) =
+
+(𝛼 1 + 𝛼 2 )
+0
+0
+(𝛼 1 + 𝛼 2 )
+
+
+
+Compiling the subprogram (id𝑥:2 ) combines the function and conditional rules. It first uses
+the function rule to observe how the compiler acts on the body of the function,
+ ⊺extending the
+⊺ 
+1
+0
+0
+1
+environment by binding 𝑦 to each basis element 𝑏 in
+∈
+basis⟦2⟧
+=
+{
+,
+}. Under each
+𝑗
+environment
+the
+compiler
+then
+uses
+the
+conditional
+rule
+to
+soft
+branch
+on
+the
+compiled
+condition
+
+⊺
+𝛼 1 𝛼 2 . The output of the compiler is then rewritten to easily extract the coefficients of the
+matrix. With the subprogram (id𝑥:2 ) compiled, we can more easily compile the Church encoded ff.
+
+Compiling to linear neurons
+
+13
+
+(id𝑥:2 )
+⟦𝑥 : 2 ⊢ 𝜆𝑦.if 𝑥 then 𝑦 else 𝑦 : 2 ⊸ 2⟧({𝑥 ↦→
+
+ 
+
+
+
+
+
+
+
+
+
+
+1
+1 0
+1 0
+0 0
+0 1
+0 0
+}) =
+=1·
++0·
++0·
++1·
+0
+0 1
+0 0
+1 0
+0 0
+0 1
+
+⟦𝑥 : 2 ⊢ 𝜆𝑦.if 𝑥 then 𝑦 else 𝑦 : 2 ⊸ 2⟧({𝑥 ↦→
+
+ 
+
+
+
+
+
+
+
+
+
+
+0
+1 0
+1 0
+0 0
+0 1
+0 0
+}) =
+=1·
++0·
++0·
++1·
+1
+0 1
+0 0
+1 0
+0 0
+0 1
+
+(id𝑥:2 )
+
+1
+
+0
+⟦∅ ⊢ 𝜆𝑥 .𝜆𝑦.if 𝑥 then 𝑦 else 𝑦 : 2 ⊸ 2 ⊸ 2⟧(∅) = 
+0
+1
+
+
+1
+0
+0
+1
+
+4.2.4 Proving the compiler is correct. For closed programs, our intuition for what makes a compiler
+correct is based on Fig. 8. If the compiler permits predictions about what compiled neurons will
+and won’t do, we say it is correct. These intuitions are captured in the following theorem.
+Theorem 2: (Compiler preserves program behavior)
+If ⟦∅ ⊢ 𝑒 : 2⟧(∅) = 𝑒® and ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣®, then
+(𝑎) 𝑒 ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+(𝑏) 𝑒 ⇓ 𝑣 =⇒ 𝑒® ≠ 𝑣®
+Outline of Proof.
+To preserve closed program behavior, this theorem requires that we can predict what compiled
+neurons 𝑒® will and won’t do. These predictions come from what the original program 𝑒 will and
+won’t evaluate to. The bulk of the difficulty is proving what compiled neurons 𝑒® will do, see (𝑎).
+The argument is by induction on evaluation 𝑒 ⇓ 𝑣 for the following lemma, which generalizes the
+type of programs from 2 to 𝜏.14
+Lemma 1: (Compiler preserves what programs will do)
+If ⟦∅ ⊢ 𝑒 : 𝜏⟧(∅) = 𝑒® and ⟦∅ ⊢ 𝑣 : 𝜏⟧(∅) = 𝑣®,
+𝑒 ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+The argument is by induction on evaluation 𝑒 ⇓ 𝑣. The value case 𝑣 ⇓ 𝑣 is immediate. The
+conditional case if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 follows immediately after using the induction hypotheses.
+However, the application case is subtle 𝑒 1𝑒 2 ⇓ 𝑣. The argument requires a key lemma.
+Lemma 2: (Compiler maps programs to linear maps)
+If ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 }) = 𝑒®1 and ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®2 }) = 𝑒®2 , then
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝛼 1 · 𝑣®1 + 𝛼 2 · 𝑣®2 }) = 𝛼 1 · 𝑒®1 + 𝛼 2 · 𝑒®2
+14 Note that the compiler correctness theorem is not true for function types because of condition (𝑏 ), 𝜆𝑥 .𝑥 ̸⇓ 𝜆𝑦.𝑦 but both
+
+compile to the identity matrix.
+
+14
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Previously, we discussed the compiler as a function that maps a program Δ ⊢ 𝑒 : 𝜏 and an
+environment 𝜎® to some neurons 𝑒®. If we partially apply the compiler only to a program, then
+the compiler maps programs to linear maps between the environment 𝜎® and neurons 𝑒®. That’s
+what this lemma ensures. As a consequence, if we observe how the compiler acts under the
+environments 𝜎® {𝑥 ↦→ 𝑣®1 } and 𝜎® {𝑥 ↦→ 𝑣®2 }, then we know how the compiler acts on combinations
+of these environments. This relieves a core difficulty in proving that the compiler preserves the
+behavior of 𝑒 1𝑒 2 ⇓ 𝑣. By induction it is easy to conclude that the compiler preserves the behavior of
+𝑒 1 ⇓ 𝜆𝑥 .𝑒 and 𝑒 2 ⇓ 𝑣 2 . However, it is not easy to use induction to conclude the compiler preserves
+the behavior of {𝑥 ↦→ 𝑣 2 }(𝑒) ⇓ 𝑣, which is the only way we can determine anything about the
+compiled neurons 𝑣®. This lemma is necessary for the induction to go through. Beyond the proof,
+it establishes a correspondence between linear types and linear maps. It is the most important
+lemma in this paper. Detailed proofs of the compiler correctness theorem and these lemmas are in
+Appendix B.1, B.3, and B.9.
+A consequence of the compiler correctness theorem is that we can use Cajal to directly program
+linear neurons. However, our original goal also requires us to link these neurons against potentially
+nonlinear neurons. This would allow us to directly program a neural network to solve the conditional
+transform task from Fig. 1.
+4.3
+
+Linking
+
+There are two ways to link linear neurons against nonlinear neurons.
+⊲ Linear neurons can receive inputs from nonlinear neurons15
+⊲ Linear neurons can send outputs to nonlinear neurons16
+Traditionally, a correct compiler that supports linking allows us to predict the behavior of linked
+programs, captured by compositional compiler correctness theorems [22]. Consider the following
+compositional compiler correctness theorem, whose proof is detailed in Appendix B.2.
+Theorem 3: (Compiler preserves open program behavior)
+If ⟦Δ ⊢ 𝑒 : 2⟧(®
+𝜎 ) = 𝑒®, ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣® and ⟦Δ ⊢ 𝜎⟧ = 𝜎® , then
+(𝑎) 𝜎 (𝑒) ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+(𝑏) 𝜎 (𝑒) ⇓ 𝑣 =⇒ 𝑒® ≠ 𝑣®
+This theorem says we can predict what compiled neurons will and won’t do, when linked against
+environments produced by our compiler, ⟦Δ ⊢ 𝜎⟧ = ®
+𝜎. This provides some assurance. However,
+there are many environments we may want to link against
+ ⊺ which aren’t produced by our compiler.
+For example, nonlinear neurons may provide 1.3 4.7 as input to linear neurons, which isn’t an
+environment covered by the theorem. It could be possible to expand the environments we consider
+by weakening the exactness of our predictions. However, there is a more pressing concern.
+Are these even the relevant predictions for our motivating example in Fig. 1? We want to directly
+program a neural network to perform a conditional image transform. To directly program a neural
+network, Cajal must compile to linear neurons that specify the conditional while linking against
+neurons that can convert images of any number into an image of a one. The way we use the
+compiler should determine how we justify its correctness, which we summarize in the following
+way.
+15 These inputs can be specified in the environment when compiling.
+16 Since our programs compile to mathematical functions, feeding their output to another network is function composition.
+
+Compiling to linear neurons
+
+15
+
+The compiler is correct if the neurons effectively learn the task.
+Therefore, a practical theory of compiling to neurons must involve predictions about learning. But
+no one knows how to exactly predict the dynamics of learning in nonlinear neural networks [25].
+Their dynamics are governed by nonlinear differential equations that are difficult to solve.17 This
+imposes an important limit on the predictions we can expect to make in a compiler correctness
+theorem. As is common in the study of nonlinear dynamical systems, experiments now play an
+essential role in addressing the correctness of our compiler. Experiments help us characterize the
+learning dynamics of compiled neurons, to address whether the compiler correctness theorems we
+prove yield any benefit to learning tasks like those in Fig. 1. In the following section, we develop
+this empirical theory of linking.
+5
+
+EXPERIMENTS
+
+Our experiments are designed to test whether we see any benefits to learning when directly
+programming neural networks with Cajal (Section 5.1), and whether the compiler correctness
+theorem we proved is actually driving this benefit (Section 5.2). We are interested in the relationship
+between the strength of a compiler correctness theorem and its impact on learning dynamics when
+linking against nonlinear neurons. There is also a brief exploration on how directly programming
+neural networks facilitates debugging their learning dynamics (Section 5.1.5).
+To briefly summarize our findings, we find that directly programming neural networks helps
+neural networks learn faster, and that the strength of this impact relates to the strength of the
+compiler correctness theorem satisfied by the compiler producing the neural network.
+5.1
+
+Experiment 1: Conditional image transformation
+
+5.1.1 Task. Our first experiment is the conditional transform task in Fig. 1. We need a function
+which conditionally transforms an input image 𝑥:
+⊲ If 𝑥 is a 1, return 𝑥
+⊲ If 𝑥 isn’t a 1, transform 𝑥 to a 1
+5.1.2 Models. The two models we test are the indirectly and directly programmed neural networks
+in Fig. 3. Both models are implemented in PyTorch, a domain-specific language in Python for
+building neural networks. The indirect model uses native PyTorch whereas the direct model uses
+our implementation of Cajal: an embedded domain-specific language within PyTorch. It can be
+helpful to think of each model as a parameterized differentiable function 𝑓𝜃 (𝑥), whose parameters
+𝜃 can be learned through gradient-based learning techniques to perform a computation described
+by a dataset of input-output examples.
+The indirect model (Fig. 3a) is a 3-layer neural network. Its input layer has 784 neurons, mirroring
+the number of pixels in an input image. These connect to a hidden layer with 400 neurons and a
+relu nonlinearity. These hidden layer neurons connect to an output layer of 784 neurons, mirroring
+the number of pixels in an output image. The strength of the connection between neurons (their
+weights) determines the network’s overall function. In total, there are 627, 200 weights to learn.
+The direct model (Fig. 3b) is three 3-layer neural networks in parallel, which are wired together
+according to the conditional compiling rule in Fig. 12. Its input layer also has 784 neurons. These
+then split off into three paths, each similar to but smaller than the indirect model. The middle path
+is a 3-layer neural network with 100 hidden neurons and 2 output neurons, meant to check whether
+an input image is a one or not. The top path is a 2-layer linear neural network with 784 input and
+output neurons. Its weights are determined prior to learning to compute identity and do not change
+17 Resolving this is a central problem in the theory of neural networks [24].
+
+16
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Fig. 13. Prototypical learning dynamics
+
+during learning. This path is meant to return the original image if the middle path determines
+that the input image is a one. Finally, the bottom path is a 3-layer neural network with 300 hidden
+neurons and 784 output neurons, meant to transform the input image into an image of a one if
+the middle path determines that the input image is not a one. In short, the middle path checks the
+condition, the top path returns the original image, and the bottom path transforms the image. The
+end of the network just wires them together, either suppressing or enhancing the outputs of the
+top or bottom path depending on whether the input is classified as a one. Similar to the indirect
+model, there are 627, 200 weights to learn.
+5.1.3 Measures. Before discussing the results, we briefly explain the different measures we use to
+compare learning dynamics for the indirectly and directly programmed neural networks.
+The first measure of learning dynamics is a neural network’s loss on the training and test
+dataset. Neural networks learn by iterative adjustments of their weights in order to minimize a loss
+function. These loss functions measure how well the network can approximate the input-output
+transformations specified in the training and test data. The loss is an important baseline measure.
+
+Compiling to linear neurons
+
+17
+
+PSNR Dynamics
+40
+
+(bs: 8, lr: 1e-05)
+
+(bs: 32, lr: 1e-05)
+
+(bs: 128, lr: 1e-05)
+
+(bs: 512, lr: 1e-05)
+
+20
+0
+
+40
+
+D
+
+D
+
+D
+
+D
+
+I
+
+I
+
+I
+
+I
+
+(bs: 8, lr: 0.0001)
+
+(bs: 32, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+(bs: 512, lr: 0.0001)
+
+20
+
+PSNR
+
+0
+
+40
+
+D
+
+D
+
+D
+
+D
+
+I
+
+I
+
+I
+
+I
+
+(bs: 8, lr: 0.001)
+
+(bs: 32, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+(bs: 512, lr: 0.001)
+
+20
+0
+
+40
+
+D
+
+D
+
+D
+
+D
+
+I
+
+I
+
+I
+
+I
+
+(bs: 8, lr: 0.01)
+
+(bs: 32, lr: 0.01)
+
+(bs: 128, lr: 0.01)
+
+(bs: 512, lr: 0.01)
+
+20
+0
+0
+
+25000
+
+50000
+
+D
+
+D
+
+D
+
+D
+
+I
+
+I
+
+I
+
+I
+
+75000
+
+0
+
+10000
+
+0
+
+2000
+
+4000
+
+0
+
+500
+
+1000
+
+Steps
+Fig. 14. Summary of dynamics across configurations
+
+However, two networks can exhibit distinct behaviors while their training and test loss converge.
+Therefore, we need additional measures of learning dynamics that allow us to distinguish neural
+networks which behave differently.
+The second measure of learning dynamics is the probability that the neural network’s output is
+classified as a one. Before training, these networks behave wildly, and their outputs are seemingly
+random arrays of pixels. This measure captures when the network has learned a key part of the
+task—that it must produce images of a one. The probability is determined by a separate neural
+network trained to classify digits with near-perfect accuracy.18
+The third measure of learning dynamics is the peak signal-to-noise ratio (PSNR) between the
+input and output image. It is commonly used as measure of image reconstruction error. This
+measure captures when the network has learned the hardest part of the task—that it must return
+the original image when the input image is of a one. The PSNR measures how close the output
+image is to the original.
+18 It is around 99% accurate on the MNIST classification task [17].
+
+18
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+5.1.4 Results. To collect our data, we trained both models to approximate the function described
+by a training dataset of 60,000 pairs of images, and tested both models on a distinct dataset of 10,000
+pairs of images. Both models used the Adam optimizer to compute weight updates to the neural
+network, using an L1 loss to measure model performance during training. Throughout training we
+recorded the previously described measures in order to understand the model’s learning dynamics.
+We did this for 5 random seeds, 4 learning rates, and 4 training batch sizes—all can (and did) vary
+the learning dynamics.
+Fig. 13 summarizes the prototypical learning dynamics across training configurations. On the
+𝑥 axis, each step indicates a weight update to the models. The early dynamics are the first 300
+updates; the late dynamics are the first 3000 updates. On the 𝑦 axis are the measures previously
+discussed. Additionally, at the top are model outputs on two input images, for both the directly
+programmed neural network (D) and the indirectly programmed neural network (I). The first
+image on each row is the input to the model. The last image on each row indicates what the correct
+output should look like.19 The measures shown are across 5 random seeds with a learning rate of
+0.0001 and training batch size of 128 samples. The shaded ribbons denote the standard deviation
+across random seeds.
+The indirect model struggles to conditionally transform the input image, instead learning to
+produce a constant image of a one on all inputs. However, the direct model is able to conditionally
+transform the input image. If the input is a one, by the end of training it returns a near identical
+copy. If the input isn’t a one, it produces a constant image of a one like the indirect model. The
+indirect model converges quickly to its solution and stays there throughout the early and late
+learning dynamics. The direct model instead has a more interesting trajectory. In the first 100 steps,
+the direct model overuses the identity path in the network on all inputs. It then overcorrects and
+doesn’t use the identity path on any input after 150 steps. For the remainder of training it slowly
+learns to reintegrate the identity path on inputs that are ones. To verify, observe the intermediate
+model outputs and PSNR dynamics.
+Fig. 14 depicts the PSNR learning dynamics across every training configuration. There are
+16 subplots, each indicating a unique training configuration. The legend indicates the training
+configuration: across 5 random seeds we vary learning rate (lr) and training batch size (bs) for
+both the direct (D) and indirect (I) model. The shaded ribbons denote the standard deviation across
+random seeds. Only PSNR is shown because it was the measure that best distinguished model
+performance. On the 𝑥 axis, each step indicates a weight update to the models. The 𝑥 axis differs per
+column because we constrained each configuration to train for 10 iterations through the training
+dataset—a fixed data budget across configurations. This results in more weight updates for smaller
+batch sizes. On the 𝑦 axis is PSNR. Values between 30 and 40 indicate near perfect reconstruction
+when the input image is of a one. Values near 20 indicate the configuration learned to produce a
+constant one across any input.
+We can use Fig. 14 to determine whether the direct model learns faster and with greater dataefficiency. To verify that the direct model learns faster, we must compare the best performing direct
+and indirect model across configurations with fixed training steps (within columns). The direct
+model consistently outperforms. To verify that the direct model learns more efficiently, we must
+compare the best performing direct and indirect model across configurations with fixed data budget
+(all configurations). The direct model consistently outperforms. This does not mean there can’t
+exist an indirect model that solves this task. There likely is. But our indirect model is reasonable,
+and yet is having trouble.20
+19 According to the test dataset.
+20 Similar indirect models can be trained to solve other tasks (Appendix C). Why then does it struggle with this problem?
+
+Compiling to linear neurons
+
+19
+
+Fig. 15. Augmenting learning to debug learning dynamics
+
+5.1.5 Debugging. Beyond learning speed and efficiency, directly programming neural networks
+allows you to debug neural networks in new ways. For example, despite the direct model performing
+well on the task, there appear to be challenging examples that the direct model gets wrong. For
+example, in Fig. 15 the direct model (D) behaves well when the input is a five; it returns a constant
+one. But it behaves poorly when the input is a one; it doesn’t return the original image. However, an
+important observation is that this particular image of a one could be mistaken for a two. Therefore,
+we were curious if the error was due to the middle path in Fig. 3b misclassifying the input as a two.
+When we probed the output of the middle path we found the direct model was treating the problem
+input as if it wasn’t a one. Moreover, if we perturbed the output of the middle path to make it
+consistent with how other images of ones were treated, we could recover the correct behavior—it
+would return the original image. Based on this diagnosis we augmented training with an added
+penalty for misclassifying inputs at the middle path. In the bottom-half of Fig. 15 we show the
+augmented learning dynamics with this penalty. As a result, we were able to correct the bug on this
+example. This debugging strategy was possible because we knew the neural network was directly
+programmed using a program like Fig. 2b.
+
+20
+
+5.2
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Experiment 2: Conditional image classification
+
+5.2.1 Task. Our second experiment is the conditional
+classification task in Fig. 16. We need a function which
+conditionally classifies two input image 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 and 𝑥 2 are even numbers, return ✓
+⊲ If 𝑥 1 and 𝑥 2 are odd numbers, return ✓
+⊲ Otherwise, return ✗
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+5.2.2 Models. We test four models. Like before, there is
+an indirect and direct model. But there is now a model
+which explores directly programming with Church encodings. These encodings compile to linear hypernetworks.
+Fig. 16. Conditional classification
+An additional model explores directly programming with
+a type-preserving compiler refined (keeping type translation) from our correct compiler. This model
+lets us test whether preserving behavior provides any benefit to learning.
+Importantly, these models can be organized on a spectrum based on the strength of the compiler
+correctness theorem they satisfy.
+
+f(
+
+,
+
+)
+
+𝘹
+
+I<T<D=C
+Models D and C are on the strongest end, derived from a correct compiler. Model T is a typepreserving but not behavior preserving compiler refined from the correct compiler. Model I was
+not derived from any compiler correctness theorem.
+The indirect model (I) is a 3-layer neural network. Its input layer has 784 · 2 neurons, mirroring
+the number of pixels in two input images. These connect to a hidden layer with 400 neurons and a
+relu nonlinearity. These hidden layer neurons connect to an output layer of 2 neurons, where each
+neuron represents a distinct classification (✓ or ✗). In total, there are 628, 000 weights to learn.
+The direct model (D) is derived from compiling the following program, which checks if both
+inputs are tt or ff.
+𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then (if 𝑦 then tt else ff) else (if 𝑦 then ff else tt) : 2
+The compiled program will be linked against neural networks that implement 𝑥 and 𝑦. If these
+networks can learn to recognize whether an input is even or odd, they can use the compiled program
+to solve the task. The neural networks that we link with are both 3-layer neural networks similar
+to the indirect model—each has 784 input neurons, 400 hidden neurons, and 2 output neurons. In
+total, there are 628, 800 weights to learn.
+The Church encoded model (C) is derived from compiling a Church encoding eq of the previous
+program. For brevity, we omit the full encoding.
+𝑥 : 2 ⊸ (2 ⊸ 2), 𝑦 : 2 ⊸ (2 ⊸ 2) ⊢ (eq 𝑥) 𝑦 : 2
+The compiled program produces a linear hypernetwork (implementing eq) which will link against
+neural networks that implement 𝑥 and 𝑦, which now represent Church encoded booleans. If these
+networks can learn to recognize whether an input is even or odd, and to produce a Church encoded
+boolean to represent this, then they can use the compiled eq to solve the task. The neural networks
+that we link with are both 3-layer neural networks similar to the indirect model—each has 784
+input neurons, 400 hidden neurons, and 8 output neurons. In total, there are 633, 600 weights to
+learn.
+
+Compiling to linear neurons
+
+21
+
+EQ Dynamics
+1.0
+
+(bs: 64, lr: 1e-05)
+
+0.8
+
+0.6
+
+1.0
+
+Accuracy
+
+0.6
+
+0.6
+
+1.0
+
+D
+
+D
+
+D
+
+C
+
+C
+
+C
+
+T
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+I
+
+(bs: 128, lr: 0.0001)
+
+0.6
+
+0
+
+1000
+
+(bs: 256, lr: 0.0001)
+
+(bs: 512, lr: 0.0001)
+
+D
+
+D
+
+D
+
+D
+
+C
+
+C
+
+C
+
+C
+
+T
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+I
+
+(bs: 128, lr: 0.001)
+
+(bs: 256, lr: 0.001)
+
+(bs: 512, lr: 0.001)
+
+D
+
+D
+
+D
+
+D
+
+C
+
+C
+
+C
+
+C
+
+T
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+I
+
+(bs: 64, lr: 0.01)
+
+0.8
+
+(bs: 512, lr: 1e-05)
+
+C
+
+(bs: 64, lr: 0.001)
+
+0.8
+
+(bs: 256, lr: 1e-05)
+
+D
+
+(bs: 64, lr: 0.0001)
+
+0.8
+
+1.0
+
+(bs: 128, lr: 1e-05)
+
+(bs: 128, lr: 0.01)
+
+(bs: 256, lr: 0.01)
+
+(bs: 512, lr: 0.01)
+
+D
+
+D
+
+D
+
+D
+
+C
+
+C
+
+C
+
+C
+
+T
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+I
+
+2000
+
+0
+
+500
+
+1000
+
+0
+
+200
+
+400
+
+0
+
+100
+
+200
+
+300
+
+Steps
+Fig. 17. Summary of dynamics across configurations
+
+The type preserving model (T) is similar to the direct model. It keeps the type translation from the
+correct compiler, but permits identifying programs with randomly21 initialized matrices between the
+denoted spaces. For example, the rule for compiling conditionals is swapped with a type-preserving,
+but not behavior preserving variant in this way. Instead of implementing soft-branching, it takes
+the tensor product of outputs from the neural networks meant for detecting even or odd digits,
+and randomly maps them to a final output. This random linear map can change during learning,
+and allows the network to potentially find its own solution to soft-branching without as many
+constraints imposed by the compiler. In total, there are 628, 808 weights to learn.
+5.2.3 Measures. For this experiment, the measures are simpler. Our only measure of learning
+dynamics is the neural network’s accuracy on the task. To take this measure
+
+ ⊺we provide two input
+images from the test dataset to each model, which will then return 𝑦1 𝑦2 ∈ R2 . If 𝑦1 ≥ 𝑦2 then
+we say the model returns ✓. Otherwise it returns ✗. The accuracy we report is the accuracy across
+the entire test dataset when soliciting model responses this way.
+
+21 The exact initialization is He initialization, which help relu networks learn effectively [14].
+
+22
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+5.2.4 Results. To collect our data, we trained all models to approximate the function described by
+a training dataset of 30,000 pairs of images and the correct classification (✓ or ✗). They were tested
+on a distinct dataset of 5,000 pairs of images and the correct classification. Both models used the
+Adam optimizer to compute weight updates to the neural network, using a cross entropy loss to
+measure model performance during training. Throughout training we recorded the test accuracy
+in order to understand the model’s learning dynamics. We did this for 5 random seeds, 4 learning
+rates, and 4 training batch sizes—all can (and did) vary the learning dynamics.
+Fig. 17 summarizes the learning dynamics across configurations, similar in format to Fig. 14 from
+the first experiment. Again, we see that directly programming with a behavior preserving compiler
+leads to networks that learn faster and with greater data-efficiency. Interestingly, models D and C
+both perform comparably well. However, we suspect there are experiments that could distinguish
+these models, as hypernetworks tend to exhibit different learning dynamics to ordinary networks
+in general [13]. The type-preserving compiler (T) performs slightly worse overall than models D
+and C but better than the indirect model I. This shows that just getting the type translation correct
+can net you benefits for learning. The indirect model (I) generally struggles compared to those
+models directly programmed with a behavior preserving compiler or its refined type preserving
+variant. Three additional experiments are shown in Appendix C, showing similar trends on variants
+of this task.
+6
+
+RELATED WORK
+
+Cajal was deeply inspired by research in neurosymbolic programming, categorical semantics,
+compiler correctness, and differentiable programming. We will highlight the key insights stemming
+from these research areas while also taking the opportunity to identify where our work differs.
+6.1
+
+Neurosymbolic programming
+
+Neurosymbolic programs combine neural networks with discrete components. There are many
+approaches, but we focus on those which allow you to directly program an aspect of a neural
+network’s function.
+Scallop, TerpreT, and Differentiable Forth are examples of programming languages where you
+can directly program a neural network [8, 12, 18]. They differ in programming paradigm, across
+logic, imperative, and probabilistic programming. But they all support a story similar to what
+we present with Cajal. You can write programs that blend discrete and neural components, and
+these programs ultimately compile into neural networks with added structure that aids learning.
+These languages established that directly programming neural networks is possible across a rich
+array of problems. Our first intuitions on directly programming neural networks came from these
+languages.
+However, they lack a compiler correctness theory.22 As a result, some principles underlying their
+design are difficult to understand or fix. For example, like Cajal these languages lack infinite data
+like natural numbers or trees. This limitation stems from how types compile to vector spaces. Recall
+for finite data with 𝑛 distinct values, you compile to an 𝑛-dimensional vector space. With our current
+approach (consistent with Scallop, TerpreT, and Differentiable Forth), you would compile infinite
+data to an infinite-dimensional vector space; you need an infinite number of neurons to implement
+infinite data. Cajal offers a simple setting to study and resolve (Section 7) these fundamental issues,
+and frames them for the first time as compiler correctness issues. This framing lets us leverage a
+rich theory on the categorical semantics of linear programs.
+22 No compiler correctness theorems or proofs are available for these languages.
+
+Compiling to linear neurons
+
+6.2
+
+23
+
+Categorical semantics
+
+Linear types originate from linear logic, whose categorical semantics exposed a connection between
+linear programs and linear maps that has been studied for decades [20]. Of special interest are
+categorical semantics using linear maps between finite-dimensional vector spaces. We find their
+insight easier to use in a compiler.
+The categorical semantics which most inspired Cajal concerns models of lambda calculi in the
+category of finite vector spaces by Valiron and Zdancewic [28]. They translate typing judgments to
+morphisms in the category FinVec, whose objects are finite-dimensional vector spaces over finite
+fields and whose morphisms are linear maps between these vector spaces. They prove adequacy
+of the translation and explore language designs for which there exist fully abstract translations.
+Notably, they manually construct the matrices of linear maps denoted by Church numerals—an
+unorthodox description of discrete data as matrices. Similar descriptions of discrete programs
+as matrices are found in the categorical semantics of quantum programming languages, where
+typing judgments translate to morphisms in the category FHilb [1]. The objects of FHilb are finitedimensional Hilbert spaces and its morphisms are linear maps between these Hilbert spaces. These
+descriptions of discrete data as matrices made us wonder whether they could be applied to directly
+program neural networks.
+But these matrices are of the wrong kind for directly programming neural networks. The entries
+of matrices from FinVec are from finite fields like Z3 = {0, 1, 2}, the integers modulo 3. The entries
+of matrices from FHilb are complex numbers like 1 + 2i. To directly program neural networks the
+entries of our matrix should be real numbers. There are semantics of linear programs as linear maps
+between real-valued vector spaces, however these don’t consider discrete data like booleans [20].
+Beyond this, we are unaware of any semantics which discusses the relation between higher-order
+linear programs and linear hypernetworks, or which considers the difficulty in proving practical
+theorems when linking against nonlinear neurons.
+6.3
+
+Compiler correctness
+
+Throughout the paper our intuition for a correct compiler was one that allows useful predictions
+about what compiled programs will and won’t do. This perspective was inspired by the following
+observation.
+“For a compiler correctness theorem to assure complete trust, the theorem
+must reflect the reality of how the compiler will be used.”
+D. Patterson and A. Ahmed,
+The Next 700 Compiler Correctness Theorems [22]
+
+In their paper, Patterson and Ahmed point highlight ways in which compiler correctness theorems
+can be mathematically correct, and yet unusable in practice. For example, a compiler correctness
+theorem only concerning closed programs says nothing about the behavior of programs under
+linking. This insight, highlighted but not unique to Patterson and Ahmed, underlies many works
+on compositional compiler correctness. Collectively, these efforts motivating their theorems acted
+as a compass when designing the appropriate compiler correctness theorem in Cajal.
+To our knowledge, there are zero papers on proving the correctness of a compiler for directly
+programming neural networks with discrete data. Our work shows that proving correctness requires
+a unique balance of proof and experiment. The behavior of programs linked against nonlinear
+neurons are difficult, if impossible to predict [25]. Therefore experiment plays a key role in the
+theory of linking—which aims to ensure that directly programming neural networks improves
+
+24
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+various measures of performance. This relationship between theory and experiment is atypical in
+the compiler correctness literature. However, it is common in the study of dynamical systems.
+6.4
+
+Differentiable programming
+
+Differentiable programming languages like JAX and PyTorch are popular for building neural networks [9, 21]. Their key feature is automatic differentiation, which frees programmer from handdesigning the derivatives necessary to implement learning algorithms. They also greatly simplify
+and accelerate training by making it easy to train neural networks on specialized hardware like
+Graphics Processing Units (GPU). These features informed our decision to implement Cajal as an
+embedded language within PyTorch, allowing us to embed a direct-style of programming neural
+networks inside an efficient and expressive programming language. There has been a lot of interest
+in proving the correctness of automatic differentiation in these languages, and more recently in
+how to translate extremely large neural networks to specialized hardware [3].
+However, these efforts don’t concern themselves with discrete data because they aren’t immediately differentiable. In instances where conditionals are discussed, the conditionals are implemented
+in such a way that prevents directly programming neural networks (Section 4.2.3). The study of
+Cajal and its extensions provide a path for languages like JAX and PyTorch to support discrete
+data as first-class entities, enabling a rich interplay between learning and the discrete structures of
+ordinary programming.
+7
+
+DISCUSSION
+
+Cajal is a minimal language for studying how to directly program neural networks. This paper takes
+initial steps in developing its programming language theory. We identify theorems worth proving,
+and also the limits to what we can expect of our compiler correctness theorems when linking against
+nonlinear neurons. To supplement these limits we emphasize the role of experiments in verifying
+the correctness of compilers for directly programming neural networks. Our data are consistent
+with a broader empirical literature in machine learning—directly programming neural networks
+can make neural networks learn more efficiently, and in ways that are easier to interpret. The data
+also suggest that the strength of this impact relates to the strength of the compiler correctness
+theorem satisfied by the compiler producing the neural network. However, many questions remain.
+The limitations on expressive power and efficiency are paramount.
+On expressive power, Cajal is missing many types. There are simple extensions—unit, sums,
+and products. They can be added without significantly impacting the theory in this paper. No
+additional lemmas would be needed, just additional cases in the compiler and proofs to consider.
+To permit affine functions involves trickier changes to the theory. Several typing rules, and hence
+several rules in the compiler would change. The key lemma identifying linear programs with linear
+maps would change to instead identify affine programs with affine maps. However, the frontier
+concerns infinite data. No language for directly programming neural networks supports infinite
+data. We think the answer involves compiling to recurrent neural networks. In separate work we
+are developing Cajal ( N, ⊸) , a variant with natural numbers. This involves substantial changes to
+the theory, identifying linear programs instead with linear dynamical systems.
+On efficiency, a chief concern is how quickly the number of neurons needed to implement a
+program grow as a function of its type. The number of neurons needed to implement a program
+relates to the dimension of the underlying vector space its type compiles to. Cajal exhibits bilinear
+scaling because dim(𝜏1 ⊸ 𝜏2 ) = dim(𝜏1 ) · dim(𝜏2 ). For sufficiently higher-order programs this is
+insufficient. This scaling stems from a demand that programs are exactly implemented by linear maps
+(Section 4.2.2). If we relax this demand there may be a route to improved scaling via dimensionality
+
+Compiling to linear neurons
+
+25
+
+reduction, which can approximately embed vectors into spaces of smaller dimension [29]. These
+are areas of future work.
+Cajal is a foundation from which to explore a direct style of programming neural networks.
+As a minimal vehicle, its theory is tractable, and the questions posed in this work can be studied
+with recourse to a deep bench of existing techniques in programming language theory. Ultimately,
+these studies may uncover a rich interplay between learning and the discrete structures of ordinary
+programming.
+ACKNOWLEDGMENTS
+We thank the anonymous reviewers for detailed feedback that improved the clarity and quality of
+this work.
+REFERENCES
+[1] Samson Abramsky and Bob Coecke. 2004. A categorical semantics of quantum protocols. In Proceedings of the 19th
+Annual IEEE Symposium on Logic in Computer Science, 2004. IEEE, 415–425.
+[2] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida,
+Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. 2023. GPT-4 Technical Report. (2023).
+[3] Sami Alabed, Daniel Belov, Bart Chrzaszcz, Juliana Franco, Dominik Grewe, Dougal Maclaurin, James Molloy, Tom
+Natan, Tamara Norman, Xiaoyue Pan, Adam Paszke, Norman A. Rink, Michael Schaarschmidt, Timur Sitdikov,
+Agnieszka Swietlik, Dimitrios Vytiniotis, and Joel Wee. 2025. PartIR: Composing SPMD Partitioning Strategies for
+Machine Learning. International Conference on Architectural Support for Programming Languages and Operating
+Systems.
+[4] Sheldon Axler. 2015. Linear Algebra Done Right. Springer.
+[5] Hendrik P Barendregt et al. 1984. The lambda calculus. Vol. 3. North-Holland Amsterdam.
+[6] Yoshua Bengio, Ian Goodfellow, and Aaron Courville. 2017. Deep Learning. Vol. 1. MIT press Cambridge, MA, USA.
+[7] Leonard F. Bereska and Efstratios Gavves. 2024. Mechanistic Interpretability for AI Safety — A Review. TMLR (April
+2024).
+[8] Matko Bosnjak, Tim Rocktaschel, Jason Naradowsky, and Sebastian Riedel. 2017. Programming with a differentiable
+forth interpreter. In International conference on machine learning. PMLR, 547–556.
+[9] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George Necula,
+Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, and Qiao Zhang. 2018. JAX: composable transformations of
+Python+NumPy programs. http://github.com/jax-ml/jax
+[10] Kai Fong Ernest Chong. 2020. A closer look at the approximation capabilities of neural networks. International
+Conference on Learning Representations (2020).
+[11] George Cybenko. 1989. Approximation by superpositions of a sigmoidal function. Mathematics of Control, Signals and
+Systems 2, 4 (1989), 303–314.
+[12] Alexander L Gaunt, Marc Brockschmidt, Nate Kushman, and Daniel Tarlow. 2017. Differentiable programs with neural
+libraries. In International Conference on Machine Learning. PMLR, 1213–1222.
+[13] David Ha, Andrew Dai, and Quoc V Le. 2016. Hypernetworks. arXiv preprint arXiv:1609.09106 (2016).
+[14] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2015. Delving deep into rectifiers: Surpassing humanlevel performance on imagenet classification. In Proceedings of the IEEE international conference on computer vision.
+1026–1034.
+[15] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton. 2012. Imagenet classification with deep convolutional neural
+networks. Advances in neural information processing systems 25 (2012).
+[16] Yann LeCun, Yoshua Bengio, and Geoffrey Hinton. 2015. Deep learning. Nature 521, 7553 (2015), 436–444.
+[17] Yann LeCun, Corinna Cortes, and C. J. Burges. 2010. MNIST handwritten digit database. ATT Labs [Online]. Available:
+http://yann.lecun.com/exdb/mnist 2 (2010).
+[18] Ziyang Li, Jiani Huang, and Mayur Naik. 2023. Scallop: A language for neurosymbolic programming. Proceedings of
+the ACM on Programming Languages 7, PLDI (2023), 1463–1487.
+[19] Nicholas D Matsakis and Felix S Klock. 2014. The rust language. In Proceedings of the 2014 ACM SIGAda annual
+conference on High integrity language technology. 103–104.
+[20] Paul-André Mellies. 2009. Categorical semantics of linear logic. Panoramas et syntheses 27 (2009), 15–215.
+[21] Adam Paszke, Sam Gross, Soumith Chintala, Gregory Chanan, Edward Yang, Zachary DeVito, Zeming Lin, Alban
+Desmaison, Luca Antiga, and Adam Lerer. 2017. Automatic differentiation in PyTorch. (2017).
+
+26
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+[22] Daniel Patterson and Amal Ahmed. 2019. The next 700 compiler correctness theorems (functional pearl). Proceedings
+of the ACM on Programming Languages 3, ICFP (2019), 1–29.
+[23] Benjamin C Pierce. 2002. Types and programming languages. MIT press.
+[24] Daniel A Roberts, Sho Yaida, and Boris Hanin. 2022. The principles of deep learning theory. Vol. 46. Cambridge
+University Press Cambridge, MA, USA.
+[25] Andrew Michael Saxe. 2015. Deep linear neural networks: A theory of learning in the brain and mind. Stanford
+University.
+[26] David Sculley, Gary Holt, Daniel Golovin, Eugene Davydov, Todd Phillips, Dietmar Ebner, Vinay Chaudhary, Michael
+Young, Jean-Francois Crespo, and Dan Dennison. 2015. Hidden technical debt in machine learning systems. Advances
+in Neural Information Processing Systems 28 (2015).
+[27] Benoît Valiron and Steve Zdancewic. 2014. Finite vector spaces as model of simply-typed lambda-calculi. In International
+Colloquium on Theoretical Aspects of Computing. Springer, 442–459.
+[28] Benoît Valiron and Steve Zdancewic. 2014. Modeling Simply-Typed Lambda Calculi in the Category of Finite Vector
+Spaces. Scientific Annals of Computer Science 24, 2 (2014).
+[29] Laurens Van Der Maaten, Eric O Postma, H Jaap Van Den Herik, et al. 2009. Dimensionality reduction: A comparative
+review. Journal of machine learning research 10, 66-71 (2009), 13.
+[30] David Walker. 2005. Substructural type systems. Advanced Topics in Types and Programming Languages (2005), 3–44.
+
+Compiling to linear neurons
+
+A
+A.1
+
+27
+
+DEFINITIONS
+Context Splitting
+Δ = Δ1 ∪ Δ2
+
+A.2
+
+A.3
+
+A.4
+
+Source environment
+
+∅ = dom(Δ1 ) ∩ dom(Δ2 )
+Δ = Δ1 ◦ Δ2
+
+∅⊢∅
+
+Δ⊢𝜎
+∅⊢𝑣 :𝜏
+Δ, 𝑥 :𝜏 ⊢ 𝜎 {𝑥 ↦→ 𝑣 }
+
+∅⊢∅
+
+Δ ⊢ 𝜎®
+𝑣® ∈ ⟦𝜏⟧
+Δ, 𝑥 :𝜏 ⊢ 𝜎® {𝑥 ↦→ 𝑣® }
+
+Target environment
+
+Compiling types
+⟦_⟧ : Type → Vector Space
+
+⟦2⟧ = R2
+⟦𝜏1 ⊸ 𝜏2 ⟧ = Rdim(𝜏2 ) × dim(𝜏1 )
+
+A.5
+
+Compiling environments
+⟦Δ ⊢ 𝜎⟧ = 𝜎®
+⟦∅ ⊢ 𝑣 : 𝜏⟧(∅) = 𝑣®
+⟦Δ, 𝑥 :𝜏 ⊢ 𝜎 {𝑥 ↦→ 𝑣 }⟧ = 𝜎® {𝑥 ↦→ 𝑣® }
+
+⟦∅ ⊢ ∅⟧ = ∅
+
+A.6
+
+Matrix
+ 𝛼 11 · · · 𝛼 1𝑛 
+
+
+
+
+[𝛼𝑖 𝑗 ] =  ... . . . ... 
+
+
+𝛼 1𝑚 · · · 𝛼𝑚𝑛 
+
+
+
+A.7
+
+Reshaping a matrix to a vector
+
+For 𝑖 = 1..𝑚 and 𝑗 = 1..𝑛,
+vec([𝛼𝑖 𝑗 ]) = [𝛽𝑚·𝑛 ] where 𝛽𝑖+𝑚 ( 𝑗 −1) = 𝛼𝑖 𝑗
+This definition takes a matrix and vertically concatenates all column vectors from left to right.
+
+28
+
+A.8
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Reshaping a vector to a matrix
+
+For 𝑖 = 1..𝑚 and 𝑗 = 1..𝑛, where dim(𝜏2 ) = 𝑚 and dim(𝜏1 ) = 𝑛,
+[𝛽𝑚·𝑛 ]𝜏1 ⊸𝜏2 = [𝛼𝑖 𝑗 ] where 𝛼𝑖 𝑗 = 𝛽𝑖+𝑚 ( 𝑗 −1)
+For 𝜏 ≠ 𝜏1 ⊸ 𝜏2 ,
+[𝛽]𝜏 = 𝛽
+
+A.9
+
+Basis of a type
+
+Where dim(𝜏) = 𝑛,
+𝑛
+
+z
+}|
+{
+1 0
+0
+ ª
+©    
+0 ®
+­ 0 1
+ 
+basis⟦𝜏⟧ = ­­  .  ,  .  , · · · ,  .  ®®
+.
+.
+
+
+
+
+ ..  ®
+­ .   . 
+ 
+0 0
+1
+«  𝜏  𝜏
+ 𝜏 ¬
+A.10
+
+Matrix multiplication
+
+Where b𝑖out ∈ basis⟦𝜏⟧,
+𝑒®1 (𝑒®2 )𝜏 = 𝑒®1 (vec(𝑒®2 ))𝜏 = [𝛼𝑖 𝑗 ](𝛽 𝑗 )𝜏 =
+
+∑︁ ∑︁
+𝑖
+
+A.11
+
+𝛼𝑖 𝑗 · 𝛽 𝑗 · b𝑖out
+
+𝑗
+
+Logical Typing
+Δ ⊨ 𝑒 : 𝜏 ⇐⇒ ∀𝜎 ∈ R⟦Δ⟧, 𝜎 (𝑒) ∈ R E ⟦𝜏⟧
+
+A.12
+
+Logical Relation
+n
+o
+R E ⟦_⟧ : Type → Expression
+R V ⟦2⟧ =
+
+n
+
+tt, ff
+
+R V ⟦𝜏1 ⊸ 𝜏2 ⟧ =
+
+n
+
+𝜆𝑥 .𝑒 | ∀𝑣 ∈ R V ⟦𝜏1 ⟧, (𝜆𝑥 .𝑒)𝑣 ∈ R E ⟦𝜏2 ⟧
+
+
+R E ⟦𝜏⟧ = 𝑒
+
+o
+
+𝑒 ⇓ 𝑣,
+𝑣 ∈ R V ⟦𝜏⟧
+
+
+
+n
+o
+R⟦_⟧ : Context → Environment
+
+o
+
+Compiling to linear neurons
+
+n o
+R⟦∅⟧ = ∅
+n
+o
+R⟦Δ, 𝑥 :𝜏⟧ = 𝜎 {𝑥 ↦→ 𝑣 } | 𝜎 ∈ R⟦Δ⟧, 𝑣 ∈ R V ⟦𝜏⟧
+
+29
+
+30
+
+B
+B.1
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+PROOFS
+Theorem (Compiler preserves program behavior)
+
+Where ⟦∅ ⊢ 𝑒 : 2⟧(∅) = 𝑒® and ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣®,
+(𝑎) 𝑒 ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+(𝑏) 𝑒 ⇓ 𝑣 =⇒ 𝑒® ≠ 𝑣®
+Proof.
+By assumption ⟦∅ ⊢ 𝑒 : 2⟧(∅) = 𝑒®
+By assumption ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣®
+Consider each condition,
+⊲ Condition (𝑎),
+Because compiler preserves what programs will do 𝑒® = 𝑣®
+⊲ Condition (𝑏),
+Because compiler preserves what programs won’t do 𝑒® ≠ 𝑣®
+□
+
+B.2
+
+Corollary (Compiler preserves open program behavior)
+
+Where ⟦Δ ⊢ 𝑒 : 2⟧(®
+𝜎 ) = 𝑒®, ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣® and ⟦Δ ⊢ 𝜎⟧ = 𝜎® ,
+(𝑎) 𝜎 (𝑒) ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+(𝑏) 𝜎 (𝑒) ⇓ 𝑣 =⇒ 𝑒® ≠ 𝑣®
+Proof.
+A corollary of compiler being invariant to closing environments and the compiler preserving closed
+program behavior.
+□
+
+B.3
+
+Lemma (Compiler preserves what programs will do)
+
+Where ⟦∅ ⊢ 𝑒 : 𝜏⟧(∅) = 𝑒® and ⟦∅ ⊢ 𝑣 : 𝜏⟧(∅) = 𝑣®,
+𝑒 ⇓ 𝑣 =⇒ 𝑒® = 𝑣®
+Proof.
+Consider each inductive case of 𝑒 ⇓ 𝑣,
+⊲ Case 𝑣 ⇓ 𝑣,
+Because equality is reflexive 𝑣® = 𝑣®
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 2 ,
+By inversion on evaluation 𝑒 1 ⇓ tt and 𝑒 2 ⇓ 𝑣 2
+By inversion on compiler and because it maps to neurons ⟦∅ ⊢ 𝑒 1 : 𝜏⟧(∅) = 𝑒®1 ∈ ⟦2⟧
+By inversion on compiler and because it maps to neurons ⟦∅ ⊢ 𝑒 2 : 𝜏⟧(∅) = 𝑒®2 ∈ ⟦𝜏⟧
+By inversion on compiler and because it maps to neurons ⟦∅ ⊢ 𝑒 3 : 𝜏⟧(∅) = 𝑒®3 ∈ ⟦𝜏⟧
+By assumption and compiler mapping to neurons ⟦∅ ⊢ 𝑣 2 : 𝜏⟧(∅) = 𝑣®2 ∈ ⟦𝜏⟧
+By induction 𝑒®2 = 𝑣®2
+ ⊺
+By compiler ⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+
+Compiling to linear neurons
+
+31
+
+ ⊺
+By induction 𝑒®1 = 1 0
+By equality ⟦∅ ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(∅) = 1 · 𝑒®2 + 0 · 𝑒®3 = 𝑒®2 = 𝑣®2
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 3 ,
+Similar to previous case but using induction hypothesis on other branch
+⊲ Case 𝑒 1𝑒 2 ⇓ 𝑣,
+Show 𝑒®1 (𝑒®2 )𝜏2 = 𝑣®
+By inversion on evaluation 𝑒 1 ⇓ 𝜆𝑥 .𝑒 and 𝑒 2 ⇓ 𝑣 2 and {𝑥 ↦→ 𝑣 2 }(𝑒) ⇓ 𝑣
+By inversion on compiler and because it maps to neurons,
+⟦∅ ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(∅) = 𝑒®1 ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By compiler and because it maps to neurons,
+⟦∅ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(∅) = [𝛼𝑖 𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By induction 𝑒®1 = [𝛼𝑖 𝑗 ]
+Show [𝛼𝑖 𝑗 ](vec(𝑒®2 ))𝜏2 = 𝑣®
+By inversion on compiler and because it maps to neurons,
+⟦∅ ⊢ 𝑒 2 : 𝜏1 ⟧(∅) = 𝑒®2 ∈ ⟦𝜏1 ⟧
+By compiler and because it maps to neurons,
+⟦∅ ⊢ 𝑣 2 : 𝜏1 ⟧(∅) = 𝑣®2 ∈ ⟦𝜏1 ⟧
+By induction 𝑒®2 = 𝑣®2
+
+⊺
+Because equality is a congruence vec(𝑒®2 ) = vec(𝑣®2 ) = 𝑣®21 · · · 𝑣®2𝑛
+Í Í
+Show 𝑖 𝑗 𝛼𝑖 𝑗 · 𝑣®2𝑗 · b𝑖out = 𝑣®
+By inversion on compiler and because it maps to neurons,
+Í
+out
+⟦𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧({𝑥 ↦→ bin
+∈ ⟦𝜏2 ⟧
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+By compiler and the basis theorem ⟦{𝑥 ↦→ 𝑣 2 }⟧ = {𝑥 ↦→ 𝑣®2 } = {𝑥 ↦→ 𝑗 𝑣®2𝑗 · bin
+𝑗 }
+Because compiler is linear in its environment,
+Í
+Í
+Í
+out
+⟦𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧({𝑥 ↦→ 𝑗 𝑣®2𝑗 · bin
+2𝑗 · 𝑖 𝛼𝑖 𝑗 · b𝑖
+𝑗 𝑣®
+𝑗 }) =
+Because multiplication distributes over addition,
+Í
+Í Í
+out
+⟦𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧({𝑥 ↦→ 𝑗 𝑣®2𝑗 · bin
+2𝑗 · b𝑖
+𝑗 𝛼𝑖 𝑗 · 𝑣®
+𝑗 }) = 𝑖
+Because the compiler is invariant
+Í Íto closing environments,
+⟦∅ ⊢ {𝑥 ↦→ 𝑣 2 }(𝑒) : 𝜏2 ⟧(∅) = 𝑖 𝑗 𝛼𝑖 𝑗 · 𝑣®2𝑗 · b𝑖out
+Í Í
+By induction 𝑖 𝑗 𝛼𝑖 𝑗 · 𝑣®2𝑗 · b𝑖out = 𝑣®
+□
+
+B.4
+
+Lemma (Compiler preserves what programs won’t do)
+
+Where ⟦∅ ⊢ 𝑒 : 2⟧(∅) = 𝑒® and ⟦∅ ⊢ 𝑣 : 2⟧(∅) = 𝑣®,
+𝑒 ̸⇓ 𝑣 =⇒ 𝑒® ≠ 𝑣®
+Proof.
+Because closed programs terminate 𝑒 ⇓ 𝑣 1 where 𝑣 1 ≠ 𝑣 by assumption
+Because of canonical forms 𝑣 1 and 𝑣 could be either tt or ff
+Proceed by cases on (𝑣 1, 𝑣 ),
+⊲ Case (tt, ff)
+By negation 𝑒® = 𝑣®
+
+32
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+ ⊺
+ ⊺
+Because the compiler preserves observable behavior 𝑒® = 1 0 = 𝑣® = 0 1
+ ⊺  ⊺
+But 1 0 ≠ 0 1 so we have a contradiction
+⊲ Case (ff, tt)
+Similar to previous case
+□
+
+B.5
+
+Theorem (Programs evaluate to values)
+Δ ⊢ 𝑒 : 𝜏 =⇒ ∃𝑣, 𝑒 ⇓ 𝑣
+
+Proof.
+Because programs can be logically typed Δ ⊨ 𝑒 : 𝜏
+By logical typing 𝜎 (𝑒) ∈ R E ⟦𝜏⟧
+Because logically typed programs terminate ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+B.6
+
+Lemma (Programs can be logically typed)
+Δ ⊢ 𝑒 : 𝜏 =⇒ Δ ⊨ 𝑒 : 𝜏
+
+Proof.
+Consider each inductive case of typing,
+⊲ Case ∅ ⊢ tt : 2
+Show tt ∈ R E ⟦2⟧
+Consider each condition,
+⊲ Condition ∃𝑣, tt ⇓ 𝑣
+Let ∃𝑣 = tt
+By evaluation tt ⇓ tt
+⊲ Condition tt ∈ R V ⟦2⟧
+By logical relation tt ∈ R V ⟦2⟧
+⊲ Case ∅ ⊢ ff : 2
+Similar to previous case
+⊲ Case 𝑥 :𝜏 ⊢ 𝑥 : 𝜏
+Show {𝑥 ↦→ 𝑣 }(𝑥) ∈ R E ⟦𝜏⟧ where {𝑥 ↦→ 𝑣 } ∈ R⟦𝑥 :𝜏⟧
+Consider each condition,
+⊲ Condition ∃𝑣 1, {𝑥 ↦→ 𝑣 }(𝑥) ⇓ 𝑣 1
+By substitution {𝑥 ↦→ 𝑣 }(𝑥) = 𝑣
+Let ∃𝑣 1 = 𝑣
+By evaluation 𝑣 ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏⟧
+By logical relation {𝑥 ↦→ 𝑣 } ∈ R⟦𝑥 :𝜏⟧ where 𝑣 ∈ R V ⟦𝜏⟧
+⊲ Case Δ ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2
+Show 𝜆𝑦.𝜎 (𝑒) ∈ R E ⟦𝜏1 ⊸ 𝜏2 ⟧ where 𝜎 ∈ R⟦Δ⟧
+Consider each condition,
+
+□
+
+Compiling to linear neurons
+
+⊲ Condition ∃𝑣, 𝜆𝑦.𝜎 (𝑒) ⇓ 𝑣
+Let ∃𝑣 = 𝜆𝑦.𝜎 (𝑒)
+By evaluation 𝜆𝑦.𝜎 (𝑒) ⇓ 𝜆𝑦.𝜎 (𝑒)
+⊲ Condition 𝜆𝑦.𝜎 (𝑒) ∈ R V ⟦𝜏1 ⊸ 𝜏2 ⟧
+Show (𝜆𝑦.𝜎 (𝑒))𝑣 1 ∈ R E ⟦𝜏2 ⟧
+By assumption 𝑣 1 ∈ R V ⟦𝜏1 ⟧
+Consider each condition,
+⊲ Condition ∃𝑣, (𝜆𝑦.𝜎 (𝑒))𝑣 1 ⇓ 𝑣
+By inversion on typing Δ, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2
+By induction Δ, 𝑦 :𝜏1 ⊨ 𝑒 : 𝜏2 i.e. 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) ∈ R E ⟦𝜏2 ⟧
+By logical relation 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+Because substitutions commute 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) = {𝑦 ↦→ 𝑣 1 }(𝜎 (𝑒))
+Let ∃𝑣 = 𝑣
+By evaluation (𝜆𝑦.𝜎 (𝑒))𝑣 1 ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏2 ⟧
+By logical relation {𝑦 ↦→ 𝑣 1 }(𝜎 (𝑒)) ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+⊲ Case Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2
+Show 𝜎1 (𝑒 1 )𝜎2 (𝑒 2 ) ∈ R E ⟦𝜏2 ⟧
+Consider each condition,
+⊲ Condition ∃𝑣, 𝜎1 (𝑒 1 )𝜎2 (𝑒 2 ) ⇓ 𝑣
+By inversion Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2
+By inversion Δ2 ⊢ 𝑒 2 : 𝜏1
+By induction Δ1 ⊨ 𝑒 1 : 𝜏1 ⊸ 𝜏2
+By induction Δ2 ⊨ 𝑒 2 : 𝜏1
+By logical relation 𝜎1 (𝑒 1 ) ⇓ 𝜆𝑥 .𝑒 where 𝜆𝑥 .𝑒 ∈ R V ⟦𝜏1 ⊸ 𝜏2 ⟧
+By logical relation 𝜎2 (𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏1 ⟧
+By logical relation (𝜆𝑥 .𝑒)𝑣 2 ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+Let ∃𝑣 = 𝑣
+By evaluation 𝜎1 (𝑒 1 )𝜎2 (𝑒 2 ) ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏2 ⟧
+By logical relation (𝜆𝑥 .𝑒)𝑣 2 ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+⊲ Case Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+Show if 𝜎1 (𝑒 1 ) then 𝜎2 (𝑒 2 ) else 𝜎2 (𝑒 3 ) ∈ R E ⟦𝜏⟧
+By inversion on typing Δ1 ⊢ 𝑒 1 : 2
+By induction Δ1 ⊨ 𝑒 1 : 2
+By logical relation 𝜎1 (𝑒 1 ) ⇓ 𝑣 1 where 𝑣 1 ∈ R V ⟦2⟧ = {tt, ff}
+Consider each case on 𝑣 1 = tt or 𝑣 1 = ff,
+⊲ Case 𝑣 1 = tt
+Consider each condition,
+⊲ Condition ∃𝑣, if 𝜎1 (𝑒 1 ) then 𝜎2 (𝑒 2 ) else 𝜎2 (𝑒 3 ) ⇓ 𝑣
+By inversion on typing Δ2 ⊢ 𝑒 2 : 𝜏 and Δ2 ⊢ 𝑒 3 : 𝜏
+
+33
+
+34
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+By induction Δ2 ⊨ 𝑒 2 : 𝜏 and Δ2 ⊨ 𝑒 3 : 𝜏
+By logical relation 𝜎2 (𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏⟧
+Let ∃𝑣 = 𝑣 2
+By evaluation if 𝜎1 (𝑒 1 ) then 𝜎2 (𝑒 2 ) else 𝜎2 (𝑒 3 ) ⇓ 𝑣 2
+⊲ Condition 𝑣 2 ∈ R V ⟦𝜏⟧
+By logical relation 𝜎2 (𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏⟧
+⊲ Case 𝑣 1 = ff
+Similar to previous case
+□
+
+B.7
+
+Lemma (Logically typed programs evaluate to values)
+
+Where 𝜎 ∈ R⟦Δ⟧,
+Δ ⊨ 𝑒 : 𝜏 =⇒ ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+Proof.
+By logical typing 𝜎 (𝑒) ∈ R E ⟦𝜏⟧
+By logical relation ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+
+B.8
+
+□
+
+Lemma (Compilers maps programs to neurons)
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 ) = 𝑒® =⇒ 𝑒® ∈ ⟦𝜏⟧
+
+Proof.
+Consider each inductive case of compiler,
+⊲ Case ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣® }) = 𝑣®
+By inversion on target environments 𝑣® ∈ ⟦𝜏⟧
+ ⊺
+⊲ Case ⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+By compiling types ⟦2⟧ = R2
+ ⊺
+⊺
+By definition R2 = {𝛼 1 · 1 0 + 𝛼 2 · 0 1 | 𝛼𝑖 ∈ R}
+ ⊺
+ ⊺
+ ⊺
+By equality 1 0 = 1 · 1 0 + 0 · 0 1 ∈ R2
+ ⊺
+⊲ Case ⟦∅ ⊢ ff : 2⟧(∅) = 0 1
+Similar to previous case
+⊲ Case ⟦Δ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 ) = [𝛼𝑖 𝑗 ]
+Show [𝛼𝑖 𝑗 ] ∈ Rdim(𝜏2 ) × dim(𝜏1 )
+By compiling types ⟦𝜏1 ⊸ 𝜏2 ⟧ = ⟦Rdim(𝜏2 ) × dim(𝜏1 ) ⟧
+Í
+out
+By inversion on compiler ⟦Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+out
+By induction 𝑖 𝛼𝑖 𝑗 · b𝑖 ∈ ⟦𝜏2 ⟧
+By inversion on compiler 𝑖 = 1.. len(basis⟦𝜏2 ⟧) = dim(𝜏2 )
+By inversion on compiler 𝑗 = 1.. len(basis⟦𝜏1 ⟧) = dim(𝜏1 )
+Therefore [𝛼𝑖 𝑗 ] ∈ Rdim(𝜏2 ) × dim(𝜏1 )
+⊲ Case ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧(𝜎®1 ◦ 𝜎®2 ) = 𝑒®1 (𝑒®2 )
+Show 𝑒®1 (vec(𝑒®2 ))𝜏2 ∈ ⟦𝜏2 ⟧
+
+Compiling to linear neurons
+
+35
+
+By inversion on compiler ⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = 𝑒®1 and ⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝑒®2
+By induction 𝑒®1 ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧ = Rdim(𝜏2 ) ×dim(𝜏1 ) and 𝑒®2 ∈ ⟦𝜏1 ⟧
+By vectorizing vec(𝑒®2 ) ∈ Rdim(𝜏1 )
+By matrix multiplication 𝑒®1 (vec(𝑒®2 ))𝜏2 ∈ ⟦𝜏2 ⟧
+□
+
+B.9
+
+Lemma (Compiler maps programs to linear maps)
+
+Where ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 }) = 𝑒®1 and ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®2 }) = 𝑒®2 ,
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝛼 1 · 𝑣®1 + 𝛼 2 · 𝑣®2 }) = 𝛼 1 · 𝑒®1 + 𝛼 2 · 𝑒®2
+Proof.
+Direct consequence of compiler being additive and homogenous in its environment.
+
+B.10
+
+□
+
+Lemma (Compiler is additive in its environment)
+
+Where ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 }) = 𝑒®1 and ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®2 }) = 𝑒®2 ,
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑒®1 + 𝑒®2
+Proof.
+Consider each inductive case of ⟦Δ ⊢ 𝑒 : 𝜏⟧(𝜎®1 ) = 𝑒®1 ,
+⊲ Case ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣®1 }) = 𝑣®1
+Because compiler maps to neurons ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣®1 }) = 𝑣®1 ∈ ⟦𝜏⟧
+Because compiler maps to neurons ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣®2 }) = 𝑣®2 ∈ ⟦𝜏⟧
+By compiler ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑣®1 + 𝑣®2
+ ⊺
+⊲ Case ⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+Vacuous because environment must be non-empty
+ ⊺
+⊲ Case ⟦∅ ⊢ ff : 2⟧(∅) = 0 1
+Vacuous because environment must be non-empty
+⊲ Case ⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 }) = [𝛼𝑖 𝑗 ]
+Because compiler maps to neurons,
+⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 }) = [𝛼𝑖 𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+Because compiler maps to neurons,
+⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®2 }) = [𝛽𝑖 𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+Í
+out
+By inversion on compiler ⟦Δ, 𝑥 :𝜏11, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+Í
+out
+out
+Because compiler maps to neurons 𝑖 𝛼𝑖 𝑗 · b𝑖 ∈ ⟦𝜏2 ⟧ and 𝑖 𝛽𝑖 𝑗 · b𝑖 ∈ ⟦𝜏2 ⟧
+Í
+out
+By inversion on compiler ⟦Δ, 𝑥 :𝜏11, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®2, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛽𝑖 𝑗 · b𝑖
+Í
+out
+Because contexts permit exchange ⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏11 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ bin
+𝑗 , 𝑥 ↦→ 𝑣®1 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+in
+out
+Because contexts permit exchange ⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏11 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ b 𝑗 , 𝑥 ↦→ 𝑣®2 }) = 𝑖 𝛽𝑖 𝑗 · b𝑖
+By induction,
+Í
+Í
+out Í
+out
+⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏11 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ bin
+= 𝑖 (𝛼𝑖 𝑗 + 𝛽𝑖 𝑗 ) · b𝑖out
+𝑗 , 𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖 + 𝑖 𝛽𝑖 𝑗 · b𝑖
+Because contexts permit exchange,
+Í
+out
+⟦Δ, 𝑥 :𝜏11, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 + 𝑣®2, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 (𝛼𝑖 𝑗 + 𝛽𝑖 𝑗 ) · b𝑖
+By compiler ⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = [𝛼𝑖 𝑗 + 𝛽𝑖 𝑗 ] = [𝛼𝑖 𝑗 ] + [𝛽𝑖 𝑗 ]
+
+36
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Case ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 }) = 𝑒®11 (𝑒®12 ) = [𝛼𝑖1𝑗 ](𝛽 1𝑗 )
+Show ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = [𝛼𝑖1𝑗 ](𝛽 1𝑗 ) + [𝛼𝑖2𝑗 ](𝛽 2𝑗 )
+Í Í
+Show ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑖 𝑗 (𝛼𝑖1𝑗 · 𝛽 1𝑗 + 𝛼𝑖2𝑗 · 𝛽 2𝑗 ) · b𝑖out
+Because compiler maps to neurons,
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 }) = [𝛼𝑖1𝑗 ](𝛽 1𝑗 ) ∈ ⟦𝜏2 ⟧
+Because compiler maps to neurons,
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®2 }) = [𝛼𝑖2𝑗 ](𝛽 2𝑗 ) ∈ ⟦𝜏2 ⟧
+Proceed by cases on whether 𝑥 occurs free in 𝑒 1 or 𝑒 2
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+By inversion on compiler and because it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 }) = [𝛼𝑖1𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝛽 1𝑗 ∈ ⟦𝜏1 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝑣®2 }) = [𝛼𝑖2𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝛽 2𝑗 = 𝛽 1𝑗 ∈ ⟦𝜏1 ⟧
+By induction,
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = [𝛼𝑖1𝑗 ] + [𝛼𝑖2𝑗 ] = [𝛼𝑖1𝑗 + 𝛼𝑖2𝑗 ]
+By compiler,
+Í Í
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = [𝛼𝑖1𝑗 + 𝛼𝑖2𝑗 ](𝛽 1𝑗 ) = 𝑖 𝑗 (𝛼𝑖1𝑗 · 𝛽 1𝑗 + 𝛼𝑖2𝑗 · 𝛽 1𝑗 ) · b𝑖out
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+By inversion on compiler and because it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = [𝛼𝑖1𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 }) = 𝛽 1𝑗 ∈ ⟦𝜏1 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = [𝛼𝑖2𝑗 ] = [𝛼𝑖1𝑗 ] ∈ ⟦𝜏1 ⊸ 𝜏2 ⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 {𝑥 ↦→ 𝑣®2 }) = 𝛽 2𝑗 ∈ ⟦𝜏1 ⟧
+By induction,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝛽 1𝑗 + 𝛽 2𝑗
+By compiler,
+Í Í
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = [𝛼𝑖1𝑗 ](𝛽 1𝑗 + 𝛽 2𝑗 ) = 𝑖 𝑗 (𝛼𝑖1𝑗 · 𝛽 1𝑗 + 𝛼𝑖1𝑗 · 𝛽 2𝑗 ) · b𝑖out
+⊲ Case ⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 }) = 𝛼 1 · 𝑒®2 + 𝛼 2 · 𝑒®3
+Proceed by cases on whether 𝑥 ∈ fv(𝑒 1 ) or (𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 ))
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+Show,
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = (𝛼 1 + 𝛽 1 ) · 𝑒®21 + (𝛼 2 + 𝛽 2 ) · 𝑒®31
+By inversion on compiler andbecause
+ ⊺ it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 }) = 𝛼 1 𝛼 2 ∈ ⟦2⟧
+By inversion on compiler andbecause
+ ⊺ it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝑣®2 }) = 𝛽 1 𝛽 2 ∈ ⟦2⟧
+
+⊺
+By induction ⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝛼 1 + 𝛽 1 𝛼 2 + 𝛽 2
+
+Compiling to linear neurons
+
+37
+
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 ) = 𝑒®21 ∈ ⟦𝜏⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 ) = 𝑒®31 ∈ ⟦𝜏⟧
+By compiler,
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = (𝛼 1 + 𝛽 1 ) · 𝑒®21 + (𝛼 2 + 𝛽 2 ) · 𝑒®31
+⊲ Case 𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 )
+Show,
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝛼 1 · (𝑒®21 + 𝑒®22 ) + 𝛼 2 · (𝑒®31 + 𝑒®32 )
+By inversion on compiler
+and
+
+ ⊺ because it maps to neurons,
+⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 ) = 𝛼 1 𝛼 2 ∈ ⟦2⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 }) = 𝑒®21 ∈ ⟦𝜏⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®2 }) = 𝑒®22 ∈ ⟦𝜏⟧
+By induction ⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑒®21 + 𝑒®22
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 }) = 𝑒®31 ∈ ⟦𝜏⟧
+By inversion on compiler and because it maps to neurons,
+⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®2 }) = 𝑒®32 ∈ ⟦𝜏⟧
+By induction ⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝑒®31 + 𝑒®32
+By compiler,
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 + 𝑣®2 }) = 𝛼 1 · (𝑒®21 + 𝑒®22 ) + 𝛼 2 · (𝑒®31 + 𝑒®32 )
+□
+
+B.11
+
+Lemma (Compiler is homogenous in its environment
+
+Where ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣® }) = 𝑒®
+⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝛼 · 𝑣® }) = 𝛼 · 𝑒®
+Proof.
+Consider each inductive case of ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 ) = 𝑒®,
+⊲ Case ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣® }) = 𝑣®
+By compiler ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝛼 · 𝑣® }) = 𝛼 · 𝑣®
+ ⊺
+⊲ Case ⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+Vacuous because environment must be non-empty
+ ⊺
+⊲ Case ⟦∅ ⊢ ff : 2⟧(∅) = 0 1
+Vacuous because environment must be non-empty
+⊲ Case ⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣® }) = [𝛼𝑖 𝑗 ]
+Í
+out
+By inversion on compiler ⟦Δ, 𝑥 :𝜏11, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+Because contexts permit exchange ⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏11 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ bin
+, 𝑥 ↦→ 𝑣® }) = 𝑖 𝛼𝑖 𝑗 · b𝑖out
+Í 𝑗
+in
+By induction ⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏11 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ b 𝑗 , 𝑥 ↦→ 𝛼¯ · 𝑣® }) = 𝑖 𝛼¯ · 𝛼𝑖 𝑗 · b𝑖out
+Because contexts permit exchange,
+
+38
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Í
+out
+⟦Δ, 𝑥 :𝜏11, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝛼¯ · 𝑣®, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛼¯ · 𝛼𝑖 𝑗 · b𝑖
+By compiler ⟦Δ, 𝑥 :𝜏11 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝛼¯ · 𝑣® }) = [𝛼¯ · 𝛼𝑖 𝑗 ] = 𝛼¯ · [𝛼𝑖 𝑗 ]
+⊲ Case ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣® }) = 𝑒®11 (𝑒®12 ) = [𝛼𝑖 𝑗 ](𝛽 𝑗 )
+Proceed by cases on whether 𝑥 ∈ fv(𝑒 1 ) or 𝑥 ∈ fv(𝑒 2 )
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+By inversion on compiler ⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝑣® }) = [𝛼𝑖 𝑗 ]
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝛽 𝑗
+By induction ⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝛼¯ · 𝑣® }) = 𝛼¯ · [𝛼𝑖 𝑗 ]
+By compiler ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣® }) = (𝛼¯ · [𝛼𝑖 𝑗 ]) (𝛽 𝑗 ) = 𝛼¯ · [𝛼𝑖 𝑗 ](𝛽 𝑗 )
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+By inversion on compiler ⟦Δ1 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = [𝛼𝑖 𝑗 ]
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 {𝑥 ↦→ 𝑣® }) = 𝛽 𝑗
+By induction ⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 {𝑥 ↦→ 𝛼¯ · 𝑣® }) = 𝛼¯ · 𝛽 𝑗
+By compiler ⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣® }) = [𝛼𝑖 𝑗 ](𝛼¯ · 𝛽 𝑗 ) = 𝛼¯ · [𝛼𝑖 𝑗 ](𝛽 𝑗 )
+⊲ Case ⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(𝜎®1 ◦ 𝜎®2 ) = 𝛼 1 · 𝑒®2 + 𝛼 2 · 𝑒®3
+Proceed by cases on whether 𝑥 ∈ fv(𝑒 1 ) or (𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 ))
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+
+⊺
+By inversion on compiler ⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 }) = 𝛼 1 𝛼 2
+
+⊺ 
+⊺
+By induction ⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝛼¯ · 𝑣®1 }) = 𝛼¯ · 𝛼 1 𝛼 2 = 𝛼¯ · 𝛼 1 𝛼¯ · 𝛼 2
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 ) = 𝑒®2
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 ) = 𝑒®3
+By compiler ⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(𝜎®1 ◦ 𝜎®2 ) = 𝛼¯ · 𝛼 1 · 𝑒®2 + 𝛼¯ · 𝛼 2 · 𝑒®3
+⊲ Case 𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 )
+
+⊺
+By inversion on compiler ⟦Δ1 ⊢ 𝑒 1 : 2⟧(𝜎®1 ) = 𝛼 1 𝛼 2
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®2 }) = 𝑒®2
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 {𝑥 ↦→ 𝑣®2 }) = 𝑒®3
+□
+
+B.12
+
+Lemma (Compiler is invariant to closing environments)
+
+Where ⟦Δ ⊢ 𝜎⟧ = 𝜎® and ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 ) = 𝑒®,
+⟦∅ ⊢ 𝜎 (𝑒) : 𝜏⟧(∅) = 𝑒®
+Proof.
+Consider each inductive case of ⟦Δ ⊢ 𝜎⟧ = 𝜎® ,
+⊲ Case ⟦∅ ⊢ ∅⟧ = ∅
+By assumption ⟦Δ ⊢ 𝑒 : 𝜏⟧(®
+𝜎 ) = 𝑒®
+By substitution ⟦Δ ⊢ ∅(𝑒) : 𝜏⟧(®
+𝜎 ) = 𝑒®
+⊲ Case ⟦Δ, 𝑥 :𝜏1 ⊢ 𝜎 {𝑥 ↦→ 𝑣 }⟧ = 𝜎® {𝑥 ↦→ 𝑣® }
+Show ⟦∅ ⊢ 𝜎 {𝑥 ↦→ 𝑣 }(𝑒) : 𝜏⟧(∅) = 𝑒®
+Show ⟦∅ ⊢ 𝜎 ({𝑥 ↦→ 𝑣 }(𝑒)) : 𝜏⟧(∅) = 𝑒®
+By assumption ⟦Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣® }) = 𝑒®
+
+Compiling to linear neurons
+
+39
+
+By inversion on compiling environments ⟦Δ ⊢ 𝜎⟧ = 𝜎®
+Because the compiler is invariant to partially closing environments,
+⟦Δ ⊢ {𝑥 ↦→ 𝑣 }(𝑒) : 𝜏⟧(®
+𝜎 ) = 𝑒®
+By induction ⟦∅ ⊢ 𝜎 ({𝑥 ↦→ 𝑣 }(𝑒)) : 𝜏⟧(∅) = 𝑒®
+□
+
+B.13
+
+Lemma (Compiler is invariant to partially closing environments)
+
+Where ⟦Δ, 𝑥 :𝜏1 ⊢ 𝜎 {𝑥 ↦→ 𝑣 }⟧ = 𝜎® {𝑥 ↦→ 𝑣® }, and ⟦Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏⟧(®
+𝜎 {𝑥 ↦→ 𝑣® }) = 𝑒®,
+⟦Δ ⊢ {𝑥 ↦→ 𝑣 }(𝑒) : 𝜏⟧(®
+𝜎 ) = 𝑒®
+Proof.
+Consider each inductive case of compiler,
+⊲ Case ⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧({𝑥 ↦→ 𝑣® }) = 𝑣®
+By substitution {𝑥 ↦→ 𝑣 }(𝑥) = 𝑣
+By inversion on compiling environments ⟦∅ ⊢ 𝑣 : 𝜏⟧(∅) = 𝑣®
+ ⊺
+⊲ Case ⟦∅ ⊢ tt : 2⟧(∅) = 1 0
+Vacuous because context can’t be empty
+ ⊺
+⊲ Case ⟦∅ ⊢ ff : 2⟧(∅) = 0 1
+Vacuous because context can’t be empty
+⊲ Case ⟦Δ, 𝑥 :𝜏 ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣® }) = [𝛼𝑖 𝑗 ]
+Show ⟦Δ ⊢ {𝑥 ↦→ 𝑣 }(𝜆𝑦.𝑒) : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 ) = [𝛼𝑖 𝑗 ]
+Show ⟦Δ ⊢ 𝜆𝑦.{𝑥 ↦→ 𝑣 }(𝑒) : 𝜏1 ⊸ 𝜏2 ⟧(®
+𝜎 ) = [𝛼𝑖 𝑗 ]
+Í
+out
+By inversion on compiler ⟦Δ, 𝑥 :𝜏, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑥 ↦→ 𝑣®, 𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+Í
+in
+Because contexts permit exchange ⟦Δ, 𝑦 :𝜏1, 𝑥 :𝜏 ⊢ 𝑒 : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ b 𝑗 , 𝑥 ↦→ 𝑣® }) = 𝑖 𝛼𝑖 𝑗 · b𝑖out
+Í
+out
+By induction ⟦Δ, 𝑦 :𝜏1 ⊢ {𝑥 ↦→ 𝑣 }(𝑒) : 𝜏2 ⟧(®
+𝜎 {𝑦 ↦→ bin
+𝑗 }) = 𝑖 𝛼𝑖 𝑗 · b𝑖
+By compiler ⟦Δ ⊢ 𝜆𝑦.{𝑥 ↦→ 𝑣 }(𝑒) : 𝜏⟧(®
+𝜎 ) = [𝛼𝑖 𝑗 ]
+⊲ Case ⟦(Δ1 ◦ Δ2 ), 𝑥 :𝜏 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣® }) = 𝑒®1 (𝑒®2 )
+Proceed by cases on whether 𝑥 ∈ fv(𝑒 1 ) or 𝑥 ∈ fv(𝑒 2 )
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+Show ⟦Δ1 ◦ Δ2 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 )𝑒 2 : 𝜏2 ⟧(𝜎®1 ◦ 𝜎®2 ) = 𝑒®1 (𝑒®2 )
+By inversion on compiler ⟦Δ1, 𝑥 :𝜏 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 {𝑥 ↦→ 𝑣 }) = 𝑒®1
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏1 ⟧(𝜎®2 ) = 𝑒®2
+By induction ⟦Δ1 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 ) : 𝜏1 ⊸ 𝜏2 ⟧(𝜎®1 ) = 𝑒®1
+By compiler ⟦Δ1 ◦ Δ2 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 )𝑒 2 : 𝜏2 ⟧(𝜎®1 ◦ 𝜎®2 ) = 𝑒®1 (𝑒®2 )
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+Similar to previous case but inducting on 𝑒 2
+⊲ Case ⟦(Δ1 ◦ Δ2 ), 𝑥 :𝜏1 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧((𝜎®1 ◦ 𝜎®2 ){𝑥 ↦→ 𝑣®1 }) = 𝛼 1 · 𝑒®2 + 𝛼 2 · 𝑒®3
+Proceed by cases on whether 𝑥 ∈ fv(𝑒 1 ) or (𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 ))
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+
+⊺
+By inversion on compiler ⟦Δ1, 𝑥 :𝜏1 ⊢ 𝑒 1 : 2⟧(𝜎®1 {𝑥 ↦→ 𝑣®1 }) = 𝛼 1 𝛼 2
+
+40
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 2 : 𝜏⟧(𝜎®2 ) = 𝑒®2
+By inversion on compiler ⟦Δ2 ⊢ 𝑒 3 : 𝜏⟧(𝜎®2 ) = 𝑒®3
+⊺
+By induction ⟦Δ1 ⊢ {𝑥 ↦→ 𝑣 1 }(𝑒 1 ) : 2⟧(𝜎®1 ) = 𝛼 1 𝛼 2
+By compiler ⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏⟧(𝜎®1 ◦ 𝜎®2 ) = 𝛼 1 · 𝑒®2 + 𝛼 2 · 𝑒®3
+⊲ Case 𝑥 ∈ fv(𝑒 2 ) and 𝑥 ∈ fv(𝑒 3 )
+Similar to previous case but inducting on 𝑒 2 and 𝑒 3
+□
+
+Compiling to linear neurons
+
+C
+
+41
+
+EXPERIMENTS
+
+The following experiments are variants of the conditional classification task (Section 5.2). In this
+appendix we will briefly state their results, pointing out important differences but assuming you
+are familiar with the previously discussed conditional classification task.
+C.1
+
+Conditional classification: XOR
+
+C.1.1 Task. Our second experiment is the conditional classification task in Fig. 16. We need a function which conditionally
+classifies two input image 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even and 𝑥 2 is odd, return ✓
+⊲ If 𝑥 1 is odd and 𝑥 2 is even, return ✓
+⊲ Otherwise, return ✗
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+C.1.2 Models. The direct model (D) is derived from compiling
+the following program, which computes XOR of its inputs.
+Fig. 18. XOR task
+The Church encoded model (C) is the Church encoding of this
+program.
+𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then (if 𝑦 then ff else tt) else (if 𝑦 then tt else ff) : 2
+𝘹
+
+XOR Dynamics
+1.0 (bs: 64, lr: 1e-05)
+0.8
+
+(bs: 128, lr: 1e-05)
+D
+C
+T
+I
+
+0.6
+
+1.0 (bs: 64, lr: 0.0001)
+0.8
+
+Accuracy
+
+(bs: 128, lr: 0.0001)
+
+1.0 (bs: 64, lr: 0.001)
+0.8
+
+0.8
+
+0
+
+1000
+
+2000
+
+D
+C
+T
+I
+(bs: 256, lr: 0.001)
+
+(bs: 128, lr: 0.01)
+
+500
+
+D
+C
+T
+I
+(bs: 256, lr: 0.01)
+
+1000
+
+D
+C
+T
+I
+(bs: 512, lr: 0.001)
+D
+C
+T
+I
+(bs: 512, lr: 0.01)
+
+D
+C
+T
+I
+
+0
+
+D
+C
+T
+I
+(bs: 512, lr: 0.0001)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+0.6
+
+(bs: 256, lr: 0.0001)
+
+(bs: 128, lr: 0.001)
+
+1.0 (bs: 64, lr: 0.01)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+0.6
+
+(bs: 512, lr: 1e-05)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+0.6
+
+(bs: 256, lr: 1e-05)
+
+D
+C
+T
+I
+
+0
+
+Steps
+
+200
+
+400
+
+Fig. 19. Summary of dynamics across configurations
+
+D
+C
+T
+I
+
+0
+
+100
+
+200
+
+300
+
+42
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+C.2
+
+Conditional classification: AND
+
+C.2.1 Task. Our second experiment is the conditional classification task in Fig. 16. We need a function which conditionally
+classifies two input image 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even and 𝑥 2 is even, return ✓
+⊲ Otherwise, return ✗
+C.2.2 Models. The direct model (D) is derived from compiling
+the following program, which computes AND of its inputs.
+The Church encoded model (C) is the Church encoding of this
+program.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 20. AND task
+
+𝘹
+
+𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then (if 𝑦 then tt else ff) else (if 𝑦 then ff else ff) : 2
+
+AND Dynamics
+
+1.0 (bs: 64, lr: 1e-05)
+0.9
+0.8
+0.7
+1.0 (bs: 64, lr: 0.0001)
+0.9
+
+Accuracy
+
+0.8
+0.7
+1.0 (bs: 64, lr: 0.001)
+0.9
+0.8
+0.7
+1.0 (bs: 64, lr: 0.01)
+0.9
+
+D
+C
+T
+I
+
+0
+
+1000
+
+(bs: 256, lr: 1e-05)
+
+(bs: 128, lr: 0.0001)
+D
+C
+T
+I
+
+D
+C
+T
+I
+(bs: 256, lr: 0.0001)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+(bs: 256, lr: 0.001)
+D
+C
+T
+I
+(bs: 256, lr: 0.01)
+
+500
+
+1000
+
+D
+C
+T
+I
+(bs: 512, lr: 0.01)
+
+D
+C
+T
+I
+
+0
+
+D
+C
+T
+I
+(bs: 512, lr: 0.001)
+
+D
+C
+T
+I
+(bs: 128, lr: 0.01)
+
+D
+C
+T
+I
+(bs: 512, lr: 0.0001)
+
+D
+C
+T
+I
+(bs: 128, lr: 0.001)
+
+2000
+
+(bs: 512, lr: 1e-05)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+0.8
+0.7
+
+(bs: 128, lr: 1e-05)
+
+D
+C
+T
+I
+
+0
+
+Steps
+
+200
+
+400
+
+Fig. 21. Summary of dynamics across configurations
+
+D
+C
+T
+I
+
+0
+
+100
+
+200
+
+300
+
+Compiling to linear neurons
+
+C.3
+
+43
+
+Conditional classification: OR
+
+C.3.1 Task. Our second experiment is the conditional classification task in Fig. 16. We need a function which conditionally
+classifies two input image 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even or 𝑥 2 is odd, return ✓
+⊲ Otherwise, return ✗
+C.3.2 Models. The direct model (D) is derived from compiling
+the following program, which computes OR of its inputs. The
+Church encoded model (C) is the Church encoding of this
+program.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 22. OR Task
+
+𝘹
+
+𝑥 : 2, 𝑦 : 2 ⊢ if 𝑥 then (if 𝑦 then tt else tt) else (if 𝑦 then tt else ff) : 2
+
+OR Dynamics
+
+1.0 (bs: 64, lr: 1e-05)
+0.9
+0.8
+0.7
+1.0 (bs: 64, lr: 0.0001)
+0.9
+
+Accuracy
+
+0.8
+0.7
+1.0 (bs: 64, lr: 0.001)
+0.9
+0.8
+0.7
+1.0 (bs: 64, lr: 0.01)
+0.9
+
+D
+C
+T
+I
+
+0
+
+1000
+
+(bs: 256, lr: 1e-05)
+
+(bs: 128, lr: 0.0001)
+D
+C
+T
+I
+
+D
+C
+T
+I
+(bs: 256, lr: 0.0001)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+(bs: 256, lr: 0.001)
+D
+C
+T
+I
+(bs: 256, lr: 0.01)
+
+500
+
+1000
+
+D
+C
+T
+I
+(bs: 512, lr: 0.01)
+
+D
+C
+T
+I
+
+0
+
+D
+C
+T
+I
+(bs: 512, lr: 0.001)
+
+D
+C
+T
+I
+(bs: 128, lr: 0.01)
+
+D
+C
+T
+I
+(bs: 512, lr: 0.0001)
+
+D
+C
+T
+I
+(bs: 128, lr: 0.001)
+
+2000
+
+(bs: 512, lr: 1e-05)
+
+D
+C
+T
+I
+
+D
+C
+T
+I
+
+0.8
+0.7
+
+(bs: 128, lr: 1e-05)
+
+D
+C
+T
+I
+
+0
+
+Steps
+
+200
+
+400
+
+Fig. 23. Summary of dynamics across configurations
+
+D
+C
+T
+I
+
+0
+
+100
+
+200
+
+300
+

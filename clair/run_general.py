@@ -370,6 +370,9 @@ def run_to_fixpoint(m, csps, dev, theta=0.5, R_max=64):
     done = torch.zeros(B, dtype=torch.bool, device=dev)
     fe_k = fe_n = 0
     for _ in range(R_max):
+        # #3: recompute `given` each pass from the CURRENT lattice so inference matches the
+        # re-featurized training distribution (newly-singleton cells are marked given).
+        feat["given"] = (vm.sum(-1) == 1).float() * feat["var_valid"]
         b, cls, _ = fwd(m, feat, vm)
         new_vm = meet(vm, b, theta)
         cur = [(csps[i], dom_from_mask(vm[i].cpu().numpy(), csps[i])) for i in range(B)]

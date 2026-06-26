@@ -1,0 +1,2152 @@
+Reasoning about łReasoning about Reasoningž
+Semantics and Contextual Equivalence for Probabilistic Programs with Nested Queries and Recursion
+
+YIZHOU ZHANG, University of Waterloo, Canada
+NADA AMIN, Harvard University, USA
+Metareasoning can be achieved in probabilistic programming languages (PPLs) using agent models that
+recursively nest inference queries inside inference queries. However, the semantics of this powerful, reflectionlike language feature has defied an operational treatment, much less reasoning principles for contextual
+equivalence.
+We give formal semantics to a core PPL with continuous distributions, scoring, general recursion, and nested
+queries. Unlike prior work, the presence of nested queries and general recursion makes it impossible to stratify
+the definition of a sampling-based operational semantics and that of a measure-theoretic semanticsÐthe
+two semantics must be defined mutually recursively. A key yet challenging property we establish is that
+probabilistic programs have well-defined meanings: limits exist for the step-indexed measures they induce.
+Beyond a semantics, we offer relational reasoning principles for probabilistic programs making nested
+queries. We construct a step-indexed, biorthogonal logical-relations model. A soundness theorem establishes
+that logical relatedness implies contextual equivalence. We demonstrate the usefulness of the reasoning
+principles by proving novel equivalences of practical relevanceÐin particular, game-playing and decisionmaking agents. We mechanize our technical developments leading to the soundness proof using the Coq proof
+assistant. Nested queries are an important yet theoretically underdeveloped linguistic feature in PPLs; we are
+first to give them semantics in the presence of general recursion and to provide them with sound reasoning
+principles for contextual equivalence.
+CCS Concepts: · Theory of computation → Probabilistic computation; Program semantics; Program
+reasoning; · Mathematics of computing → Bayesian computation.
+Additional Key Words and Phrases: Metareasoning, nested queries, logical relations, program equivalence.
+ACM Reference Format:
+Yizhou Zhang and Nada Amin. 2022. Reasoning about łReasoning about Reasoningž: Semantics and Contextual
+Equivalence for Probabilistic Programs with Nested Queries and Recursion. Proc. ACM Program. Lang. 6, POPL,
+Article 16 (January 2022), 28 pages. https://doi.org/10.1145/3498677
+
+1 INTRODUCTION
+Probabilistic programming languages (PPLs) are, in essence, programming languages that support
+making random choices (i.e., sampling) and scoring random choices (i.e., conditioning).
+PPLs have been used to model and solve planning and decision-making problems. Intelligent
+agents are modeled as probabilistic programs that make random choices and condition on those
+choices leading to desired outcomes. Their intelligent behavior arises from applying Bayesian
+Authors’ addresses: Yizhou Zhang, David R. Cheriton School of Computer Science, Davis Centre, 200 University Avenue
+West, University of Waterloo, Waterloo, Ontario, N2L 3G1, Canada; Nada Amin, John A. Paulson School of Engineering and
+Applied Sciences, 4.413 Science and Engineering Complex, 150 Western Avenue, Harvard University, Allston, Massachusetts,
+02134, USA.
+
+This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+© 2022 Copyright held by the owner/author(s).
+2475-1421/2022/1-ART16
+https://doi.org/10.1145/3498677
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16
+
+16:2
+
+Yizhou Zhang and Nada Amin
+
+# Agents make nested queries to reason about each other
+
+# Sample a location from the prior
+1 def SampleLoc (bias) =
+2
+3
+
+if sample Bernoulli(bias)
+then łCafé Až else łCafé Bž
+
+6 def Alice (depth) =
+7
+8
+9
+
+# Condition on the locations coinciding
+4 def ScoreLoc (loc1 , loc2 ) =
+5
+if loc1 = loc2 then score 1 else score 0
+# Outermost query, inferring Alice’s choice
+16 def Main () = sample (query Alice (8))
+
+let aliceLoc = SampleLoc (0.8) in
+let bobLoc = sample (query Bob (depth − 1)) in
+let _ = ScoreLoc (aliceLoc, bobLoc) in aliceLoc
+
+10 def Bob (depth) =
+11
+12
+13
+14
+15
+
+let bobLoc = SampleLoc (0.45) in
+if depth > 0 then
+let aliceLoc = sample (query Alice (depth)) in
+let _ = ScoreLoc (aliceLoc, bobLoc) in bobLoc
+else bobLoc
+
+Figure 1. Schelling’s coordination game via recursively nested queries [Stuhlmüller and Goodman 2014]
+
+inference (also referred to as queries in PPLs) to the probabilistic programs. Therefore, in broad
+strokes, querying a probabilistic program gives rise to the ability to reason.
+Nested queries. Querying a program that further makes queriesÐhence nested queriesÐgives rise
+to the ability to reason about reasoning.
+Stuhlmüller and Goodman [2014] present applications of nested queries in metareasoning. A first
+example they give is a coordination game of the kind discussed by Schelling [1980]: two agents,
+Alice and Bob, want to meet up in a café but have no way to contact each other; however, they
+know each other’s preference about the two cafés in town. The probabilistic program in Figure 1
+models this problem using two mutually recursive functions, Alice and Bob. Agents’ preferences
+are expressed by invoking function SampleLoc with their prior biases.
+Alice reasons as follows: she samples a location from the prior (line 7), reasons about where Bob
+would like to go (line 8), and conditions her choice on Bob’s choosing the same location (line 9).
+This conditioning is done in ScoreLoc, which assigns a zero score when agents choose different
+locations. Bob reasons in a similar way.
+Notice that 𝐴𝑙𝑖𝑐𝑒 and 𝐵𝑜𝑏 are mutually recursive, with the recursive calls made inside queries
+(lines 8 and 13). On line 13, Bob uses the expression query Alice (depth) to infer a distribution
+over Alice’s choices. The top-level Main function (line 16) makes an outermost (hence non-nested)
+query, unleashing the nested reasoning łAlice thinks that Bob thinks that Alice thinks that ...ž.
+The depth parameter bounds the depth of recursion, echoing that agents have bounded rationality.
+Because Alice prefers Café A strongly (line 7) while Bob is roughly indifferent (line 11), the result
+of inference will converge on them choosing Café A as the depth of recursion increases.
+More uses of recursively nested queries abound [Evans et al. 2017], for example, in sequentialdecision-making applications: an agent wants to learn actions that, given the state it is in, minimize
+its chance of incurring high cost over time. The agent’s action will influence its future states, which
+will in turn influence the agent’s future actions. Thus, to choose good actions, the agent must
+reason recursively about how itself will reason in the future. Beyond this single-agent setting, the
+powerful combination of nested queries and recursion has been used to model metareasoning in
+multi-agent systems [Seaman et al. 2020], where an agent must reason about how its opponents
+will react to its action and how it will further respond to its opponents’ reactions.
+Formalization challenges. Nested queries, along with recursion, are a powerful linguistic construct for expressing cognitive models and artificial intelligence problems. However, their formal
+semanticsÐin particular, operational meaningsÐis underdeveloped.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:3
+
+∫
+Bayesian inference 𝑝 (𝑧|𝑥) = 𝑝 (𝑧, 𝑥)/𝑝 (𝑥) introduces a normalization factor 𝑝 (𝑥) = 𝑝 (𝑧, 𝑥) d𝑧
+that integrates over all possible executions of the program being queried. This integral, termed
+model evidence, is the same for all executions if inference exists only at the top level and queries
+cannot be nested. Hence, model evidence is often referred to as the normalization constant, and it
+makes sense for a PPL semantics to concern itself with only unnormalized probability 𝑝 (𝑧, 𝑥) in
+the absence of nested queries [Culpepper and Cobb 2017; Wand et al. 2018].
+However, the model evidence 𝑝 (𝑥) of a nested query is in general different for each execution of
+the nesting query, because the nested query itself may be dependent on random choices made in
+the nesting query. Therefore, the model evidence of a nested Bayesian-inference problem can no
+longer be considered a constant from the perspective of a nesting query. Normalization must not
+be ignored, and a semantics must deal with it head-on.
+The possibility to nest queries inside queries implies the semantics must perform integration
+inside integrationÐthe semantics must be self-referential. Tying the knot of this fixpoint definition
+is an open challenge in operational-semantics-based language models. In prior work [Borgström
+et al. 2016; Culpepper and Cobb 2017; Wand et al. 2018; Szymczak and Katoen 2019], a measuretheoretic semantics is defined by integrating a standalone, sampling-based operational semantics.
+Unfortunately, nested queries preclude such a stratified approach: the sampling-based operational
+semantics needs to invoke the measure semantics to obtain normalization factors, with the measure
+semantics in turn invoking the sampling-based operational semantics to perform integration. In
+a different approach, the distribution-based operational treatment of Staton et al. [2016] readily
+supports nested queries (though not recursion), but the meaning of nested queries is defined only
+by assuming a normalization function.
+General recursionÐhence possible nonterminationÐfurther complicates the matter. Almost
+surely (a.s.) terminating programs naturally exist in practiceÐe.g., geometric distributions and
+infinite-horizon Markov decision processes with absorbing transitions. Such programs admit
+nonterminating executions, albeit the measure of these executions is zero in the limit (i.e., when
+the number of allowable evaluation steps tends to infinity). Icard [2017] and Szymczak and Katoen
+[2019] further show that probabilistic programs with even positive measure of nontermination offer
+useful modeling power. Unfortunately, nontermination poses challenges due to the self-referential
+nature of the semantics of nested queries: we are not licensed to take the limit of the semantics (to
+give meaning to a nested, possibly nonterminating program) while the semantics is being defined.
+Finally, when we do take the limit of the measure semantics, we must make sure that the limit
+exists. Because the measure semantics is essentially a fixpoint definition that allows integration to
+happen recursively inside integration, proving the existence of limit measures becomes a nontrivial
+undertaking that necessitates care in posing induction hypotheses and organizing proofs.
+Equational reasoning. Reasoning about program equivalence is a fundamental problem in semantics research. The gold standard of equivalence is contextual equivalence [Morris 1968] (a.k.a.
+observational equivalence). It considers two terms equivalent if composing them with any wellformed program context yields two programs with indistinguishable behaviors.
+Intriguing equivalence questions arise with probabilistic programs. For example, consider the
+following two terms, 𝑒 1 and 𝑒 2 :
+def
+
+𝑒 1 = let x = sample Bernoulli(0.2) in
+let _ = score (if x = y then 1 else 0) in
+x
+def
+
+𝑒 2 = f (𝑦)
+
+# Function 𝑓 used in 𝑒 2
+def f (𝑦) =
+let x = sample Bernoulli(0.2) in
+if x = y then x
+else f (𝑦) # recursive call
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:4
+
+Yizhou Zhang and Nada Amin
+
+At first sight, they appear equivalent. Both terms return 𝑥, the value of a Bernoulli random variable.
+And when they return, both satisfy the constraint 𝑥 = 𝑦, where 𝑦 is a free, boolean variable
+defined in a surrounding program context. Term 𝑒 1 enforces 𝑥 = 𝑦 using score: executions in
+which 𝑥 ≠ 𝑦 has zero probability in the posterior distribution. Term 𝑒 2 enforces 𝑥 = 𝑦 using a
+recursive function 𝑓 that does not return until the constraint is satisfied. Notice that while 𝑒 1
+terminates certainly for any 𝑦, 𝑒 2 terminates almost surely: the probability of 𝑒 2 not terminating is 0
+(lim𝑛→∞ 0.8𝑛 or lim𝑛→∞ 0.2𝑛 , depending on the value 𝑦 takes). So 𝑒 1 and 𝑒 2 cannot be distinguished
+on the grounds of probability of nontermination, either.
+Despite our intuition, these two terms cannot be considered contextually equivalent: there exist
+program contexts that can distinguish them. One such program context 𝐶 is given below:
+def
+
+𝐶 = let y = sample Bernoulli(0.5) in
+let _ = [·] in y # To compose a term with 𝐶, place it in the hole [·]
+It binds 𝑦 to a fair coin flip, executes the term placed in the hole, and returns 𝑦. The observable
+behavior of the resulting program 𝐶 [𝑒 1 ] or 𝐶 [𝑒 2 ] is the distribution over its return value 𝑦. Program 𝐶 [𝑒 1 ] involves conditioning, which affects the posterior distribution of 𝑦: a priori 𝑥 = False
+is more likely than 𝑥 = True, so a posteriori 𝑦 = False is more likely than 𝑦 = True. By contrast,
+program 𝐶 [𝑒 2 ] does not involve conditioning, so 𝑦 = True and 𝑦 = False are equally likely.
+Nested queries add an important twist. Place 𝑒 1 inside a nested inference query and consider the
+equivalence question again:
+def
+𝑒 1′ = sample (query 𝑒 1 )
+Terms 𝑒 1′ and 𝑒 2 are contextually equivalent. In particular, when they are composed with the program
+context 𝐶 from above, the resulting distribution of 𝑦 in each program remains a fair coin flip. The
+reason is that a query denotes a conditional distribution, and the influence of conditioning on
+posterior probabilities stops at the boundary
+of the distribution.
+ ′
+Another way to look at it is that 𝐶 𝑒 1 stands for a different (possibly unnormalized) joint distribution than 𝐶 [𝑒 1 ] does. Program 𝐶 [𝑒 1 ] stands for the joint distribution 𝑝 (𝑥, 𝑦), defined below, where
+BernoulliPMF (𝑏, ·) is the probability mass function of a Bernoulli distribution with parameter 𝑏,
+and 1𝑃 is the indicator function that has value 1 when proposition 𝑃 holds and 0 otherwise:
+def
+
+𝑝 (𝑥, 𝑦) = 𝑝 (𝑦) 𝑝 (𝑥) 1𝑥=𝑦 = BernoulliPMF (0.5, 𝑦) BernoulliPMF (0.2, 𝑥) 1𝑥=𝑦
+def
+
+𝑝 ′ (𝑥, 𝑦) = 𝑝 (𝑦) ∫
+
+𝑝 (𝑥) 1𝑥=𝑦
+𝑝 (𝑥) 1𝑥=𝑦 d𝑥
+
+≠ 𝑝 (𝑥, 𝑦)
+
+# 𝐶 [𝑒 1 ] joint distr.
+ 
+# 𝐶 𝑒 1′ joint distr.
+
+ 
+Program 𝐶 𝑒 1′ stands for the joint distribution 𝑝 ′ (𝑥, 𝑦), defined above. It differs from 𝑝 (𝑥, 𝑦) in
+that it normalizes the joint probability 𝑝 (𝑥) 1𝑥=𝑦 denoted by 𝑒 1 . Marginalizing out 𝑥, we obtain the
+ 
+distribution over the values to which 𝐶 𝑒 1′ can evaluate:
+∫
+∫
+∫
+𝑝 (𝑥) 1𝑥=𝑦 d𝑥
+𝑝 (𝑥) 1𝑥=𝑦
+′
+d𝑥 = 𝑝 (𝑦) ∫
+= 𝑝 (𝑦) = BernoulliPMF (0.5, 𝑦)
+𝑝 (𝑥, 𝑦) d𝑥 = 𝑝 (𝑦) ∫
+𝑝 (𝑥) 1𝑥=𝑦 d𝑥
+𝑝 (𝑥) 1𝑥=𝑦 d𝑥
+ 
+Whereas in the above we argued semi-formally that 𝐶 𝑒 1′ denotes the same distribution as
+Bernoulli(0.5), the discourse does not constitute a rigorous argument of contextual equivalence
+between 𝑒 1′ and 𝑒 2 . For one thing, contextual equivalence is a universally quantified propertyÐ
+ 
+its discriminative power comes from the universal quantificationÐso we need to show 𝐶 𝑒 1′
+and 𝐶 [𝑒 2 ] induce identical distributions for any program context 𝐶. Moreover, PPLs afford a
+much richer model-specification language than the language of probability can capture. To reason
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:5
+
+Figure 2. Trajectories of two robots. The objective is to reach the goal region (green square) in the fewest possible steps and avoid the trap (red square). The robots sample equally good trajectories. The programs differ only
+in that one moves some code from outside a nested query to inside. But inference efficiency differs greatly.
+
+about equivalence in general, we need reasoning principles that operate directly on programming
+constructs: higher-order functions, general recursion, etc.
+Equivalence questions arise also from metareasoning agents, where nesting is induced by recursion. Consider again the coordination game in Figure 1. One would presume that nested queries are
+indispensable in this example; after all, it is the very first example Stuhlmüller and Goodman [2014]
+use to introduce nested queries in the Church PPL [Goodman et al. 2008]. Yet we later prove the
+program in Figure 1 equivalent to a variant in which the recursive calls to Bob and to Alice (lines 8
+and 13) are made without being placed inside queries! Puzzling it may seem, the intuition of this
+equivalence begins to surface after some contemplation: random choices made by nesting queries
+(lines 7 and 11) are not used by an agent to reason about the other agent in nested queriesÐby the
+problem definition, the agents cannot communicate. The equivalence happens to hold.
+Equational reasoning is often used to relate programs under program optimization, where
+one program outperforms the other. Consider, in Figure 2, the trajectories sampled by two pathplanning robots implemented as Markov decision processes (MDPs). The robots make a sequence of
+decisions to reach the goal while minimizing the time taken and avoiding obstacles. The programs
+use nested queries to reason about robots’ own reasoning in the future. They differ in that one
+program puts code inside a recursively nested query, whereas the same code is outside the query
+in the other program. Figure 2 hints that the two implementations may be equivalent, as the
+sampled trajectories are equally good. However, they cause the default inference algorithm of
+WebPPL [Goodman and Stuhlmüller 2014] to exhibit different performance measured by running
+time. Formally substantiating the equivalence serves to justify one of the robotics programs as a
+semantics-preserving optimization of the other.
+Contributions. This paper makes the following contributions:
+• In ğ4, we give semantics to a core PPL with nested queries and general recursion, addressing
+the semantic challenge of mutual reference between an operational semantics and a measure
+semantics. Step indexing forms a well-founded basis on which we define the semantics. We
+prove that programs have well-defined meanings: limits of step-indexed measures exist.
+• In ğ6, we approach contextual equivalence (defined in ğ5) using the powerful technique of
+logical relations. We construct a step-indexed logical-relations model and prove that logically
+related terms are contextually equivalent. This theorem offers a sound reasoning principle for
+proving contextual equivalence concerning nested queries.
+• In ğ7, we demonstrate the usefulness of our theory by using it to prove novel equivalences.
+The programs are inspired by real-world applications, yet the equivalences have not been
+suggested before. They reveal the irrelevance of nested queries in a usage previously considered
+quintessential and bear on the correctness of program optimizations that speed up inference.
+• We mechanize our core technical developments using the Coq proof assistant. The mechanization effort is available at https://github.com/yizhouzhang/rrr-popl2022-coq.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:6
+
+Yizhou Zhang and Nada Amin
+
+values
+
+𝑣 ::= x | c𝑟 | ( ) | True | False | 𝜆x. 𝑒 | fix this. 𝑒 |
+(𝑣 1, 𝑣 2 ) | Unif | query 𝑒
+
+terms
+
+𝑒 ::= 𝑣 | 𝑒 1 𝑒 2 | fst 𝑒 | snd 𝑒 | if 𝑒 1 then 𝑒 2 else 𝑒 3 |
+let x = 𝑒 1 in 𝑒 2 | op𝑛 (𝑒 1, ..., 𝑒𝑛 ) | sample 𝑒 | score 𝑒
+
+unary operators
+binary operators
+ternary operators
+
+op1 ::= log | exp | ...
+op2 ::= + | − | × | ÷ | < | ≤ | ...
+op3 ::= NormalPDF | NormalCDF −1 | ...
+
+types
+
+𝜏 ::= R | 1 | 2 | 𝜏1 →𝜏2 | (𝜏1, 𝜏2 ) | dist 𝜏
+
+typing environments
+
+Γ ::= · | Γ, x : 𝜏
+
+Γ, this : 1 →𝜏 ⊢ 𝑒 : 𝜏
+
+Γ ⊢𝑒 :𝜏
+
+op𝑛 : R𝑛 →𝜏
+
+𝑛
+
+Γ ⊢ fix this. 𝑒 : 1 →𝜏
+
+Γ ⊢ 𝑒 : dist 𝜏
+Γ ⊢ sample 𝑒 : 𝜏
+op𝑛 : R𝑛 →𝜏
+
+Γ ⊢ op (𝑒 1, ..., 𝑒𝑛 ) : 𝜏
+
+Γ ⊢ Unif : dist R
+
+log : R1 → R
+
+Γ ⊢ 𝑒 1 : R ··· Γ ⊢ 𝑒𝑛 : R
+
+≤ : R2 → 2
+
+Γ ⊢𝑒 :R
+Γ ⊢ score 𝑒 : 1
+
+Γ ⊢𝑒 :R
+
+Γ ⊢𝑒 :2
+
+Γ ⊢ query 𝑒 : dist R
+
+Γ ⊢ query 𝑒 : dist 2
+
+NormalPDF : R3 → R
+
+NormalCDF −1 : R3 → R
+
+Figure 3. Syntax and selected static semantics
+
+We proceed with the statics of the core PPL (ğ2) and a brief review of measure theory (ğ3).
+2 SYNTAX AND STATIC SEMANTICS
+Syntax. Figure 3 defines the syntax of the PPL we work with. It is a statically typed lambda
+calculus. The usual value forms include variables, real values, the unit value, boolean values, lambda
+abstractions, fixpoint definitions, and pairs. Program variables are notated in blue. Capture-free
+substitution of value 𝑣 for variable x in term 𝑒 is notated 𝑒 {𝑣/x}. Real constants c𝑟 have type R,
+with metavariable 𝑟 ranging over real numbers on the real line R. General recursion is expressed
+through the fixpoint construct fix this. 𝑒, where variable this is the self reference bound in 𝑒. We
+will abbreviate let _ = 𝑒 1 in 𝑒 2 as 𝑒 1 ; 𝑒 2 . We require pair components to be values; let-expressions
+can be used when pair components need to take evaluation steps. Pair projection is denoted by
+fst 𝑒 and snd 𝑒. Pairs, along with the fixpoint construct, enable mutual recursion.
+The calculus builds in the uniform distribution, Unif. The sample form is used to draw samples
+from distributions. For example, sample Unif produces a real number in the interval [0, 1]. Other
+common distributions are encoded using inverse transform sampling that transforms a Unif sample
+into the desired distribution. For example, sampleNormal (defined below) is a lambda abstraction
+returning a sample from a normal distribution. It uses NormalCDF −1 , a built-in ternary operator
+that constructs inverse cumulative distribution functions (a.k.a. quantile functions) for normal
+distributions. Likewise, sampleBern returns a Bernoulli sample.
+def
+
+sampleNormal = 𝜆𝜇. 𝜆𝜎. let x = sample Unif in NormalCDF −1 (𝜇, 𝜎, x)
+def
+sampleBern = 𝜆p. let x = sample Unif in if x ≤ p then True else False
+The score form is for conditioning: it adjusts the probability of the current execution based on
+its argument, which evaluates to a real value. The higher this real value is, the more probable the
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:7
+
+current execution is deemed in the posterior distribution denoted by the probabilistic program. For
+example, MDP agents (Figures 2 and 9) can choose low-cost actions by conditioning as follows:
+score exp(−cost)
+The higher a state costs, the exponentially less likely actions leading to the state will be chosenÐthe
+MDP agent effectively does Boltzmann exploration [Sutton and Barto 2018], choosing actions with
+łsoftminž cost to balance exploration and exploitation. While this example uses score to impose a
+soft constraint, the program in Figure 1 imposes hard constraints by assigning 0 scores: zero-scored
+executions are ruled out from posterior distributions.
+The query form, as a first-class language construct, enables nested queriesÐit is our core contribution to have given it meaning. In query 𝑒, the subterm 𝑒 may involve sampling, scoring, and
+further nested queries. The term query 𝑒, as a whole, is regarded as the distribution over evaluation
+outcomes of 𝑒, conditional on the scoring in 𝑒.
+Typing. Figure 3 shows selected typing rules. The unit type is denoted as 1 and the boolean type 2.
+Recursive definitions are functions that take as input at least a unit value. An 𝑛-ary operator op𝑛
+takes as input 𝑛 reals. We denote the type of reals by R, to differentiate from the real line R.
+Term sample 𝑒 has type 𝜏, provided that term 𝑒, a distribution, has type dist 𝜏. Unif is a distribution
+over reals, so it has type dist R. Term query 𝑒 is a distribution over values of type R (or 2), provided
+𝑒 has type R (or 2). Term score 𝑒 has the unit type.
+Notice that well-typed programs do not necessarily reduce to values or diverge; they may get
+stuck. In particular, 𝑛-ary operators like log and ÷ are only partially defined. In this paper we
+consider the job of preventing such errors to fall on the programmer rather than the type system.
+3 BRIEF RECAP OF MEASURE THEORY
+We include a cheat sheet on measure theory, and defer to textbooks such as Stein and Shakarchi
+[2005] and Tao [2011] for further reading.
+𝜎-algebras A 𝜎-algebra on a set 𝑋 is a collection Σ of subsets of 𝑋 that includes 𝑋 itself and is
+closed under complement and under countable unions. By implication, a 𝜎-algebra includes the
+empty set and is closed under countable intersections.
+Measurable spaces A measurable space (𝑋, Σ) consists of an underlying set and its 𝜎-algebra.
+Extended nonnegative reals R+ denotes the set of nonnegative reals extended with infinity ∞.
+Measures Let (𝑋, Σ) be a measurable space. A function 𝜇 from Σ to R+ is called a measure
+if it satisfies nonnegativity, null empty set, and countable additivity. We also refer to the
+quantity 𝜇 (𝐴) that 𝜇 assigns to a measurable subset 𝐴 ∈ Σ as the measure of 𝐴.
+Measure spaces The triple (𝑋, Σ, 𝜇) is called a measure space.
+𝜎-finite measures and (sub)probability measures The measure 𝜇 of a measure space (𝑋, Σ, 𝜇)
+is 𝜎-finite if 𝑋 can be decomposed into a countable union of sets with finite measure. When
+𝜇 (𝑋 ) ≤ 1, it is called a subprobability measure. When 𝜇 (𝑋 ) = 1, it is called a probability measure
+and (𝑋, Σ, 𝜇) a probability space.
+Lebesgue measure The Lebesgue measure is a 𝜎-finite measure for 𝑛-dimensional Euclidean
+space, corresponding to length, area and volume for 𝑛 = 1, 2, 3.
+Indicator functions 1𝑃 takes the value 1 when the proposition 𝑃 is true; otherwise it is 0.
+Measurable functions A measurable function is a function that maps elements in one measure
+space to elements in another measure space such that the preimage of any measurable subset of
+the codomain is a measurable subset of the domain.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:8
+
+Yizhou Zhang and Nada Amin
+
++
+Lebesgue integration Given a measurable
+∫ function
+∫ 𝑓 : 𝑋 → R , the Lebesgue integral of 𝑓 over
+a measure space (𝑋, Σ, 𝜇) is denoted as 𝑓 d𝜇 or 𝑓 (𝑥) 𝜇 (d𝑥). We equip some measurable spaces
+with a stock measure: the Lebesgue measure 𝜇 R over reals and the measure 𝜇S over∫ an entropy
+space (ğ4.1).
+When integration of 𝑓 is with respect
+𝜇, we write 𝑓 (𝑥) d𝑥 to
+∫
+∫
+∫ 𝑏 to a stock measure
+mean 𝑓 (𝑥) 𝜇 (d𝑥). We also use the notation 𝑎 𝑓 (𝑟 ) d𝑟 to mean 𝑓 (𝑟 ) 1𝑎 ≤𝑟 ≤𝑏 𝜇R (d𝑟 ).
+Monotone convergence theorem (MCT) (I) Let {𝑎𝑛 ∈ R+ }𝑛 ∈N be a nondecreasing sequence.
+Then lim𝑛→∞ 𝑎𝑛 = sup𝑛 {𝑎𝑛 }. (II) Let (𝑋, Σ, 𝜇) be a measure space and {𝑓𝑛 : 𝑋 → R+ }𝑛 ∈N be
+a pointwise nondecreasing sequence
+of∫measurable functions. Then it is legal to interchange
+∫
+limit and integration: lim𝑛→∞ 𝑓𝑛 d𝜇 = lim𝑛→∞ 𝑓𝑛 d𝜇. Similar statements to (I) and (II) hold,
+mutatis mutandis, for nonincreasing sequences and their infima.
+
+4 OPERATIONAL SEMANTICS AND MEASURE SEMANTICS
+4.1
+
+Semantics in the Absence of Nested Queries
+
+We introduce the semantics in a phased way by first giving semantics to the core PPL without
+considering nested queries. The approach is developed in prior work, first defining a deterministic
+operational semantics and then integrating it over randomness to form a measure semantics. Thus,
+the semantics can be viewed as an idealized implementation of importance sampling (or likelihood
+weighting), conveying the operational intuition of a PPL.
+Entropy space. Following prior work [Culpepper and Cobb 2017; Wand et al. 2018; Szymczak and
+Katoen 2019], we use an entropy space (S, ΣS, 𝜇S ) as the source of randomness. The operational
+semantics is deterministic in that it carries out evaluation under a single entropy value 𝜎 ∈ S. The
+measure semantics then integrates evaluation over the entropy space. (An alternative, mentioned
+in ğ8, is to use a trace space [Borgström et al. 2016] as the source of randomness.)
+Definition 4.1 (Properties of an entropy space). An entropy space (S, ΣS, 𝜇S ) is a probability space
+equipped with a few measurable functions:
+(1) 𝜋𝑈 : S → [0, 1] interprets an entropy value as a sample from
+∫ the standard uniform
+∫ 1 distribu+
+tion. That is, for any measurable function 𝑓 : [0, 1] → R , 𝑓 (𝜋𝑈 𝜎) 𝜇 S (d𝜎) = 0 𝑓 (𝑟 ) d𝑟 .
+
+(2) 𝜋𝐿 : S → S and 𝜋𝑅 : S → S split an entropy value
+independent ones. That
+∫ into a pair of
+∬
+is, for any measurable function 𝑓 : S × S → R+ , 𝑓 (𝜋𝐿 𝜎, 𝜋𝑅 𝜎) d𝜎 = 𝑓 (𝜎1, 𝜎2 ) d𝜎1 d𝜎2 .
+Therefore, a computation that samples two or more uniform random variables under entropy 𝜎
+can split 𝜎, use entropy 𝜋𝐿 𝜎 to draw the first sample, and perform the rest of the computation
+under entropy 𝜋𝑅 𝜎, thus ensuring that no entropy component is ever reused.
+These properties form an abstract definition of an entropy space. We defer to Culpepper and Cobb
+[2017] for instantiations of these properties on standard probability spaces (e.g., the countably
+infinite product of unit intervals [0, 1] 𝜔 ). This paper relies only on the properties specified above.
+Operational semantics: small-step reduction. Reduction is of form ⟨𝜎 | 𝑒⟩ { ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤. A
+configuration ⟨𝜎 | 𝑒⟩ consists of an entropy value and an expression. The entropy 𝜎 determines the
+values that uniform samples take in the current execution. A reduction step produces a weight
+factor 𝑤 ∈ R+ capturing how the reduction step changes the probability of the current execution.
+Figure 4 defines the small-step semantics. For now, step indices of reduction rules ({𝑛 , in
+gray), as well as the highlighted rules qery and qery-exn, should be ignored, since they
+have to do with nested queries. Rule fix shows that reducing (fix this. 𝑒) ( ) essentially unrolls
+the fixpoint. Rule op  applies an 𝑚-ary operation op𝑚 per its built-in interpretation given by
+interp op𝑚 , c𝑟 1 , ..., c𝑟𝑚 . If interp (op𝑚 , ...) is undefined on the real-valued arguments, evaluation is
+stuck. To reduce sample Unif, rule unif splits the entropy into two disjoint parts: 𝜋𝐿 𝜎 is used to
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:9
+
+evaluation contexts 𝐾 ::= [·] | 𝐾 𝑒 | 𝑣 𝐾 | fst 𝐾 | snd 𝐾 | if 𝐾 then 𝑒 1 else 𝑒 2 |
+let x = 𝐾 in 𝑒 | op𝑛 (𝑣, 𝐾, 𝑒) | sample 𝐾 | score 𝐾
+terms
+
+𝑒 ::= . . . | exn
+let ⟨𝜎 | let x = 𝑣 in 𝑒⟩ {𝑛 ⟨𝜎 | 𝑒 {𝑣/x}⟩ • 1
+
+Small-step reduction: ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+ktx
+
+⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+
+
+interp op𝑚 , c𝑟 1 , ..., c𝑟𝑚 = 𝑣
+op
+
+𝜎 op𝑚 c𝑟 1 , ..., c𝑟𝑚 {𝑛 ⟨𝜎 | 𝑣⟩ • 1
+
+⟨𝜎 | 𝐾 [𝑒]⟩ {𝑛 ⟨𝜎 ′ | 𝐾 [𝑒 ′]⟩ • 𝑤
+
+beta ⟨𝜎 | (𝜆x. 𝑒) 𝑣⟩ {𝑛 ⟨𝜎 | 𝑒 {𝑣/x}⟩ • 1
+
+fix ⟨𝜎 | (fix this. 𝑒) ( )⟩ {𝑛 ⟨𝜎 | 𝑒 {fix this. 𝑒/this}⟩ • 1
+
+fst ⟨𝜎 | fst (𝑣 1, 𝑣 2 )⟩ {𝑛 ⟨𝜎 | 𝑣 1 ⟩ • 1
+
+then ⟨𝜎 | if True then 𝑒 1 else 𝑒 2 ⟩ {𝑛 ⟨𝜎 | 𝑒 1 ⟩ • 1
+
+snd ⟨𝜎 | snd (𝑣 1, 𝑣 2 )⟩ {𝑛 ⟨𝜎 | 𝑣 2 ⟩ • 1
+
+else ⟨𝜎 | if False then 𝑒 1 else 𝑒 2 ⟩ {𝑛 ⟨𝜎 | 𝑒 2 ⟩ • 1
+
+def
+
+unif
+
+score
+
+𝑟 = 𝜋𝑈 (𝜋𝐿 𝜎)
+⟨𝜎 | sample Unif⟩ {𝑛 ⟨𝜋𝑅 𝜎 | c𝑟 ⟩ • 1
+0<𝑟 ≤1
+⟨𝜎 | score c𝑟 ⟩ {𝑛 ⟨𝜎 | ( )⟩ • 𝑟
+
+qery
+
+𝜇𝑛NS (𝑒) > 0
+
+⟨𝜎 | sample (query 𝑒)⟩ {𝑛 ⟨𝜎 | 𝑒⟩ • 1 𝜇𝑛NS (𝑒)
+
+qery-exn
+
+Evaluation: ⟨𝜎 | 𝑒⟩ ↘𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+
+𝜇𝑛NS (𝑒) = 0
+
+⟨𝜎 | sample (query 𝑒)⟩ {𝑛 ⟨𝜎 | exn⟩ • 1
+eval-stop ⟨𝜎 | 𝑒⟩ ↘0 ⟨𝜎 | 𝑒⟩ • 1
+
+eval-val ⟨𝜎 | 𝑣⟩ ↘𝑛+1 ⟨𝜎 | 𝑣⟩ • 1
+eval-exn ⟨𝜎 | 𝐾 [exn]⟩ ↘𝑛+1 ⟨𝜎 | 𝐾 [exn]⟩ • 1
+
+
+interp op𝑚 , c𝑟 1 , ..., c𝑟𝑚 = 𝑣 or Undefined
+
+eval-step
+
+⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+⟨𝜎 ′ | 𝑒 ′⟩ ↘𝑛 ⟨𝜎 ′′ | 𝑒 ′′⟩ • 𝑤 ′
+
+⟨𝜎 | 𝑒⟩ ↘𝑛+1 ⟨𝜎 ′′ | 𝑒 ′′⟩ • 𝑤 · 𝑤 ′
+(
+clog 𝑟
+if 𝑟 > 0
+interp (log, c𝑟 ) =
+...
+Undefined otherwise
+
+Figure 4. Operational semantics. In ğ4.1, highlighted rules and step indices of {𝑛 should be disregarded. ğ4.2
+adds nested queries, rendering {𝑛 , ↘𝑛 , and 𝜇𝑛NS (Figure 5) mutually recursive.
+
+generate the standard uniform sample, while 𝜋𝑅 𝜎 is used as the entropy source for the rest of the
+computation.
+Per rule score, score c𝑟 multiplies the weight by 𝑟 , provided 0 < 𝑟 ≤ 1; otherwise, evaluation
+is stuck. The requirement of 𝑟 ≤ 1 is inherited from Borgström et al. [2016] and Szymczak and
+Katoen [2019]. Borgström et al. show that score may cause probabilistic programs with recursion to
+have ill-defined model evidence, even when scoring is statically bounded and programs otherwise
+terminate almost surely. Borgström et al. and Szymczak and Katoen then reconcile this tension
+between scoring and recursion using 1-bounded score (see also ğ8).
+As is usual, the small-step semantics is inductively defined; rule ktx is the basis for structural
+induction [Felleisen and Hieb 1992]. The small-step semantics is deterministic: a configuration is
+either irreducible or can be reduced to a unique next configuration and produce a unique weight.
+Whether a configuration ⟨𝜎 | 𝑒⟩ is irreducible depends solely on the term 𝑒.
+Operational semantics: evaluation. The evaluation relation has form ⟨𝜎 | 𝑒⟩ ↘𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤. It
+states that configuration ⟨𝜎 | 𝑒⟩ evaluates to ⟨𝜎 ′ | 𝑒 ′⟩ under step budget 𝑛 and produces weight 𝑤.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:10
+
+Yizhou Zhang and Nada Amin
+
+(
+𝑤
+0
+(
+def 𝑤
+𝑛
+𝜌 NS (𝜎, 𝑒) =
+0
+
+def
+𝑛
+(𝜎, 𝑒, 𝑉 ) =
+𝜌 TV
+
+if ⟨𝜎 | 𝑒⟩ ↘𝑛 ⟨𝜎 ′ | 𝑣⟩ • 𝑤 ∧ 𝑣 ∈ 𝑉
+otherwise
+
+def
+
+𝜇𝑛TV (𝑒, 𝑉 ) =
+
+if ⟨𝜎 | 𝑒⟩ ↘𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+otherwise
+
+def
+
+𝜇𝑛NS (𝑒) =
+
+∫
+∫
+
+𝑛
+𝜌 TV
+(𝜎, 𝑒, 𝑉 ) 𝜇S (d𝜎)
+
+𝑛
+𝜌 NS
+(𝜎, 𝑒) 𝜇S (d𝜎)
+
+Figure 5. Step-indexed measure semantics
+
+Figure 4 presents evaluation using inference rules, but it can be defined algorithmically as a
+recursive function, indexed on the step budget. At index 0, no reduction is allowed (eval-stop).
+At index 𝑛 + 1, if the term is terminal, evaluation is a no-op (eval-val and eval-exn). Terminal
+terms include values and exceptions (signaling zero model evidence, ğ4.2). Otherwise, if it is
+possible to make a reduction step, then evaluation recurses on the next configuration with the index
+decremented (eval-step). The total weight is the product of weights produced by the reduction
+step and the recursive evaluation. Evaluation is partial: it is undefined when there is step budget
+left but the term is stuck. Notice that being stuck and being terminal are disjoint events.
+Step-indexed measures. The measure semantics integrates evaluation with respect to the stock
+measure 𝜇 S , capturing the aggregate behavior of programs over the entropy space (S, ΣS, 𝜇S ).
+𝑛
+Define 𝜌 TV
+(𝜎, 𝑒, 𝑉 ), as Figure 5 shows. It has value 𝑤 if evaluation of ⟨𝜎 | 𝑒⟩ terminates to a value
+𝑛
+𝑣 ∈ 𝑉 within 𝑛 steps and produces weight 𝑤. Integrating 𝜌 TV
+(𝜎, 𝑒, 𝑉 ) with respect to 𝜇S induces a
+𝑛
+measure 𝜇 TV (𝑒, 𝑉 ) over (V, ΣV ), the measurable space of syntactic values. The quantity 𝜇𝑛TV (𝑒, 𝑉 ) is
+the unnormalized probability of 𝑒 terminating to a value
+under step budget 𝑛.
+
+The normalized probability is given by 𝜇𝑛TV (𝑒, 𝑉 ) 𝜇𝑛NS (𝑒) . The denominator 𝜇𝑛NS (𝑒) is the model
+𝑛
+evidence of 𝑒 when the step budget is 𝑛. Defined in Figure 5, it is the integration of 𝜌 NS
+(𝜎, 𝑒) with
+𝑛
+𝑛
+𝑛
+respect to 𝜇 S . By definition, 𝜌 TV
+(𝜎, 𝑒, 𝑉 ) ≤ 𝜌 NS
+(𝜎, 𝑒), since 𝜌 NS
+(𝜎, 𝑒) assigns a positive weight as
+long as evaluation of ⟨𝜎 | 𝑒⟩ does not get stuck within 𝑛 steps. It follows that 𝜇𝑛TV (𝑒, 𝑉 ) ≤ 𝜇𝑛NS (𝑒).
+Stuck terms have zero weight. In particular, score c0 is stuck, so we can use score c0 to express
+hard constraints, as Figure 1 does.
+The measurable space of values (V, ΣV ), as well as that of terms, is constructed by taking the
+𝜎-algebra to be the Borel-measurable sets with respect to a metric. Measurability proofs of the
+integrand functions are tedious but follow the approach of Borgström et al. [2016, Fig. 5 & ğA],
+Wand et al. [2018, ğA], and Szymczak and Katoen [2019, ğF].
+Limit measures. The meaning of a probabilistic program is characterized, ultimately, by the
+distribution of its eventual evaluation outcomesÐthat is, its measure semantics when the step
+budget 𝑛 is taken to infinity. Before we can take the limit of the step-indexed approximants, we
+must make sure that their limits exist.
+We can show 𝜇𝑛TV (𝑒, 𝑉 ) are 𝜇𝑛NS (𝑒) are monotonic in 𝑛 by showing their integrands are monotonic:
+𝑛
+• 𝜌 TV
+(𝜎, 𝑒, 𝑉 ) is nondecreasing because it is 0 when evaluation of ⟨𝜎 | 𝑒⟩ does not reach a value
+𝑣 ∈ 𝑉 within 𝑛 steps and because it becomes a constant once ⟨𝜎 | 𝑒⟩ evaluates to a value.
+𝑛
+• 𝜌 NS
+(𝜎, 𝑒) is nonincreasing because no reduction rule other than score changes the weight and
+because scores are bounded by 1.
+
+So 𝜇𝑛TV (𝑒, 𝑉 ) is nondecreasing and 𝜇𝑛NS (𝑒) is nonincreasing. By the monotone convergence theorem (I),
+their limits are well-defined:
+
+
+def
+def
+𝜇 TV (𝑒, 𝑉 ) = lim 𝜇𝑛TV (𝑒, 𝑉 ) = sup 𝜇𝑛TV (𝑒, 𝑉 )
+𝜇NS (𝑒) = lim 𝜇𝑛NS (𝑒) = inf 𝜇𝑛NS (𝑒)
+𝑛→∞
+
+𝑛
+
+𝑛→∞
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+𝑛
+
+Reasoning about łReasoning about Reasoningž
+
+16:11
+
+Notice that the difference 𝜇 NS (𝑒) − 𝜇TV (𝑒, V) is the (unnormalized) measure of unusual evaluation
+outcomes (namely exceptions and divergence); we follow Bichsel et al. [2018] and Szymczak and
+Katoen [2019] in distinguishing them from stuck computations and giving them measure. If a
+program 𝑒 almost surely terminates to values, then 𝜇TV (𝑒, V) = 𝜇 NS (𝑒). Also notice that to ensure
+the well-definedness of 𝜇NS (𝑒), scores are required to be bounded by 1, a formalization decision
+inherited from Borgström et al. [2016] and Szymczak and Katoen [2019] (see also ğ8). Hitherto, the
+development is standard, in the absence of query.
+4.2 Semantics in the Presence of Nested Queries
+Normalization. If we view query as reifying a probabilistic program, then sampling it reflects the
+program, as rule qery (Figure 4) shows. Importantly, the reduction rule normalizes the weight of
+a reflective, nesting execution by the model evidence of the reflected, nested term. While it makes
+sense to consider only unnormalized probabilities in prior semantics [Culpepper and Cobb 2017;
+Wand et al. 2018], the presence of nested queries makes it impossible to sidestep model evidence.
+Mutual recursion between operational semantics and measure semantics. Normalization invokes the measure semantics, breaking the stratification of the two semantics. Whereas ğ4.1 defines
+the measure semantics only after the operational semantics comes into existence, normalization
+forces the two semantics to be mutually recursive.
+The meaning of an inference query is characterized by its measure semantics under a large
+enough step budget. So a naive way to define rule qery would be to evaluate the nested program 𝑒
+under step budget ∞ and use lim𝑛→∞ 𝜇𝑛NS (𝑒) as the normalization factor. However, we are not
+licensed to take the limit of the step-indexed approximants while the very approximants are being
+defined. We could perhaps avoid taking limits by restricting attention to programs that terminate in
+finite steps, but the restriction would reject useful programs that terminate a.s. (e.g., the recursive
+encoding of geometric distributions and infinite-horizon MDPs with absorbing states), let alone
+programs with positive nontermination measure.
+To handle nonterminating executions and tie the recursive knot properly, small-step reduction is
+step-indexed too: ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤, where 𝑛 means there are at most 𝑛 allowable steps left
+after this step takes place. Accordingly, to ensure the evaluation function remains well-founded,
+rule eval-step (at index 𝑛 + 1) invokes small-step reduction at a lower index 𝑛: small-step reduction
+will possibly invoke the measure semantics at index 𝑛, which will in turn invoke the evaluation
+function at index 𝑛.
+With this indexing method, the index in the operational semantics governs not only the remaining
+step budget at the current level of evaluation, but also that at lower, reflected levels. Alternatively,
+we could have used a different index structure consisting of an index governing the remaining
+step budget at the current level, an index governing the remaining reflection-level budget, and the
+initial step budget at each level. Going to the reflected level below causes the second index to be
+decremented but resets the first index. This indexing method could ensure well-foundedness too,
+through a lexicographic order on the index structure. The two indexing methods result in identical
+measures when budgets are taken to infinity. We choose the simpler one.
+It remains to be shown that limits of measures exist (Theorem 4.2 and ğ4.3).
+Model-evidence exceptions. Normalization is ill-defined when the normalization factor is zero.
+Hence, rule qery requires that the step-indexed model evidence 𝜇𝑛NS (𝑒) be positive. When 𝜇𝑛NS (𝑒) =
+0, rule qery-exn takes over: it sends the configuration to exn, signaling a zero-model-evidence
+exception. Executions leading to exn has positive weight; we consider this evaluation outcome
+unusual but not unexpected.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:12
+
+Yizhou Zhang and Nada Amin
+
+𝑛
+Limit measures. An inconvenient consequence of adding nested queries is that integrand 𝜌 NS
+(𝜎, 𝑒)
+of the measure semantics is no longer monotonic. The loss of this monotonicity
+makes
+it
+much
+
+more challenging than in ğ4.1 (and in prior work) to show that the sequence 𝜇𝑛NS (𝑒) 𝑛 ∈N always
+converges via the monotone convergence theorem.
+𝑛
+It can be seen as follows why 𝜌 NS
+(𝜎, 𝑒) is not necessarily monotonic. We know from ğ4.1 that the
+𝑛
+′
+step-indexed 𝜇 NS (𝑒 ) is nonincreasing if 𝑒 ′ does not further nest queries. However, it also means
+𝑛
+that the weight 𝜌 NS
+(𝜎, 𝑒) of a configuration ⟨𝜎 | 𝑒⟩ which steps to sample (query 𝑒 ′) may increase
+as 𝑛 increases, since the weight is normalized by the nonincreasing 𝜇𝑛NS (𝑒 ′) per rule qery.
+𝑛
+In fact, 𝜌 NS
+(𝜎, 𝑒) does not even necessarily convergeÐlet alone not increaseÐfor a nonterminating
+configuration ⟨𝜎 | 𝑒⟩; the accompanying
+technical report [Zhang and Amin 2021] gives an example.
+∫
+𝑛
+Does the integral 𝜇𝑛NS (𝑒) = 𝜌 NS
+(𝜎, 𝑒) d𝜎 still converge? We answer this question in the affirmative.
+In fact, we prove it remains nonincreasing, so the monotone convergence theorem can still be used
+to show that lim𝑛→∞ 𝜇𝑛NS (𝑒) exists. The intuition is that although the normalization factor 𝜇𝑛NS (𝑒 ′)
+may decrease as 𝑛 increases, the unnormalized weight of an execution of 𝑒 ′ may decrease too,
+allowing the measure 𝜇𝑛NS (𝑒) of a nesting computation 𝑒 to not increase. Nevertheless, this intuition
+is rather equivocal and materializing it necessarily demands that induction hypotheses be chosen
+carefully to untangle the convoluted mutual recursion in the definition of the semantics. It is a
+main goal of ğ4.3 to prove that 𝜇𝑛NS (𝑒) remains nonincreasing:
+𝑛
+𝑚
+𝑛
+Theorem 4.2. For all 𝑒 and 𝑉 , if 𝑚 ≤ 𝑛, then 𝜇𝑚
+TV (𝑒, 𝑉 ) ≤ 𝜇 TV (𝑒, 𝑉 ) and 𝜇 NS (𝑒) ≥ 𝜇 NS (𝑒). It follows
+from MCT (I) that the limit measures are well-defined:
+
+
+def
+def
+𝜇NS (𝑒) = lim 𝜇𝑛NS (𝑒) = inf 𝜇𝑛NS (𝑒)
+𝜇 TV (𝑒, 𝑉 ) = lim 𝜇𝑛TV (𝑒, 𝑉 ) = sup 𝜇𝑛TV (𝑒, 𝑉 )
+𝑛→∞
+
+𝑛
+
+𝑛→∞
+
+𝑛
+
+def
+Definition 4.3. Let 𝜇𝑛NV (𝑒) = 𝜇𝑛NS (𝑒) − 𝜇𝑛TV (𝑒, V). It follows from Theorem 4.2 that 𝜇𝑛NV (𝑒) is monodef
+tonically nonincreasing and has limit 𝜇NV (𝑒) = lim𝑛→∞ 𝜇𝑛NV (𝑒) = 𝜇NS (𝑒) − 𝜇 TV (𝑒, V). 𝜇𝑛NV (𝑒) is the
+
+unnormalized measure of those executions of 𝑒 that evaluate to a non-value under step budget 𝑛.
+As mentioned in ğ4.1, its limit 𝜇 NV (𝑒) is the unnormalized measure of unusual evaluation outcomes.
+4.3
+
+Properties of the Semantics
+
+We first establish basic facts about the step-indexed semantics defined in ğ4.2.
+Lemma 4.4. 0 ≤ 𝜇𝑛TV (𝑒, 𝑉 ) ≤ 𝜇𝑛NS (𝑒) ≤ 1.
+0
+(𝑒) = 1.
+Lemma 4.5. 𝜇 NS
+
+Lemma 4.6. If 𝑒 is terminal, then 𝜇𝑛NS (𝑒) = 1.
+Lemma 4.7. If 𝑒 is stuck, then 𝜇𝑛NS (𝑒) = 0.
+Lemma 4.8. 𝜇𝑛NS (𝐾 [𝑒]) ≤ 𝜇𝑛NS (𝑒).
+𝑛
+′
+Lemma 4.9. If ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 | 𝑒 ′⟩ • 𝑤 for all 𝜎, then 𝜇𝑛+1
+NS (𝑒) = 𝑤 · 𝜇 NS (𝑒 ).
+𝑛
+′
+Lemma 4.10. If ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 | 𝑒 ′⟩ • 𝑤 for all 𝜎, then 𝜇𝑛+1
+TV (𝑒, 𝑉 ) = 𝑤 · 𝜇 TV (𝑒 , 𝑉 ).
+∫1
+𝑛
+Lemma 4.11. 𝜇𝑛+1
+NS (𝐾 [sample Unif]) = 0 𝜇 NS (𝐾 [c𝑟 ]) d𝑟 .
+∫1
+𝑛
+Lemma 4.12. 𝜇𝑛+1
+TV (𝐾 [sample Unif], 𝑉 ) = 0 𝜇 TV (𝐾 [c𝑟 ], 𝑉 ) d𝑟 .
+
+Lemmas 4.9ś4.12 characterize how measures evolve under small-step reduction. Lemmas 4.9 and
+4.10 apply when reduction is independent of entropyÐthat is, when 𝑒 is not of form 𝐾 [sample Unif].
+Lemmas 4.11 and 4.12 involve integration with respect to the Lebesgue measure over R, because
+reducing the redex sample Unif involves randomness; their proofs rely on Definition 4.1.
+The measure monotonicity proof employs a few more definitions.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:13
+
+Definition 4.13. Define a partial, measurable evaluation function of form ⟨𝜎 | 𝑒⟩ ↘𝑛𝑘 ⟨𝜎 ′ | 𝑣⟩ • 𝑤:
+⟨𝜎 | 𝑣⟩ ↘𝑛0 ⟨𝜎 | 𝑣⟩ • 1
+
+⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 ′⟩ • 𝑤
+
+⟨𝜎 ′ | 𝑒 ′⟩ ↘𝑛𝑘 ⟨𝜎 ′′ | 𝑣⟩ • 𝑤 ′
+
+′′
+′
+⟨𝜎 | 𝑒⟩ ↘𝑛+1
+𝑘+1 ⟨𝜎 | 𝑣⟩ • 𝑤 · 𝑤
+
+This evaluation function takes as input ⟨𝜎 | 𝑒⟩ and 𝑛. It differs from the one in Figure 4 in two ways.
+First, it is defined only on configurations that terminate to a value under the given step budget.
+Second, it additionally returns the number of actual steps taken (i.e., 𝑘 in ⟨𝜎 | 𝑒⟩ ↘𝑛𝑘 ⟨𝜎 ′ | 𝑣⟩ • 𝑤).
+Definition 4.14. Define 𝜉 using the evaluation function of Definition 4.13:
+(
+𝑛−𝑘
+if ⟨𝜎 | 𝑒⟩ ↘𝑛𝑘 ⟨𝜎 ′ | 𝑣⟩ • 𝑤
+def 𝑤 · 𝜇 NS (𝐾 [𝑣])
+𝑛
+𝜉 (𝜎, 𝐾, 𝑒) =
+0
+otherwise
+∫
+Lemma 4.15. 𝜇𝑛NS (𝐾 [𝑒]) = 𝜇𝑛NV (𝑒) + 𝜉 𝑛 (𝜎, 𝐾, 𝑒) d𝜎.
+
+The intuition behind Definition 4.14 and Lemma 4.15 is that evaluation of ⟨𝜎 | 𝐾 [𝑒]⟩ can be divided
+into two stages: first evaluating ⟨𝜎 | 𝑒⟩ to a value ⟨𝜎 ′ | 𝑣⟩ in 𝑘 steps, and then evaluating 𝐾 [𝑣] under
+remaining step budget 𝑛 − 𝑘 using fresh entropy independent of the leftover entropy 𝜎 ′.
+Now we are ready to establish measure monotonicity:
+Lemma 4.16. The following statements hold:
+(1) If ⟨𝜎 | 𝑒⟩ {𝑛+1 ⟨𝜎 ′ | 𝑒 1 ⟩ • 𝑤 1 , then there exist 𝑒 0 and 𝑤 0 such that ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 ′ | 𝑒 0 ⟩ • 𝑤 0 .
+(2) If ⟨𝜎 | 𝑒⟩ ↘𝑛𝑘0 ⟨𝜎0 | 𝑣 0 ⟩ • 𝑤 0 and ⟨𝜎 | 𝑒⟩ ↘𝑛+1
+𝑘 1 ⟨𝜎1 | 𝑣 1 ⟩ • 𝑤 1 , then 𝜎0 = 𝜎1 , 𝑘 0 = 𝑘 1 , 𝑣 0 = 𝑣 1 , and
+𝑤0 ≤ 𝑤1.
+∫
+𝑛
+(3) 𝜌 TV
+(𝜎, 𝑒, V) · 1𝜌 𝑛+1 (𝜎,𝑒,V)=0 d𝜎 = 0.
+TV
+
+(4) 𝜇𝑛TV (𝑒, 𝑉 ) ≤ 𝜇𝑛+1
+TV (𝑒, 𝑉 ).
+𝑛
+𝑛+1
+(5) 𝜇 NS (𝑒) ≥ 𝜇 NS (𝑒).
+
+The lemma statement is carefully engineered to unravel the mutual recursion among the smallstep semantics (1), the evaluation function (2)(3), and the measure semantics (4)(5). As a whole,
+Lemma 4.16 is proven by
+(i) first showing that (1) holds provided that (5) holds, and
+(ii) then showing that (2)(3)(4)(5) simultaneously hold by induction on 𝑛.
+The induction hypotheses of (ii) include the statements of (2)(3)(4)(5) at lower step indices. The
+proof of (ii) uses (i), instantiating (i) using the induction hypothesis given by (5).
+𝑛
+𝑛
+Like 𝜌 NS
+(𝜎, 𝑒), 𝜌 TV
+(𝜎, 𝑒, 𝑉 ) is in general nonmonotonic in the presence of nested queries. Suppose
+that at index 𝑛, configuration ⟨𝜎 | 𝐾 [sample (query 𝑒 ′)]⟩ is reduced per rule qery. Then at a
+higher index 𝑛 + 1, the configuration may be reduced differently via qery-exn if 𝜇𝑛NS (𝑒 ′) = 0. Thus,
+it is not always true that if ⟨𝜎 | 𝑒⟩ ↘𝑛 ⟨𝜎 ′ | 𝑣⟩ • 𝑤 then ⟨𝜎 | 𝑒⟩ still terminates to a value under a
+larger step budget 𝑛 + 1. However, we can show that it is almost always true, as stated by (3).
+Proof Excerpt of Lemma 4.16. Here we show that (5) 𝜇𝑛NS (𝑒) ≥ 𝜇𝑛+1
+NS (𝑒) holds under the following hypotheses, where H1 corresponds to (i), and H2, H3, H4, and H5 are the induction hypotheses
+of (ii):
+𝑚+1
+𝑚+1
+⟨𝜎 ′ | 𝑒 1 ⟩ • 𝑤 1 , then there exist 𝑒 0 and 𝑤 0 such
+H1. For all 𝑚, if 𝜇𝑚
+NS (𝑒) ≥ 𝜇 NS (𝑒) and ⟨𝜎 | 𝑒⟩ {
+𝑚
+′
+that ⟨𝜎 | 𝑒⟩ { ⟨𝜎 | 𝑒 0 ⟩ • 𝑤 0 .
+𝑚+1
+⟨𝜎1 | 𝑣 1 ⟩ • 𝑤 1 , then 𝜎0 = 𝜎1 ,
+H2. For all 𝑚 < 𝑛, if ⟨𝜎 | 𝑒⟩ ↘𝑚
+𝑘 0 ⟨𝜎0 | 𝑣 0 ⟩ • 𝑤 0 and ⟨𝜎 | 𝑒⟩ ↘𝑘 1
+𝑘 0 = 𝑘 1 , 𝑣 0 = 𝑣 1 , and 𝑤 0 ≤ 𝑤 1 .
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:14
+
+Yizhou Zhang and Nada Amin
+
+∫
+H3. For all 𝑚 < 𝑛, 𝜌 𝑚
+TV (𝜎, 𝑒, V) · 1𝜌𝑚+1 (𝜎,𝑒,V)=0 d𝜎 = 0.
+TV
+
+𝑚+1
+H4. For all 𝑚 < 𝑛, 𝜇𝑚
+TV (𝑒, 𝑉 ) ≤ 𝜇 TV (𝑒, 𝑉 ).
+𝑚+1
+H5. For all 𝑚 < 𝑛, 𝜇𝑚
+NS (𝑒) ≥ 𝜇 NS (𝑒).
+
+When 𝑛 = 0, our goal follows from Lemmas 4.4 and 4.5. Below we consider the case 𝑛 ≥ 1. There
+are three situations: 𝑒 is terminal, 𝑒 is stuck at index 𝑛 − 1, and 𝑒 is reducible at index 𝑛 − 1.
+If 𝑒 is terminal, our goal follows from Lemma 4.6.
+If 𝑒 is stuck at index 𝑛 − 1, then 𝜇𝑛NS (𝑒) = 0 by Lemma 4.7. So we need to show 𝜇𝑛+1
+NS (𝑒) = 0,
+too. By Lemma 4.7, it suffices to show that 𝑒 is stuck at index 𝑛. By induction hypothesis H5,
+𝑛
+𝜇𝑛−1
+NS (𝑒) ≥ 𝜇 NS (𝑒). Using this result to instantiate hypothesis H1, we have that 𝑒 is reducible at index
+𝑛 − 1 if 𝑒 is reducible at index 𝑛. Since 𝑒 is irreducible at index 𝑛 − 1, it follows that 𝑒 is irreducible
+at index 𝑛. Further, since 𝑒 is not terminal, 𝑒 must be stuck at index 𝑛.
+Otherwise, 𝑒 is reducible at index 𝑛 − 1. This reduction step can be categorized into three cases:
+(a) 𝑒 is of form 𝐾 [sample (query 𝑒 ′)], where reduction depends on the step index;
+(b) 𝑒 is of form 𝐾 [sample Unif], where reduction depends on the entropy; and
+(c) 𝑒 is of some other form, where reduction is independent of the step index or the entropy.
+In case (c), the goal follows from Lemma 4.9. In case (b), the goal follows from Lemma 4.11
+′
+𝑛−1 ′
+and induction hypothesis H5. Case (a) contains two subcases: 𝜇𝑛−1
+NS (𝑒 ) = 0 and 𝜇 NS (𝑒 ) > 0.
+𝑛−1 ′
+If 𝜇NS (𝑒 ) = 0, then rule qery-exn is in charge and the goal follows from Lemma 4.9 and
+hypothesis H5. Below we focus on the second subcase of (a). In this subcase we have
+
+′
+(4.1)
+for all 𝜎, ⟨𝜎 | 𝐾 [sample (query 𝑒 ′)]⟩ {𝑛−1 ⟨𝜎 | 𝐾 [𝑒 ′]⟩ • 1 𝜇𝑛−1
+NS (𝑒 )
+
+𝑛
+𝑛−1
+′
+𝑛−1 ′
+𝜇NS (𝑒) = 𝜇 NS (𝐾 [𝑒 ]) 𝜇NS (𝑒 )
+(4.2)
+
+where (4.2) follows from (4.1) and Lemma 4.9. Now, we have two situations depending on 𝜇𝑛NS (𝑒 ′).
+𝑛−1 ′
+′
+𝑛
+• Case 𝜇𝑛NS (𝑒 ′) = 0. It suffices to show 𝜇𝑛−1
+NS (𝐾 [𝑒 ]) = 𝜇 NS (𝑒 ): when the equality holds, 𝜇 NS (𝑒) = 1
+𝑛
+𝑛+1
+𝑛−1 ′
+by (4.2), and thus 𝜇 NS (𝑒) ≥ 𝜇NS (𝑒) by Lemma 4.4. Notice that we have 𝜇 TV (𝑒 , V) = 0:
+′
+𝑛
+′
+𝑛
+′
+𝜇𝑛−1
+TV (𝑒 , V) ≤ 𝜇 TV (𝑒 , V) ≤ 𝜇 NS (𝑒 ) = 0
+
+where the first inequality is by induction hypothesis H4 and the second is by Lemma 4.4. So
+𝑛−1 ′
+′
+𝑛−1 ′
+𝑛−1 ′
+𝑛−1 ′
+𝑛−1
+′
+𝜇𝑛−1
+NV (𝑒 ) = 𝜇 NS (𝑒 ) − 𝜇 TV (𝑒 , V) = 𝜇 NS (𝑒 ). Thus, the goal 𝜇 NS (𝐾 [𝑒 ]) = 𝜇 NV (𝑒 ) follows from
+′
+𝑛−1 ′
+𝑛−1
+′
+𝑛−1 ′
+𝜇𝑛−1
+NV (𝑒 ) = 𝜇 NS (𝑒 ) ≥ 𝜇 NS (𝐾 [𝑒 ]) ≥ 𝜇 NV (𝑒 )
+
+where the first inequality is by Lemma 4.8 and the second is by Lemma 4.15.
+• Case 𝜇𝑛NS (𝑒 ′) > 0. This case requires the most ingenuity. In this case, we have
+
+for all 𝜎, ⟨𝜎 | 𝐾 [sample (query 𝑒 ′)]⟩ {𝑛 ⟨𝜎 | 𝐾 [𝑒 ′]⟩ • 1 𝜇𝑛NS (𝑒 ′)
+𝑛
+′  𝑛
+′
+𝜇𝑛+1
+NS (𝑒) = 𝜇 NS (𝐾 [𝑒 ]) 𝜇 NS (𝑒 )
+ 𝑛 ′
+ 𝑛−1 ′
+𝑛
+′
+′
+So the goal is to show 𝜇𝑛−1
+NS (𝐾 [𝑒 ]) 𝜇 NS (𝑒 ) ≥ 𝜇 NS (𝐾 [𝑒 ]) 𝜇 NS (𝑒 ) . By induction hypothesis
+′
+𝑛−1 ′
+𝑛
+′
+𝑛
+′
+H5, we have 𝜇𝑛−1
+NS (𝐾 [𝑒 ]) ≥ 𝜇 NS (𝐾 [𝑒 ]) for the numerators, but we also have 𝜇 NS (𝑒 ) ≥ 𝜇 NS (𝑒 )
+for the denominatorsÐa seeming dilemma. We rewrite the goal using Lemma 4.15, with the
+evaluation context instantiated by 𝐾 for the numerators and by [·] for the denominators:
+∫
+∫
+′
+𝑛−1
+𝜇𝑛NV (𝑒 ′) + 𝜉 𝑛 (𝜎, 𝐾, 𝑒 ′) d𝜎
+𝜇𝑛−1
+(𝜎, 𝐾, 𝑒 ′) d𝜎
+NV (𝑒 ) + 𝜉
+∫
+∫
+≥ 𝑛
+(4.3)
+′
+𝑛−1 (𝜎, [·], 𝑒 ′ ) d𝜎
+𝜇𝑛−1
+𝜇 NV (𝑒 ′) + 𝜉 𝑛 (𝜎, [·], 𝑒 ′) d𝜎
+NV (𝑒 ) + 𝜉
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:15
+
+The integrals on the RHS of (4.3) can be further decomposed, using 𝜉 < and 𝜉 = defined as follows:
+(
+𝑛
+′
+𝑤 · 𝜇𝑛−𝑘
+def
+NS (𝐾 [𝑣]) if ⟨𝜎 | 𝑒⟩ ↘𝑘 ⟨𝜎 | 𝑣⟩ • 𝑤 and 𝑘 < 𝑛
+𝜉 𝑛< (𝜎, 𝐾, 𝑒) =
+0
+otherwise
+(
+𝑤
+if ⟨𝜎 | 𝑒⟩ ↘𝑛𝑘 ⟨𝜎 ′ | 𝑣⟩ • 𝑤 and 𝑘 = 𝑛
+def
+𝜉 =𝑛 (𝜎, 𝑒) =
+0
+otherwise
+By Definition 4.14, 𝜉 𝑛 (𝜎, 𝐾, 𝑒) = 𝜉 =𝑛 (𝜎, 𝑒) + 𝜉 𝑛< (𝜎, 𝐾, 𝑒): 𝜉 𝑛 (𝜎, 𝐾, 𝑒) is 𝜉 =𝑛 (𝜎, 𝑒) when ⟨𝜎 | 𝑒⟩ terminates to a value in precisely 𝑛 steps, and 𝜉 𝑛 (𝜎, 𝐾, 𝑒) is 𝜉 𝑛< (𝜎, 𝐾, 𝑒) when ⟨𝜎 | 𝑒⟩ terminates to a
+value in fewer than 𝑛 steps. Notice that 𝜉 𝑛< (𝜎, 𝐾, 𝑒) is closely related to, but subtly different from,
+𝜉 𝑛−1 (𝜎, 𝐾, 𝑒): both allow a maximum of 𝑛 − 1 evaluation steps at the current level of evaluation,
+but 𝜉 𝑛< (𝜎, 𝐾, 𝑒) allows for one more step at lower, reflected levels than 𝜉 𝑛−1 (𝜎, 𝐾, 𝑒) does. Now,
+rewrite (4.3) by decomposing 𝜉 𝑛 (𝜎, 𝐾, 𝑒 ′) and 𝜉 𝑛 (𝜎, [·], 𝑒 ′) on its RHS:
+∫
+∫
+∫
+′
+𝑛−1
+𝜇𝑛NV (𝑒 ′) + 𝜉 =𝑛 (𝜎, 𝑒 ′) d𝜎 + 𝜉 𝑛< (𝜎, 𝐾, 𝑒 ′) d𝜎
+𝜇𝑛−1
+(𝜎, 𝐾, 𝑒 ′) d𝜎
+NV (𝑒 ) + 𝜉
+∫
+∫
+∫
+(4.4)
+≥ 𝑛
+′
+𝑛−1 (𝜎, [·], 𝑒 ′ ) d𝜎
+𝜇𝑛−1
+𝜇 NV (𝑒 ′) + 𝜉 =𝑛 (𝜎, 𝑒 ′) d𝜎 + 𝜉 𝑛< (𝜎, [·], 𝑒 ′) d𝜎
+NV (𝑒 ) + 𝜉
+
+The decomposition allows for connecting the LHS’s 𝜉 𝑛−1 (𝜎, 𝐾, 𝑒 ′) and 𝜉 𝑛−1 (𝜎, [·], 𝑒 ′) to the RHS’s
+′
+𝑛
+′
+𝜉∫𝑛< (𝜎, 𝐾, 𝑒 ′) and 𝜉 𝑛< (𝜎, [·], 𝑒 ′). It also allows for connecting 𝜇𝑛−1
+NV (𝑒 ) on the LHS to 𝜇 NV (𝑒 ) +
+′
+𝑛
+′
+𝜉 = (𝜎, 𝑒 ) d𝜎 on the RHS, both of which, roughly speaking, are the measure of 𝑒 evaluating to a
+non-value after 𝑛 − 1 steps. Then we can prove (4.4) by applying the following fact
+𝛼 +𝛽
+𝛼′ + 𝛽′
+∀𝛼 𝛽 𝛾 𝛼 ′ 𝛽 ′ 𝛾 ′ ∈ R+, 0 ≤ 𝛾 − 𝛽 ≤ 𝛾 ′ − 𝛽 ′ ⇒ 𝛼 ′ + 𝛾 ′ ≤ 𝛼 + 𝛾 < ∞ ⇒
+≥ ′
+(4.5)
+𝛼 +𝛾
+𝛼 +𝛾′
+∫
+∫
+∫
+′
+′
+′
+𝑛
+′
+𝑛
+𝑛−1
+with 𝛼 = 𝜇𝑛−1
+(𝜎, 𝐾, 𝑒 ′) d𝜎, and 𝛽 ′ = 𝜉 𝑛< (𝜎, 𝐾, 𝑒 ′) d𝜎.
+NV (𝑒 ), 𝛼 = 𝜇 NV (𝑒 ) + 𝜉 = (𝜎, 𝑒 ) d𝜎, 𝛽 = 𝜉
+This step applying (4.5) is what makes the equivocal intuition mentioned in ğ4.2 unequivocal.
+Showing that the antecedents of (4.5) hold is then an exercise of real analysis making use of
+induction hypotheses H2, H3, and H5; the proof is not shown here to save space.
+□
+The main result of this section, Theorem 4.2, is immediate from Lemma 4.16(4)(5).
+It follows from Theorem 4.2 and MCT (I) that index-free versions of Lemmas 4.9 and 4.10 hold:
+Lemma 4.17. If ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 | 𝑒 ′⟩ • 𝑤 for all 𝜎 and 𝑛, then 𝜇NS (𝑒) = 𝑤 · 𝜇 NS (𝑒 ′).
+Lemma 4.18. If ⟨𝜎 | 𝑒⟩ {𝑛 ⟨𝜎 | 𝑒 ′⟩ • 𝑤 for all 𝜎 and 𝑛, then 𝜇TV (𝑒, 𝑉 ) = 𝑤 · 𝜇TV (𝑒 ′, 𝑉 ).
+
+Lemma 4.19. If 𝜇NS (𝑒) > 0, then 𝜇NS (𝐾 [sample (query 𝑒)]) = 𝜇 NS (𝐾 [𝑒]) 𝜇NS (𝑒) .
+
+Lemma 4.20. If 𝜇 NS (𝑒) > 0, then 𝜇TV (𝐾 [sample (query 𝑒)], 𝑉 ) = 𝜇TV (𝐾 [𝑒], 𝑉 ) 𝜇NS (𝑒) .
+
+Lemmas 4.17 and 4.18 apply when reduction is independent of both entropy and step index.
+Lemmas 4.19 and 4.20 apply when reduction depends on the step index.
+Likewise, it follows from Theorem 4.2 and MCT (II) that index-free versions of Lemmas 4.11 and
+4.12 hold too; Lemmas 4.21 and 4.22 apply when reduction depends on the entropy:
+∫1
+Lemma 4.21. 𝜇NS (𝐾 [sample Unif]) = 0 𝜇 NS (𝐾 [c𝑟 ]) d𝑟 .
+∫1
+Lemma 4.22. 𝜇TV (𝐾 [sample Unif], 𝑉 ) = 0 𝜇TV (𝐾 [c𝑟 ], 𝑉 ) d𝑟 .
+4.4
+
+Implementation in Coq
+
+We formalized the mutually recursive operational semantics and measure semantics and mechanized
+proofs of the above results using the Coq proof assistant, in about 4,400 lines of Gallina and Ltac code.
+The development builds on an axiomatization of R+ and Lebesgue integration, due to Culpepper
+and Cobb [2017], which further builds on the axiomatization of R [Mayero 2001] in the standard
+library of Coq.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:16
+
+Yizhou Zhang and Nada Amin
+
+5 CONTEXTUAL EQUIVALENCE
+The canonical, operational notion of equivalence is contextual equivalence [Morris 1968]. A program
+context is a program with a hole [·] in it. Unlike evaluation contexts 𝐾, program contexts can bind
+variables and can be plugged with terms in which the variables occur free. Context typing has form
+⊢ 𝐶 : Γ, 𝜏 ⇝ 𝜏 ′, so defined that if term 𝑒 has typing Γ ⊢ 𝑒 : 𝜏, composing 𝐶 and 𝑒 yields a program
+𝐶 [𝑒] with typing · ⊢ 𝐶 [𝑒] : 𝜏 ′. The definition of contexts and context-typing rules are standard and
+can be found in the Coq development.
+Given a notion of indistinguishability, two terms are contextually equivalent if respectively
+composing them with any well-formed program context yields programs that are indistinguishable.
+For a deterministic, Turing-complete language, indistinguishability is often taken to mean that
+programs either both terminate or both diverge. If any two programs both terminate but terminate
+to different values, there must exist a context in which one of the programs terminates and the
+other divergesÐit follows from the universal quantification over contexts that the two programs
+are not considered contextually equivalent.
+For our probabilistic, Turing-complete language, we take indistinguishability to mean (1) that
+two programs have the same model evidence and (2) that they have the same measure on any
+measurable set of real values. Formally, contextual equivalence (≈ctx ) is defined as follows:
+Definition 5.1 (Contextual equivalence).
+def
+
+Γ ⊨ 𝑒 1 ≈ctx 𝑒 2 : 𝜏 = ∀𝐶 ⊢ 𝐶 : Γ, 𝜏 ⇝ R ⇒
+𝜇 NS (𝐶 [𝑒 1 ]) = 𝜇NS (𝐶 [𝑒 2 ]) ∧ ∀𝑉 𝜇TV (𝐶 [𝑒 1 ], 𝑉 ) = 𝜇TV (𝐶 [𝑒 2 ], 𝑉 )
+Condition (2) alone is exactly how prior work [Wand et al. 2018] defines indistinguishability. Notice
+that restricting attention to real-typed programs does not weaken the discriminating power of contextual equivalence, similar to how restricting attention to unit-typed programs in a deterministic
+setting is not less discriminative. The addition of condition (1) makes our definition of contextual
+equivalence more discriminativeÐit more faithfully reflects the meaning of probabilistic programs
+when exceptions or divergence is possible [Bichsel et al. 2018; Olmedo et al. 2018] (see also ğ8).
+We can define an asymmetric relation called contextual approximation (≼ctx ), where the stepindexed measure semantics of one program approximates the limit measure semantics of the other.
+It follows from Theorem 4.2 that contextual equivalence has an alternative definition in terms of
+contextual approximation:
+Definition 5.2 (Contextual approximation).
+def
+
+Γ ⊨ 𝑒 1 ≼ctx 𝑒 2 : 𝜏 = ∀𝐶 ⊢ 𝐶 : Γ, 𝜏 ⇝ R ⇒
+∀𝑛 𝜇𝑛NS (𝐶 [𝑒 1 ]) ≥ 𝜇 NS (𝐶 [𝑒 2 ]) ∧ ∀𝑉 𝜇𝑛TV (𝐶 [𝑒 1 ], 𝑉 ) ≤ 𝜇 TV (𝐶 [𝑒 2 ], 𝑉 )
+Lemma 5.3. Γ ⊨ 𝑒 1 ≈ctx 𝑒 2 : 𝜏 ⇐⇒ Γ ⊨ 𝑒 1 ≼ctx 𝑒 2 : 𝜏 ∧ Γ ⊨ 𝑒 2 ≼ctx 𝑒 1 : 𝜏
+6 A SOUND LOGICAL-RELATIONS MODEL
+The discriminating power of contextual equivalence arises from the universal quantification over
+program contexts, which also makes it difficult to prove contextual equivalence directly. A popular
+method to prove contextual equivalence is by first devising a logical-relations model and then
+showing that it is sound with respect to contextual equivalence.
+6.1
+
+A Biorthogonal, Step-Indexed Definition
+
+Figure 6 defines the logical-relations model. The relation on closed terms is defined using the
+technique of biorthogonality (also known as ⊤⊤-closure) [Pitts and Stark 1998]. A biorthogonal
+logical relation is automatically complete with respect to contextual equivalence. Two terms are in
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:17
+
+Biorthogonality
+def
+
+O𝑛 (𝑒 1, 𝑒 2 ) = 𝜇𝑛NS (𝑒 1 ) ≥ 𝜇 NS (𝑒 2 ) ∧ ∀𝑉 𝜇𝑛TV (𝑒 1, 𝑉 ) ≤ 𝜇 TV (𝑒 2, 𝑉 )
+def
+
+KJ𝜏K𝑛 (𝐾1, 𝐾2 ) = ∀𝑚 ≤ 𝑛 ∀𝑣 1 𝑣 2 J𝜏K𝑚 (𝑣 1, 𝑣 2 ) ⇒ O𝑚 (𝐾1 [𝑣 1 ], 𝐾2 [𝑣 2 ])
+def
+
+EJ𝜏K𝑛 (𝑒 1, 𝑒 2 ) = ∀𝑚 ≤ 𝑛 ∀𝐾1 𝐾2 KJ𝜏K𝑚 (𝐾1, 𝐾2 ) ⇒ O𝑚 (𝐾1 [𝑒 1 ], 𝐾2 [𝑒 2 ])
+Semantic types
+def
+
+JRK𝑛 (𝑣 1, 𝑣 2 ) = ∃𝑟 𝑣 1 = 𝑣 2 = c𝑟
+def
+
+J1K𝑛 (𝑣 1, 𝑣 2 ) = 𝑣 1 = 𝑣 2 = ( )
+def
+
+J2K𝑛 (𝑣 1, 𝑣 2 ) = 𝑣 1 = 𝑣 2 = True ∨ 𝑣 1 = 𝑣 2 = False
+
+
+def
+J𝜏 ′ →𝜏K𝑛 (𝑣 1, 𝑣 2 ) = · ⊢ 𝑣 1, 2 : 𝜏 ′ →𝜏 ∧ ∀𝑚 ≤ 𝑛 ∀𝑣 1′ 𝑣 2′ J𝜏 ′K𝑚 𝑣 1′ , 𝑣 2′ ⇒ EJ𝜏K𝑚 𝑣 1 𝑣 1′ , 𝑣 2 𝑣 2′
+
+
+
+def
+J(𝜏, 𝜏 ′)K𝑛 (𝑣 1, 𝑣 2 ) = ∃𝑢 1 𝑢 1′ 𝑢 2 𝑢 2′ 𝑣 1 = 𝑢 1, 𝑢 1′ ∧ 𝑣 2 = 𝑢 2, 𝑢 2′ ∧ J𝜏K𝑛 (𝑢 1, 𝑢 2 ) ∧ J𝜏 ′K𝑛 𝑢 1′ , 𝑢 2′
+def
+
+Jdist 𝜏K𝑛 (𝑣 1, 𝑣 2 ) = · ⊢ 𝑣 1, 2 : dist 𝜏 ∧ EJ𝜏K𝑛 (sample 𝑣 1, sample 𝑣 2 )
+Lifting E to open terms
+𝛾 ::= · | 𝛾, x ↦→ 𝑣
+def
+
+JΓK (𝛾 1, 𝛾 2 ) = ∀x ∈ domain(Γ) JΓ(x)K𝑛 (𝛾 1 x, 𝛾 2 x)
+𝑛
+
+def
+
+Γ ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏 = Γ ⊢ 𝑒 1, 2 : 𝜏 ∧ ∀𝑛 ∀𝛾 1 𝛾 2 JΓK𝑛 (𝛾 1, 𝛾 2 ) ⇒ EJ𝜏K𝑛 (𝛾 1𝑒 1, 𝛾 2𝑒 2 )
+def
+
+Γ ⊨ 𝑒 1 ≈log 𝑒 2 : 𝜏 = Γ ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏 ∧ Γ ⊨ 𝑒 2 ≼log 𝑒 1 : 𝜏
+Figure 6. Logical-relations model
+
+a biorthogonal term relation if plugging them into related continuations yields related observations.
+So we need notions of relatedness for observations and for continuations.
+Observation relatedness is given by an asymmetric relation O, called observational approximation.
+It relates two programs 𝑒 1 and 𝑒 2 when the observable behavior (i.e., the measure semantics) of 𝑒 1
+approximates that of 𝑒 2 . Observational approximation is indexed on a step budget governing the
+evaluation of 𝑒 1 [Appel and McAllester 2001; Ahmed 2006]. Continuation relatedness is given by K.
+Two continuations are related if composing them with related values yields related observations.
+Value relatedness is given by a semantic interpretation of types J𝜏K, defined as a recursive
+function that decreases on the size of 𝜏. Two values are related at type 𝜏 when the introduction
+(or elimination) forms of 𝜏 are related. In particular, two distribution-typed values are related if
+sampling the distributions yields related terms.
+The E relation on closed terms is then lifted to logical approximation (≼log ), a relation on open
+terms, by quantifying over step indices and over related closing substitutions 𝛾 1 and 𝛾 2 for the free
+variables bound in Γ. The notation 𝛾𝑒 means applying substitution function 𝛾 to 𝑒. Finally, logical
+equivalence (≈log ) is defined as logical approximation in both directions.
+6.2
+
+Soundness
+
+Monotonicity of step-indexed logical relations. It follows from Theorem 4.2 that the logical
+relations are monotone in the step indexÐwhat holds in the current world (i.e., at step index 𝑛)
+also holds in future worlds (i.e., at step index 𝑚 < 𝑛).
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:18
+
+Yizhou Zhang and Nada Amin
+
+Γ ⊨ 𝑒 1 ≼log 𝑒 2 : dist 𝜏
+
+Γ ⊨ 𝑒 1 ≼log 𝑒 2 : R
+
+Γ ⊨ sample 𝑒 1 ≼log sample 𝑒 2 : 𝜏
+
+Γ ⊨ score 𝑒 1 ≼log score 𝑒 2 : 1
+
+Γ ⊨ Unif ≼log Unif : dist R
+
+Γ, this : 1 →𝜏 ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏
+
+Γ ⊨ 𝑒 1 ≼log 𝑒 2 : R
+
+Γ ⊨ fix this. 𝑒 1 ≼log fix this. 𝑒 2 : 1 →𝜏
+
+Γ ⊨ query 𝑒 1 ≼log query 𝑒 2 : dist R
+
+Figure 7. Selected compatibility lemmas
+
+Lemma 6.1. If 𝑚 ≤ 𝑛 and O𝑛 (𝑒 1, 𝑒 2 ) is true, then O𝑚 (𝑒 1, 𝑒 2 ) is true. The same holds, mutatis mutandis,
+for the step-indexed logical relations EJ𝜏K, KJ𝜏K, J𝜏K, and JΓK.
+Compatibility lemmas. The building blocks of this section’s main theorems are the so-called
+compatibility lemmas. Figure 7 shows the most relevant ones, presented in the style of inference
+rules to evoke a structural correspondence to the typing rules in Figure 3. Compatibility proofs
+for the deterministic fragment of the language use Lemmas 4.9ś4.10 (to reduce the LHS term),
+Lemmas 4.17ś4.18 (to reduce the RHS term), and Lemma 6.1. The lemma for fix requires induction
+on the step index, due to the recursive nature of its operational semantics. The lemma for Unif
+relies on Lemmas 4.11ś4.12 and 4.21ś4.22. Expectedly, proving the compatibility lemma for query
+requires the most work. It uses Lemma 4.15 and Fact (4.5), as well as Lemmas 4.9ś4.10 and 4.19ś4.20.
+Fundamental property. From the compatibility lemmas follows the so-called fundamental theorem of logical relations [Statman 1985]: a well-typed term is logically related to itself. The proof is by
+induction on typing derivations and by applying the appropriate compatibility lemma in each case.
+Theorem 6.2 (Fundamental Property). If Γ ⊢ 𝑒 : 𝜏, then Γ ⊨ 𝑒 ≼log 𝑒 : 𝜏.
+Soundness. Our goal is to show that logical relatedness implies contextual equivalence, for which
+we need Lemmas 6.3 and 6.4. Precongruence is proven by induction on context-typing derivations
+and by applying the appropriate compatibility lemma in each case.
+Lemma 6.3 (Precongruence). If Γ ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏 and ⊢ 𝐶 : Γ, 𝜏 ⇝ R, then · ⊨ 𝐶 [𝑒 1 ] ≼log 𝐶 [𝑒 2 ] : R.
+Lemma 6.4 (Adeqacy). If · ⊨ 𝑒 1 ≼log 𝑒 2 : R, then O𝑛 (𝑒 1, 𝑒 2 ) for all 𝑛.
+Soundness of the logical-relations model is immediate from Precongruence and Adeqacy.
+Theorem 6.5 (Soundness). If Γ ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏, then Γ ⊨ 𝑒 1 ≼ctx 𝑒 2 : 𝜏.
+This soundness theorem is our license to use logical relatedness to prove contextual equivalence.
+In practice, logical-relations proofs often employ a third, even more usable approximation relation,
+called ciu approximation:
+def
+
+Definition 6.6 (≼ciu ). Γ ⊨ 𝑒 1 ≼ciu 𝑒 2 : 𝜏 = Γ ⊢ 𝑒 1, 2 : 𝜏 ∧ ∀𝛾 ⊢ 𝛾 : Γ ⇒ ∀𝐾 ∀𝑛 O𝑛 (𝐾 [𝛾𝑒 1 ], 𝐾 [𝛾𝑒 2 ])
+It considers two terms equivalent when closed instantiations (i.e., substitution for free variables) of
+them yield related observable behaviors when used (i.e., placed inside evaluation contexts) [Mason
+and Talcott 1991]. We can show that ciu approximation entails logical approximation:
+Lemma 6.7 (≼ciu entails ≼log ). If Γ ⊨ 𝑒 1 ≼ciu 𝑒 2 : 𝜏, then Γ ⊨ 𝑒 1 ≼log 𝑒 2 : 𝜏.
+It follows from Theorem 6.5 and Lemma 6.7 that contextual approximation can be established by
+showing ciu approximation. Ciu approximation is easier to use than contextual approximation
+because the universal quantification is over evaluation contexts 𝐾, a subclass of program contexts 𝐶
+that can be instantiated only by closed terms. It is also easier to use than the logical relation E
+because evaluation contexts on both sides are the same. We work with ciu approximation in ğ7.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+6.3
+
+16:19
+
+Implementation in Coq
+
+Building on the Coq development in ğ4.4, we further implemented the step-indexed logical-relations
+model. All results in ğ6.2 are machine-checked, in about 2,000 lines of code.
+7 REASONING ABOUT NESTED QUERIES: EXAMPLES
+We now demonstrate how to use the reasoning principles established in the preceding sections
+to prove novel equivalences. We use four examples: the first one equates programs that otherwise would not be equivalent without using query (ğ7.2); the second one proves nested queries
+semantically irrelevant in a usage previously considered prototypical (ğ7.3); the last two equate
+decision-making programs where subtle syntactic differences lead to exponential differences in inference efficiency (ğ7.4 and ğ7.5). To increase readability, the first example is simpler and explained
+in greater detail. The other examples are more condensed, but their proofs exhibit similar patterns.
+7.1
+
+A Catalog of Standard Equivalences
+
+Before addressing more challenging equivalences, we first catalog a few standard ones validated
+using the logical relations. They help sanity-check that our semantics is reasonably conservative.
+E1. If Γ ⊢ (𝜆x. 𝑒) 𝑣 : 𝜏, then Γ ⊨ (𝜆x. 𝑒) 𝑣 ≈ctx 𝑒 {𝑣/x} : 𝜏.
+E2. Let 𝑒 1 , 𝑒 2 , and 𝑒 3 be well-typed: (i) Γ ⊢ 𝑒 1 : 𝜏1 , (ii) Γ, x : 𝜏1 ⊢ 𝑒 2 : 𝜏2 , and (iii) Γ, y : 𝜏2 ⊢ 𝑒 3 : 𝜏3 .
+Then Γ ⊨ let y = (let x = 𝑒 1 in 𝑒 2 ) in 𝑒 3 ≈ctx let x = 𝑒 1 in let y = 𝑒 2 in 𝑒 3 : 𝜏3 .
+q
+def
+def
+E3. Let 𝑒 1 = sampleNormal 𝑒𝑚1 𝑒𝑠1 + sampleNormal 𝑒𝑚2 𝑒𝑠2 and 𝑒 2 = sampleNormal 𝑒𝑚1 +𝑒𝑚2 𝑒𝑠21 +𝑒𝑠22 ,
+where Γ ⊢ 𝑒 1,2 : R. Then Γ ⊨ 𝑒 1 ≈ctx 𝑒 2 : R.
+
+E4. Let Γ ⊢ 𝑒 : 𝜏 and 𝑟 1,2 ∈ (0, 1]. Then Γ ⊨ score c𝑟 1 ; score c𝑟 2 ; 𝑒 ≈ctx score c𝑟 1 × c𝑟 2 ; 𝑒 : 𝜏.
+
+E5. Let 𝑟 ∈ (0, 1]. Then · ⊨ score c𝑟 ≈ctx if sampleBern c𝑟 then (score c1 ) else (score c0 ) : 1.
+E6. Let Γ ⊢ 𝑒 : R and 𝑟 ∈ (0, 1]. Then Γ ⊨ query 𝑒 ≈ctx query (score c𝑟 ; 𝑒) : dist R.
+
+E7. Let x : R ⊢ 𝑒 : R. Suppose that for all 𝑟 ∈ R, 𝑒 {c𝑟 /x} always terminates, with model evidence
+def
+𝑓 (𝑟 ) = 𝜇NS (𝑒 {c𝑟 /x}) > 0. Suppose op is a unary operator such that interp (op, c𝑟 ) = c 𝑓 (𝑟 ) .
+Then x : R ⊨ 𝑒 ≈ctx score op(x); sample (query 𝑒) : R.
+These equivalences are adapted from those reported in Staton [2017], Culpepper and Cobb [2017],
+and Wand et al. [2018]. E1 is equivalence under 𝛽-reduction. E2 is associativity of let-binding. E3
+shows that the sum of two Gaussians is a Gaussian. E4 is distributivity of scoring. E5 suggests
+that (1-bounded) soft constraints can be implemented in terms of hard constraints. E6 shows that
+introducing independent scoring into a computation does not change its normalized measure. E7
+justifies the resampling technique: a computation 𝑒Ðespecially when it performs conditioningÐcan
+equivalently be implemented by obtaining a normalized representation of 𝑒, resampling from it,
+and scoring the model evidence, to prevent a proliferation of low-weight samples.
+7.2
+
+Fixing False Equivalences Using Nested Queries
+
+We revisit the first equivalence question posed in ğ1, wherein a false equivalence between 𝑒 1
+and 𝑒 2 is fixed by a true equivalence between sample (query 𝑒 1 ) and 𝑒 2 . Specifically, we show
+y : 2 ⊨ sample (query 𝑒 1 ) ≈ctx 𝑒 2 : 2 where 𝑒 1 and 𝑒 2 are defined as follows (assuming an equality
+operator over Boolean values):
+def
+
+𝑒 1 = let x = sampleBern c0.2 in
+let _ = score (if x = y then c1 else c0 ) in
+x
+
+def
+
+𝑒 2 = let f = fix this. 𝜆y. let x = sampleBern c0.2 in
+if x = y then x else this ( ) y in
+f () y
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:20
+
+Yizhou Zhang and Nada Amin
+
+Proof. By Lemma 5.3, the goal amounts to showing contextual approximations in both directions.
+By Soundness (Theorem 6.5) and Lemma 6.7, we can show ciu approximations instead:
+y : 2 ⊨ sample (query 𝑒 1 ) ≼ciu 𝑒 2 : 2
+
+y : 2 ⊨ 𝑒 2 ≼ciu sample (query 𝑒 1 ) : 2
+
+By Definition 6.6, we need to show that for all 𝑣 ∈ {True, False}, 𝐾, and 𝑛, the following observational approximations hold:
+O𝑛 (𝐾 [sample (query 𝑒 1 {𝑣/y})], 𝐾 [𝑒 2 {𝑣/y}])
+𝑛
+
+O (𝐾 [𝑒 2 {𝑣/y}], 𝐾 [sample (query 𝑒 1 {𝑣/y})])
+
+(7.1)
+(7.2)
+
+Here we verify them for the case 𝑣 = True; the case 𝑣 = False is analogous. Because O is monotone
+(Lemma 6.1), it suffices to verify them for sufficiently large 𝑛’sÐbelow we assume 𝑛 ≥ 11.
+By the definition of the O relation, proving (7.1) amounts to showing the following inequalities:
+𝜇𝑛NS (𝐾 [sample (query 𝑒 1 {True/y})]) ≥ 𝜇 NS (𝐾 [𝑒 2 {True/y}])
+
+(7.3)
+
+∀𝑉 𝜇𝑛TV (𝐾 [sample (query 𝑒 1 {True/y})], 𝑉 ) ≤ 𝜇TV (𝐾 [𝑒 2 {True/y}], 𝑉 )
+
+(7.4)
+
+We simplify the step-indexed LHS of (7.4) first. For convenience,
+define
+𝐽 to be an evalua
+
+tion context emerging during evaluation: 𝑒 1 {True/y} = 𝐽 sampleBern c0.2 . The calculation below
+works by repeatedly using the small-step semantics to step the term in question while applying
+Lemmas 4.9ś4.12 to evolve measures:
+𝜇𝑛−1 (𝐾 [𝑒 1 {True/y}], 𝑉 )
+𝜇𝑛TV (𝐾 [sample (query 𝑒 1 {True/y})], 𝑉 ) = TV 𝑛−1
+𝜇NS (𝑒 1 {True/y})
+∫
+ 
+
+𝑛−4
+𝑛−1
+𝜇TV (𝐾 [𝐽 [if c𝑟 ≤ c0.2 then True else False]], 𝑉 ) d𝑟
+𝜇 (𝐾 𝐽 sampleBern c0.2 , 𝑉 )
+∫
+
+=
+= TV 𝑛−1 
+𝜇NS (𝐽 sampleBern c0.2 )
+𝜇𝑛−4
+NS (𝐽 [if c𝑟 ≤ c0.2 then True else False]) d𝑟
+=
+
+𝑛−6
+0.2 · 𝜇𝑛−6
+TV (𝐾 [𝐽 [True]], 𝑉 ) + 0.8 · 𝜇 TV (𝐾 [𝐽 [False]], 𝑉 )
+𝑛−6
+0.2 · 𝜇𝑛−6
+NS (𝐽 [True]) + 0.8 · 𝜇 NS (𝐽 [False])
+
+=
+
+𝑛−9
+0.2 · 𝜇𝑛−9
+TV (𝐾 [let _ = score c1 in True], 𝑉 ) + 0.8 · 𝜇 TV (𝐾 [let _ = score c0 in False], 𝑉 )
+𝑛−9
+0.2 · 𝜇𝑛−9
+NS (let _ = score c1 in True) + 0.8 · 𝜇 NS (let _ = score c0 in False)
+
+=
+
+0.2 · 𝜇𝑛−11
+TV (𝐾 [True], 𝑉 ) + 0.8 · 0
+= 𝜇𝑛−11
+TV (𝐾 [True], 𝑉 )
+0.2 · 𝜇𝑛−11
+(True)
++
+0.8
+·
+0
+NS
+
+(By Lemma 4.6, 𝜇𝑛−11
+NS (True) = 1)
+
+Likewise, we have for the LHS of (7.3) that 𝜇𝑛NS (𝐾 [sample (query 𝑒 1 {True/y})]) = 𝜇𝑛−11
+NS (𝐾 [True]).
+Next we simplify the RHS of (7.4). Define 𝑒 2′ such that ⟨𝜎 | 𝑒 2 {True/y}⟩ {𝑚 𝜎 𝑒 2′ • 1 for all
+def
+𝑚 and 𝜎. That is, 𝑒 2′ = (fix this. ...) ( ) True. It takes 10 steps to evaluate the recursive call 𝑒 2′ to a
+return value or until 𝑒 2′ appears as the redex again. Thus, by repeatedly applying Lemmas 4.10 and
+4.12 and taking evaluation steps, we can derive the following recursive equation:
+(
+ ′
+0
+if 0 ≤ 𝑚 ≤ 9
+𝑚
+ ′ 
+(7.5)
+𝜇TV (𝐾 𝑒 2 , 𝑉 ) =
+𝑚−10
+𝑚−10
+if 𝑚 ≥ 10
+0.2 · 𝜇 TV (𝐾 [True], 𝑉 ) + 0.8 · 𝜇TV 𝐾 𝑒 2 , 𝑉
+ ′ 
+Taking the limit of each side of (7.5),
+ ′  we have 𝜇TV 𝐾 𝑒 2 , 𝑉 = 𝜇TV (𝐾 [True], 𝑉 ). So by Lemma 4.18,
+𝜇TV (𝐾 [𝑒 2 {True/y}], 𝑉 ) = 𝜇 TV 𝐾 𝑒 2 , 𝑉 = 𝜇 TV (𝐾 [True], 𝑉 ). Likewise, we can derive for the RHS
+of (7.3) that 𝜇NS (𝐾 [𝑒 2 {True/y}]) = 𝜇NS (𝐾 [True]). Thus (7.3) and (7.4) are true:
+𝜇𝑛NS (𝐾 [sample (query 𝑒 1 {True/y})]) = 𝜇𝑛−11
+NS (𝐾 [True]) ≥ 𝜇 NS (𝐾 [True]) = 𝜇 NS (𝐾 [𝑒 2 {True/y}])
+
+𝜇𝑛TV (𝐾 [sample (query 𝑒 1 {True/y})], 𝑉 ) = 𝜇𝑛−11
+TV (𝐾 [True], 𝑉 ) ≤ 𝜇 TV (𝐾 [True], 𝑉 ) = 𝜇 TV (𝐾 [𝑒 2 {True/y}], 𝑉 )
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+def
+
+Agents1 = fix this. (Alice1, Bob1 )
+def
+
+Alice1 = 𝜆d. let aLoc = sampleBern aPrior in
+let bLoc = snd (this ()) (d − c1 ) in
+let _ = ScoreLoc aLoc bLoc in aLoc
+def
+
+Bob1 = 𝜆d. let bLoc = sampleBern bPrior in
+if d > c0 then
+let aLoc = fst (this ()) d in
+let _ = ScoreLoc aLoc bLoc in bLoc
+else bLoc
+def
+
+CG1 = 𝜆_. sample (query (fst (Agents1 ()) c8 ))
+
+16:21
+
+def
+
+Agents2 = fix this. (Alice2 , Bob2 )
+def
+
+Alice2 = 𝜆d. let aLoc = sampleBern aPrior in
+let bLoc = sample (query (snd (this ()) (d − c1 ))) in
+let _ = ScoreLoc aLoc bLoc in aLoc
+def
+
+Bob2 = 𝜆d. let bLoc = sampleBern bPrior in
+if d > c0 then
+let aLoc = sample (query (fst (this ()) d)) in
+let _ = ScoreLoc aLoc bLoc in bLoc
+else bLoc
+def
+
+CG2 = 𝜆_. sample (query (fst (Agents2 ()) c8 ))
+
+Figure 8. CG2 encodes Figure 1 using the core calculus. Unlike CG2 , CG1 does not use nested queries.
+
+Above we proved observational approximation (7.1). We can show that the other direction (7.2)
+holds too. By (7.5) and by induction on 𝑛,
+  
+ ′ 
+𝑛−11
+𝑛−11
+𝜇𝑛TV (𝐾 [𝑒 2 {True/y}], 𝑉 ) = 𝜇𝑛−1
+𝐾 𝑒 2′ , 𝑉
+TV 𝐾 𝑒 2 , 𝑉 = 0.2 · 𝜇 TV (𝐾 [True], 𝑉 ) + 0.8 · 𝜇 TV
+≤ 0.2 · 𝜇𝑛−11
+TV (𝐾 [True], 𝑉 ) + 0.8 · 𝜇 TV (𝐾 [True], 𝑉 )
+
+(By the induction hypothesis)
+
+≤ 𝜇TV (𝐾 [True], 𝑉 ) = 𝜇 TV (𝐾 [sample (query 𝑒 1 {True/y})], 𝑉 )
+Similarly, we have 𝜇𝑛NS (𝐾 [𝑒 2 {True/y}]) ≥ 𝜇 NS (𝐾 [sample (query 𝑒 1 {True/y})]).
+
+□
+
+The example above shows that our semantics and logical relations can be applied to reason
+about programs like 𝑒 2 that admit nonterminating executions. Nonetheless, it is nonessential to
+equivalences of this flavor that one of the programs in the equivalence exhibits nontermination:
+Holtzen et al. [2019, ğA] pose (and correctly reject) a similar equivalence, which otherwise holds
+when terms are placed inside queries.
+7.3
+
+Coordination Game
+
+Encodings. The right column of Figure 8 uses the core PPL to encode the coordination game in
+Figure 1. Mutual recursion between the agents is encoded by Agents2 , a fixpoint function whose
+body is a pair; recursive reference is via pair projection. Agents’ prior preferences are represented
+by free variables aPrior and bPrior. Now alter the encoding to obtain Agents1 , Alice1 , Bob1 , and CG1
+(shown in the left column of Figure 8) such that Alice1 and Bob1 are free of nested queries.
+Equivalence. We prove the equivalence aPrior : R, bPrior : R ⊨ CG1 ( ) ≈ctx CG2 ( ) : 2.
+Proof Sketch. As in the previous example, we show contextual equivalence by showing ciu approximation in both directions. Below we focus on the direction aPrior : R, bPrior : R ⊨ CG1 ( ) ≼ciu
+CG2 ( ) : 2; the other direction is analagous.
+We need to show for all 𝛾 substituting for aPrior and bPrior, for all evaluation contexts 𝐾, and
+for all 𝑛, O𝑛 (𝐾 [𝛾CG1 ( )], 𝐾 [𝛾CG2 ( )]) holds. This goal consists of two inequalities, one for 𝜇 NS and
+the other for 𝜇 TV . The proof proceeds in a simlar pattern to the previous example, stepping terms
+on both sides and evolving measures per Lemmas 4.9ś4.12 and Lemmas 4.17ś4.22.
+CG2 uses nested queries, so calculations on the RHS need to handle normalization factors. The
+key enabler of this proof is the cancellation of normalization factors in the numerator and the
+denominator of the RHS. Below we illustrate this for 𝜇 TV (𝐾 [𝛾CG2 ( )], 𝑉 ). For convenience, let
+def
+𝐽T = let bLoc = [·] in let _ = ScoreLoc True bLoc in True denote an evaluation context that can
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:22
+
+Yizhou Zhang and Nada Amin
+
+emerge during evaluation; 𝐽F is similarly defined, substituting False for True. Let c𝑎 be the value
+that 𝛾 substitutes for aPrior. The RHS measure of interest is transformed as follows:
+𝜇 TV (𝐾 [𝛾CG2 ( )], 𝑉 ) = 𝜇TV (𝐾 [sample (query (fst (𝛾Agents2 ( )) c8 ))], 𝑉 )
+𝑎 · 𝜇 TV (𝐾 [𝐽T [sample (query (snd (𝛾Agents2 ()) c7 ))]], 𝑉 ) +
+(1 − 𝑎) · 𝜇 TV (𝐾 [𝐽F [sample (query (snd (𝛾Agents2 ()) c7 ))]], 𝑉 )
+𝜇 (𝐾 [fst (𝛾Agents2 ( )) c8 ], 𝑉 )
+= TV
+=
+𝜇NS (fst (𝛾Agents2 ( )) c8 )
+𝑎 · 𝜇 NS (𝐽T [sample (query (snd (𝛾Agents2 ()) c7 ))]) +
+(1 − 𝑎) · 𝜇 NS (𝐽F [sample (query (snd (𝛾Agents2 ()) c7 ))])
+
+𝑎·
+
+𝜇TV( 𝐾 [ 𝐽T [ snd (𝛾 Agents2 ()) c7 ]] ,𝑉 )
+
+✭
+✭✭
+
++ (1 − 𝑎) ·
+
+𝜇TV( 𝐾 [ 𝐽F [ snd (𝛾 Agents2 ()) c7 ]] ,𝑉 )
+
+✭
+✭✭
+✭✭
+𝜇NS✭
+Agents
+( snd✭(𝛾✭
+2 ()) c7 )
+✭
+✭
+=
+𝜇 ( 𝐽 [ snd (𝛾 Agents2 ()) c7 ])
+𝜇 ( 𝐽 [ snd (𝛾 Agents2 ()) c7 ])
+✭ + (1 − 𝑎) · NS F
+✭
+𝑎 · NS T
+✭c✭
+✭✭
+✭
+✭
+✭✭
+𝜇 NS(
+𝜇 NS(
+snd
+(𝛾
+Agents
+())
+snd
+Agents
+✭
+2
+2 ()) c7 )
+✭(𝛾✭
+7)
+✭
+✭✭✭
+✭
+The cancellation of normalization factors allows the RHS to match the form of the LHS. The rest of
+the proof is unsurprising and is not shown here to save tediousness.
+□
+✭✭
+𝜇 NS✭
+Agents
+( snd✭(𝛾✭
+2 ()) c7 )
+
+As the proof makes explicit, the equivalence hinges on the cancellation of normalization factors,
+which is a consequence of Alice’s reasoning about Bob’s reasoning being independent of Alice’s
+choiceÐby the problem definition, the agents cannot communicate. Given that the coordination
+game is the first example Stuhlmüller and Goodman [2014] use to illustrate the modeling power of
+nested queries, its equivalence to a nested-query-free variant comes as a surprise.
+Performance. Nested queries prove semantically irrelevant in this example, but they have implications for inference efficiency. The figure below plots running times (in milliseconds) for CG1 and
+CG2 in logarithmic scale. The inference algorithm at work is WebPPL’s default choice for discrete
+random variables, which enumerates random choices for exact inference.
+CG1
+Running time of CG1 grows exponentially as the problem size (namely 104
+CG2
+depth of metareasoning) increases, while that of CG2 is inconspicuous. 103
+The contrast results from a simple optimization applied to nested queries: 102
+query results are deterministicÐthey are distributionsÐso it makes sense 101
+to memoize them. In CG2 , because different choices of location at a higher
+5 6 7 8 9 10 11
+depth can lead to the same query at a lower depth, the same inference
+problem effectively gets queried multiple times, with subsequent queries fetching the memoized
+distribution and thus amortizing the cost of the first query. Hence, running time of CG2 grows
+linearly, although the trend is indiscernible in the plot because problem sizes are too small.
+More nesting is not necessarily better for arbitrary inference algorithms, though. It is possible that
+Monte Carlo algorithms may have better asymptotic behavior in the absence of nesting, measured
+by variance or convergence rate.
+7.4
+
+Markov Decision Processes
+
+Encodings. Markov decision processes (MDPs) [Howard 1960] are a widely used framework for
+expressing sequential decision-making problems. Figure 9 shows two generic MDP encodings.
+Each encoding consists of two mutually recursive functions, Action and Cost. Action samples an
+action and uses a score exp(−cost) term to bias the sample towards actions that will yield low cost
+over time: the score of an action is in proportion to the softmin of its cost.
+Cost computes the cost of taking a given action in a given state. The return value of Cost sums
+two parts: the immediate cost obtained in the next state after applying a Transition function, and
+costs to be accumulated in future states (discounted by a factor 𝑟 ). An agent chooses its nextAction
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+def
+
+MDP1 = fix this. (Action1, Cost1 )
+def
+
+Action1 = 𝜆state. let action = Prior () in
+let cost = snd (this ()) action state in
+let _ = score exp(−cost) in action
+def
+
+Cost1 = 𝜆action. 𝜆state.
+let nextState = Transition action state in
+if IsTerminalState nextState then
+ImmediateCost nextState
+else
+let nextAction =
+sample (query (fst (this ()) nextState)) in
+let futureCosts =
+snd (this ()) nextAction nextState in
+ImmediateCost nextState + c𝑟 × futureCosts
+
+16:23
+
+def
+
+MDP2 = fix this. (Action2 , Cost2 )
+def
+
+Action2 = 𝜆state. let action = Prior () in
+let cost = snd (this ()) action state in
+let _ = score exp(−cost) in action
+def
+
+Cost2 = 𝜆action. 𝜆state.
+let nextState = Transition action state in
+if IsTerminalState nextState then
+ImmediateCost nextState
+else
+let futureCosts = sample (query (
+let nextAction = fst (this ()) nextState in
+snd (this ()) nextAction nextState
+)) in
+ImmediateCost nextState + c𝑟 × futureCosts
+
+Figure 9. Two generic MDP encodings. They differ in what the query terms encompass.
+
+in nextState by using a nested query to recursively reason about how different actions play out in
+the future. The encoding is reminiscent of Bellman’s principle of optimality [Bellman 1957].
+Functions Prior, Transition, IsTerminalState, and ImmediateCost are domain-specific and possibly
+stochastic (but free of conditioning). The two robots mentioned in Figure 2, for example, instantiate
+the generic MDP encodings on the problem domain of 2D-space path planning.
+Equivalence. The encodings differ in what the query terms encompass. We prove the equivalence
+· ⊨ MDP1 ≈ctx MDP2 : 1 → (R → 2, 2 → R → R), where states and costs have type R and actions 2.
+The proof proceeds similarly to ğ7.2 and ğ7.3, transforming measures under small-step reduction.
+Intuitively, the equivalence holds because the term snd (this ( )) nextAction nextState, which the
+query term in Cost2 additionally encompasses, is free of conditioning effects: although it may
+further call Action2 and score actions, the scoring is always screened off by an enclosing query
+and thus unable to influence any random choice made in outer queries. So the proof amounts to
+showing that the two nested queries have equal model evidence.
+Unlike in ğ7.3, neither encoding is equivalent to a nested-query-free variant: an agent’s choice
+of action enters into determining the model evidence of the nested query about the agent’s future.
+Performance. The subtle difference between MDP1 and MDP2 has marked performance implications. We instantiated the encodings in WebPPL on a finite-horizon MDP problem; the figure
+below plots running times of exact inference, increasing the problem size (namely MDP horizon).
+All nested queries are already memoized. Because nested queries are identified by nextState and
+because different sequences of actions can lead to the same state, the memoized result of a nested
+query can be reused for subsequent, identical queries. Running time increases exponentially with
+both encodings, because the number of distinct queries grows exponentially.
+Importantly, MDP1 scales exponentially worse than MDP2 : with a horizon
+MDP1
+of 14, inference of MDP1 takes about 100 times as much time. The contrast is 104
+MDP2
+because each query in MDP1 has to solve a larger inference problem than its
+3
+counterpart in MDP2 does. In MDP1 , within a query of horizon ℎ, recursive 10
+call snd (this ( )) nextAction nextState happens ℎ times and thus sampling 102
+of query (fst (this ( )) nextState) happens ℎ − 1 times, meaning that the
+8 9 10 11 12 13 14
+enclosing query of the recursive calls has to exhaust all 𝛼 ℎ executions of a
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:24
+
+Yizhou Zhang and Nada Amin
+
+search tree of depth ℎ (where 𝛼 is the branching factor). By contrast, in MDP2 , every recursive call
+happens within a query nested inside its caller, so each query works on a search tree of depth 𝑂 (1).
+Hence, MDP2 optimizes MDP1 while preserving semantics.
+7.5
+
+Multi-Agent Sequential Decision Making
+
+105
+
+MAD1
+MAD2
+
+The encodings and equivalence in ğ7.4 can be generalized to sequential
+decision making involving multiple agents who recursively reason about 103
+one another. Stuhlmüller and Goodman [2014, ğ3.3] give a generic encoding.
+102
+This encoding, which we call MAD1 , is analogous to MDP1 . We construct a
+provably equivalent encoding, MAD2 , analogous to MDP2 . We instantiated
+5 6 7 8 9 10 11
+the encodings on a two-agent game: the agents roam in a grid world to collect prizes, but they
+are penalized if they get too close to each other. Notice that unlike the coordination game, neither
+MAD1 nor MAD2 is equivalent to a nested-query-free variant: agents reason recursively about each
+other, fully aware of the moves the other agent has made. The figure above plots running times: as
+the number of total rounds of play increases, MAD2 scales exponentially better than MAD1 .
+Our theory allows for formally relating probabilistic programs concerning usage of nested queries.
+The proven equivalences justify program optimizations that accelerate some inference algorithms
+by factorizing programs into recursively nested queries (ğ7.3) or by rearranging recursively nested
+queries (ğ7.4 and ğ7.5). Future research can explore ways to automate such optimizations.
+104
+
+8 RELATED WORK AND DISCUSSION
+Operational semantics. Defining measure semantics by integrating a sampling-based operational
+semantics is most thoroughly investigated by Borgström et al. [2016], Culpepper and Cobb [2017],
+Wand et al. [2018], and Szymczak and Katoen [2019]. Culpepper and Cobb study a typed lambda
+calculus without recursion, Borgström et al. and Wand et al. study untyped lambda calculi (thus
+with recursion), and Szymczak and Katoen study an imperative while-language. Thus, except for
+Culpepper and Cobb, all need to step-index a density function and take the limit of its integration.
+None is concerned with nested queries.
+These semantics represent the source of randomness differently. Culpepper and Cobb, Wand
+et al., and Szymczak and Katoen all use the entropy space S (Definition 4.1), where an entropy
+value can be infinitely split to generate samples. Borgström et al. use a measure space T of finite
+traces, i.e., sequences of sample values. Infinite traces are also possible [Park et al. 2008]. The stock
+measure over S is a probability measure, whereas that over T is 𝜎-finite. Wand et al. show that the
+choice of S or T does not constitute fundamental differences in assigning meaning to probabilistic
+programs: the measure spaces result in identical value measures.
+Borgström et al. [2016] and Staton et al. [2016] give distribution-based operational semantics,
+directly associating transitions with distributions rather than integrating over an entropy space.
+Staton et al. study a typed lambda calculus without recursion but with nested queries. The operational semantics assumes a function that produces normalization factors for nested queries, so in
+this sense the fixpoint knot remains to be tied.
+Logical relations and contextual equivalence. Bizjak and Birkedal [2015], Culpepper and Cobb
+[2017], and Wand et al. [2018] use logical relations to establish contextual equivalence for probabilistic programs. Bizjak and Birkedal consider only discrete probabilistic programs without conditioning,
+while Culpepper and Cobb and Wand et al. support continuous distributions and scoring. Bizjak
+and Birkedal and Wand et al. employ biorthogonality [Pitts and Stark 1998] and step indexing
+[Ahmed 2006] to define logical relations. Only the formal development of Culpepper and Cobb is
+mechanized, and we reuse their axiomatization of R+ and Lebesgue integration.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:25
+
+Indistinguishability. Bizjak and Birkedal take it to mean identical probabilities of termination in
+a PPL without conditioning. Wand et al. take it to mean identical unnormalized value measures, so
+their contextual equivalence may not distinguish terms having different normalized measures. For
+example, it would consider 𝑒 1 and 𝑒 2 below equivalent because 𝜇TV (𝐾 [𝑒 1 ], 𝑉 ) = 𝜇TV (𝐾 [𝑒 2 ], 𝑉 ) for
+all 𝐾 and 𝑉 , despite that 𝑒 2 diverges half the time while 𝑒 1 terminates certainly:
+def
+
+𝑒 1 = score c0.5 ; c1
+
+def
+
+𝑒 2 = let diverge = fix this. this ( ) in if sampleBern c0.5 then diverge ( ) else c1
+
+Our notion of indistinguishability is also more discriminative than a variant comparing normalized
+measures. This variant is useful to Olmedo et al. [2018], who establish (via a weakest preexpectation
+semantics) the correctness of a program transformation that compiles conditioning away, thus effectively declaring conditioning as syntactic sugar. We consider normalization to be triggered explicitly
+by the query construct and consider programs to otherwise denote unnormalized distributions.
+Nontermination. Giving semantics to PPLs in the presence of conditioning and nontermination
+is the subject of recent studies. Olmedo et al. [2018], Bichsel et al. [2018], and Szymczak and Katoen
+[2019] all advocate semantics that distinguish programsÐlike 𝑒 1 and 𝑒 2 aboveÐthat have different
+nontermination measures. Bichsel et al. additionally distinguish programmer mistakes (namely
+stuck executions) from failing a hard constraint (namely score c0 ); like Szymczak and Katoen, we
+lump them together for simplicity. Probabilistic programs with positive nontermination measure
+offer useful modeling power; Icard [2017] and Szymczak and Katoen give examples.
+A subtle equivalence our semantics allows is · ⊨ score c0 ≈ctx (fix this. score c0.5 ; this ( )) ( ) : 1.
+The RHS computation loops, with its step-indexed model evidence approaching zero (but never
+reaching zero). This equivalence is however sensitive to the treatment of zero-model-evidence
+queries: treating sample (query (score c0 )) as stuck, rather than denoting a point mass distribution
+at exn, would invalidate the result, as the context sample (query [·]) would distinguish the terms.
+Scoring and normalization. Staton et al. [2016] show that unbounded score can result in infinite
+model evidence, causing normalization factors to be ill-defined. Borgström et al. [2016] show that
+even statically bounded score can cause infinite model evidence in the presence of recursion. Bichsel
+et al. [2018] show that statically bounded score can even cause the limit of step-indexed model
+evidence to not exist when recursion is present. We compile a list of examples in the technical
+report [Zhang and Amin 2021].
+Borgström et al. and Szymczak and Katoen reconcile the tension between score and recursion by
+imposing the restriction that the argument of score should not exceed 1. Culpepper and Cobb remark
+that there is no syntactic restriction that can exclude programs having ill-defined model evidence
+without also limiting expressive power. They and Wand et al. need not impose restrictions because
+their semantics concern only unnormalized measures. We inherit the restriction of 1-bounded score
+to ensure that measure of nonterminating executions is well-defined, though showing this in the
+presence of nested queries is more difficult. Bounded scoring limits expressive power in general;
+they are only as expressive as hard constraints (cf. E5 in ğ7.1). We observe that in metareasoning
+applications, scoring in recursively nested queries tends to express goals and preferences of agents,
+rather than observed data in statistical modeling, which in general needs unbounded scoring. This
+observation seems to explain why examples in this paper are compatible with 1-bounded score.
+Denotational semantics. Denotational semantics of probabilistic programs has received significant development (e.g., Kozen [1979], Staton et al. [2016], Heunen et al. [2017]). Not many have
+considered nested queries, though. Notably, Staton et al. give a denotational semantics to a calculus
+with scoring and nested queries, but without recursion. They show an example of denotational
+equality that resembles sequential Monte Carlo [Liu and Chen 1998], which can be viewed as
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:26
+
+Yizhou Zhang and Nada Amin
+
+using nested queries to resample from normalized distributions. The theoretical development is
+not readily applicable to equivalences motivating our study, which require the expressive power of
+nesting queries recursively inside queries. Nonetheless, since the subprobability monad of Staton
+et al. has a CPO structure, it should be possible to adapt the approach to address recursion. Future
+research can study whether this denotational equality coincides with contextual equivalence.
+Approximate Inference. Operational semantics based on entropy or traces idealize the Monte
+Carlo inference method of likelihood weighting, by integrating over sample spaces and by infinitely
+tracing executions (i.e., taking limits). Relaxing integration to sums and bounding execution traces,
+our semantics corresponds to a simplistic implementation of nested Monte Carlo (NMC). NMC
+is known to incur computational costs exponential in levels of nesting [Rainforth 2018], as each
+sample of an outer random variable in general defines a different inference problem for the inner
+queryÐa consequence of integration happening inside operational reduction. Efficient, general
+approximate inference methods for recursively nested queries are still outstanding. Unless a program
+has strong independence structures (e.g., coordination games), asymptotically exact inference is
+likely intractable.
+Potpourri. Nested queries bear a resemblance to evaluation within evaluation, which is one form
+of computational reflection [Smith 1982]. In a historically damning paper on fexprs (a mechanism
+for total reification), Wand [1998] proves that too much reification can hinder all optimizations,
+admitting only łtrivialž equalities. By contrast, nested queries have a richer equational theory.
+Amortized exact inference (of the sort mentioned in ğ7.3) exists in varied forms [Stuhlmüller and
+Goodman 2012; Gershman and Goodman 2014; Holtzen et al. 2020]. They consist in exploiting conditional independence to factorize an overall inference problem into subproblems whose inference
+cost can be shared. As our example equivalences suggest, nested queries can be viewed as a language
+construct for compositionally delimiting Bayesian-inference subproblems within a larger program.
+The Church PPL [Goodman et al. 2008] was first to advertise nested queries. Many PPLs support
+them, including the logic PPL ProbLog [Mantadelis and Janssens 2011]. Ackerman et al. [2011],
+Freer et al. [2014], and Huang et al. [2020] study the computability theory of query. Tavares et al.
+[2019] and Tolpin et al. [2021] introduce random conditional distributions and stochastic conditioning,
+respectively, in similar ways generalizing nested queries.
+9 CONCLUSION
+Nested queries, coupled with recursion, are a powerful language feature found in many PPLs. We
+have developed an operational-semantics-based foundation for them. The development consists of a
+recursive operational and measure semantics, capturing the semantic essence of nested queries, and
+a logical-relations model and its metatheories, granting powerful equational reasoning principles.
+Key, machine-checked results include well-definedness of limit measures and soundness of the
+logical-relations model. We demonstrate the results’ usefulness by applying them in reasoning
+about Bayesian models of intelligent agents, formally proving practically relevant equivalences
+that were not suggested and could not be proved before.
+ACKNOWLEDGMENTS
+We thank the anonymous reviewers for their valuable feedback. We thank Elena Glassman, Jianlin
+Li, Andrew Myers, François-René Rideau, Armando Solar-Lezama, and Zekun Wang for discussions
+and help. This work was partially supported by NSERC. The views and opinions expressed are
+those of the authors and do not necessarily reflect the position of any government agency.
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+Reasoning about łReasoning about Reasoningž
+
+16:27
+
+REFERENCES
+Nathanael L. Ackerman, Cameron E. Freer, and Daniel M. Roy. 2011. Noncomputable Conditional Distributions. In Symp. on
+Logic In Computer Science (LICS). https://doi.org/10.1109/LICS.2011.49
+Amal Ahmed. 2006. Step-Indexed Syntactic Logical Relations for Recursive and Quantified Types. In European Symp. on
+Programming (ESOP). https://doi.org/10.1007/11693024_6
+Andrew W. Appel and David McAllester. 2001. An Indexed Model of Recursive Types for Foundational Proof-Carrying Code.
+ACM Tran. on Programming Languages and Systems (TOPLAS) 23, 5 (Sept. 2001). https://doi.org/10.1145/504709.504712
+Richard E. Bellman. 1957. Dynamic Programming. Princeton University Press.
+Benjamin Bichsel, Timon Gehr, and Martin Vechev. 2018. Fine-Grained Semantics for Probabilistic Programs. In European
+Symp. on Programming (ESOP). https://doi.org/10.1007/978-3-319-89884-1_6
+Aleš Bizjak and Lars Birkedal. 2015. Step-Indexed Logical Relations for Probability. In Int’l Conf. on Foundations of Software
+Science and Computation Structures (FoSSaCS). https://doi.org/10.1007/978-3-662-46678-0_18
+Johannes Borgström, Ugo Dal Lago, Andrew D. Gordon, and Marcin Szymczak. 2016. A Lambda-Calculus Foundation for
+Universal Probabilistic Programming. In ACM SIGPLAN Conf. on Functional Programming (ICFP). https://doi.org/10.
+1145/2951913.2951942
+Coq [n.d.]. The Coq proof assistant. https://coq.inria.fr.
+Ryan Culpepper and Andrew Cobb. 2017. Contextual Equivalence for Probabilistic Programs with Continuous Random
+Variables and Scoring. In European Symp. on Programming (ESOP). https://doi.org/10.1007/978-3-662-54434-1_14
+Owain Evans, Andreas Stuhlmüller, John Salvatier, and Daniel Filan. 2017. Modeling Agents with Probabilistic Programs.
+https://agentmodels.org.
+Matthias Felleisen and Robert Hieb. 1992. The Revised Report on the Syntactic Theories of Sequential Control and State.
+Theoretical Computer Science 103, 2 (1992). https://doi.org/10.1016/0304-3975(92)90014-7
+Cameron E. Freer, Daniel M. Roy, and Joshua B. Tenenbaum. 2014. Towards Common Sense Reasoning via Conditional
+Simulation: Legacies of Turing in Artificial Intelligence. Turing’s Legacy 42 (2014). arXiv:1212.4799
+Samuel J. Gershman and Noah D. Goodman. 2014. Amortized Inference in Probabilistic Reasoning. In Annual Meeting of the
+Cognitive Science Society (CogSci). https://cogsci.mindmodeling.org/2014/papers/098/paper098.pdf
+Noah D. Goodman, Vikash K. Mansinghka, Daniel Roy, Keith Bonawitz, and Joshua B. Tenenbaum. 2008. Church: A
+Language for Generative Models. In Uncertainty in Artificial Intelligence (UAI). arXiv:1206.3255
+Noah D Goodman and Andreas Stuhlmüller. 2014. The Design and Implementation of Probabilistic Programming Languages.
+http://dippl.org
+Chris Heunen, Ohad Kammar, Sam Staton, and Hongseok Yang. 2017. A Convenient Category for Higher-Order Probability
+Theory. In Symp. on Logic In Computer Science (LICS). https://doi.org/10.1109/LICS.2017.8005137
+Steven Holtzen, Todd Millstein, and Guy Van den Broeck. 2019. Symbolic Exact Inference for Discrete Probabilistic Programs.
+(2019). arXiv:1904.02079
+Steven Holtzen, Guy Van den Broeck, and Todd Millstein. 2020. Scaling Exact Inference for Discrete Probabilistic Programs.
+Proc. of the ACM on Programming Languages (PACMPL) 4, OOPSLA (2020). https://doi.org/10.1145/3428208
+Ronald A. Howard. 1960. Dynamic Programming and Markov Processes. The MIT Press.
+Daniel Huang, Greg Morrisett, and Bas Spitters. 2020. An Application of Computable Distributions to the Semantics of
+Probabilistic Programs. Cambridge University Press. https://doi.org/10.1017/9781108770750.004
+Thomas Icard. 2017. Beyond Almost-Sure Termination. In Annual Meeting of the Cognitive Science Society (CogSci). https:
+//cogsci.mindmodeling.org/2017/papers/0430/paper0430.pdf
+Dexter Kozen. 1979. Semantics of Probabilistic Programs. In Annual Symposium on Foundations of Computer Science (SFCS).
+https://doi.org/10.1109/SFCS.1979.38
+Jun S. Liu and Rong Chen. 1998. Sequential Monte Carlo Methods for Dynamic Systems. Journal of the American Statistical
+Association 93, 443 (1998). https://doi.org/10.1080/01621459.1998.10473765
+Theofrastos Mantadelis and Gerda Janssens. 2011. Nesting Probabilistic Inference. (2011). arXiv:1112.3785
+Ian Mason and Carolyn Talcott. 1991. Equivalence in Functional Languages with Effects. Journal of Functional Programming
+(JFP) 1, 3 (1991). https://doi.org/10.1017/S0956796800000125
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+
+16:28
+
+Yizhou Zhang and Nada Amin
+
+Micaela Mayero. 2001. Formalisation et automatisation de preuves en analyses réelle et numérique. Ph.D. Dissertation.
+Université Paris VI.
+James H. Morris, Jr. 1968. Lambda-Calculus Models of Programming Languages. Ph.D. Dissertation. Massachusetts Institute
+of Technology. http://hdl.handle.net/1721.1/64850
+Federico Olmedo, Friedrich Gretz, Nils Jansen, Benjamin Lucien Kaminski, Joost-Pieter Katoen, and Annabelle McIver. 2018.
+Conditioning in Probabilistic Programming. ACM Tran. on Programming Languages and Systems (TOPLAS) 40, 1 (2018).
+https://doi.org/10.1145/3156018
+Sungwoo Park, Frank Pfenning, and Sebastian Thrun. 2008. A Probabilistic Language Based on Sampling Functions. ACM
+Tran. on Programming Languages and Systems (TOPLAS) 31, 1 (Dec. 2008). https://doi.org/10.1145/1452044.1452048
+Andrew Pitts and Ian Stark. 1998. Operational Reasoning for Functions with Local State. In Higher Order Operational
+Techniques in Semantics. https://homepages.inf.ed.ac.uk/stark/operfl.pdf
+Tom Rainforth. 2018. Nesting Probabilistic Programs. In Uncertainty in Artificial Intelligence (UAI). arXiv:1803.06328
+Thomas C. Schelling. 1980. The Strategy of Conflict. Harvard University Press.
+Iris Rubi Seaman, Jan-Willem van de Meent, and David Wingate. 2020. Nested Reasoning About Autonomous Agents Using
+Probabilistic Programs. (2020). arXiv:1812.01569
+Brian Cantwell Smith. 1982. Procedural Reflection in Programming Languages. Ph.D. Dissertation. Massachusetts Institute of
+Technology.
+Rick Statman. 1985. Logical Relations and the Typed 𝜆-calculus. Information and Control 65, 2 (1985). https://doi.org/10.
+1016/S0019-9958(85)80001-2
+Sam Staton. 2017. Commutative Semantics for Probabilistic Programming. In European Symp. on Programming (ESOP).
+https://doi.org/10.1007/978-3-662-54434-1_32
+Sam Staton, Frank Wood, Hongseok Yang, Chris Heunen, and Ohad Kammar. 2016. Semantics for Probabilistic Programming:
+Higher-Order Functions, Continuous Distributions, and Soft Constraints. In Symp. on Logic In Computer Science (LICS).
+https://doi.org/10.1145/2933575.2935313
+Elias M. Stein and Rami Shakarchi. 2005. Real Analysis: Measure Theory, Integration, and Hilbert Spaces. Princeton University
+Press. https://doi.org/10.2307/j.ctvd58v18
+Andreas Stuhlmüller and Noah D. Goodman. 2012. A Dynamic Programming Algorithm for Inference in Recursive
+Probabilistic Programs. (2012). arXiv:1206.3555
+Andreas Stuhlmüller and Noah D. Goodman. 2014. Reasoning about Reasoning by Nested Conditioning: Modeling Theory
+of Mind with Probabilistic Programs. Cognitive Systems Research 28 (2014). https://doi.org/10.1016/j.cogsys.2013.07.003
+Richard S. Sutton and Andrew G. Barto. 2018. Reinforcement Learning: An Introduction. MIT press.
+Marcin Szymczak and Joost-Pieter Katoen. 2019. Weakest Preexpectation Semantics for Bayesian Inference. In Int’l School
+on Engineering Trustworthy Software Systems (SETSS). https://doi.org/10.1007/978-3-030-55089-9_3
+Terence Tao. 2011. An Introduction to Measure Theory. American Mathematical Society. https://doi.org/10.1090/gsm/126
+Zenna Tavares, Xin Zhang, Edgar Minaysan, Javier Burroni, Rajesh Ranganath, and Armando Solar-Lezama. 2019. The
+Random Conditional Distribution for Higher-Order Probabilistic Inference. (2019). arXiv:1903.10556
+David Tolpin, Yuan Zhou, and Hongseok Yang. 2021. Probabilistic Programs with Stochastic Conditioning. (2021).
+arXiv:2010.00282
+Mitchell Wand. 1998. The Theory of Fexprs is Trivial. Lisp and Symbolic Computation 10, 3 (1998). https://doi.org/10.1023/A:
+1007720632734
+Mitchell Wand, Ryan Culpepper, Theophilos Giannakopoulos, and Andrew Cobb. 2018. Contextual Equivalence for a
+Probabilistic Language with Continuous Random Variables and Recursion. Proc. of the ACM on Programming Languages
+(PACMPL) 2, ICFP (2018). https://doi.org/10.1145/3236782
+Yizhou Zhang and Nada Amin. 2021. Semantics and Contextual Equivalence for Probabilistic Programs with Nested Queries
+and Recursion. Technical Report CS-2021-02. School of Computer Science, University of Waterloo. https://uwaterloo.ca/
+computer-science/sites/ca.computer-science/files/uploads/files/cs-2021-02.pdf
+
+Proc. ACM Program. Lang., Vol. 6, No. POPL, Article 16. Publication date: January 2022.
+

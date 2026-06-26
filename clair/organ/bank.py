@@ -84,6 +84,7 @@ class ExactDedP(Reduction):
     (backtracking with witness early-stop)."""
     name = "exact_dedP"
     domain = "finite CSP (exact per-cell transformer / verifier)"
+    verifier_only = True             # the ORACLE: used to GATE/verify, never a deployed runtime reduction
 
     def applies(self, state):
         return isinstance(state, CSPState)
@@ -334,6 +335,9 @@ class _NeuralOrgan(Reduction):
             feat = _featurize_budget([(state.csp, vm_dom)], self._dev, N, D, M, A)
             vm = feat["var_mask"].clone()
             for _ in range(self._R_max):
+                # #3: recompute `given` each pass from the CURRENT lattice so inference matches the
+                # re-featurized training distribution (newly-singleton cells are marked given).
+                feat["given"] = (vm.sum(-1) == 1).float() * feat["var_valid"]
                 b, cls, _ = organ(vm, feat["given"], feat["fac_rel"], feat["fac_arity"],
                                   feat["edge_var"], feat["edge_valid"], feat["var_valid"],
                                   feat["fac_valid"])
@@ -418,6 +422,8 @@ def build_bank(load_neural: bool = True, dev: str = "cpu",
 
 
 def certified_csp_reductions(bank: dict) -> list:
-    """The sound-by-construction CSP-domain reductions (the reduced-product portfolio)."""
+    """The DEPLOYABLE sound-by-construction CSP-domain reductions (the reduced-product portfolio).
+    EXCLUDES verifier-only oracles (ExactDedP): the exact dedP is the GATE/verifier the composer
+    trusts to certify the others, not a runtime reduction we ship — deployment must not call it."""
     return [r for r in bank.values()
-            if r.state_type == "csp-domain" and r.certificate().sound]
+            if r.state_type == "csp-domain" and r.certificate().sound and not r.verifier_only]

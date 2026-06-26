@@ -1,0 +1,4131 @@
+Compiling to recurrent neurons
+
+arXiv:2511.14953v1 [cs.PL] 18 Nov 2025
+
+JOEY VELEZ-GINORIO, University of Pennsylvania, USA
+NADA AMIN, Harvard University, USA
+KONRAD PAUL KORDING, University of Pennsylvania, USA
+STEVE ZDANCEWIC, University of Pennsylvania, USA
+Discrete structures are currently second-class in differentiable programming. Since functions over discrete
+structures lack overt derivatives, differentiable programs do not differentiate through them and limit where
+they can be used. For example, when programming a neural network, conditionals and iteration cannot be
+used everywhere; they can break the derivatives necessary for gradient-based learning to work. This limits
+the class of differentiable algorithms we can directly express, imposing restraints on how we build neural
+networks and differentiable programs more generally. However, these restraints are not fundamental. Recent
+work shows conditionals can be first-class, by compiling them into differentiable form as linear neurons.
+Similarly, this work shows iteration can be first-class—by compiling to linear recurrent neurons. We present
+a minimal typed, higher-order and linear programming language with iteration called Cajal (⊸, 2, N ) . We
+prove its programs compile correctly to recurrent neurons, allowing discrete algorithms to be expressed in
+a differentiable form compatible with gradient-based learning. With our implementation, we conduct two
+experiments where we link these recurrent neurons against a neural network solving an iterative image
+transformation task. This determines part of its function prior to learning. As a result, the network learns
+faster and with greater data-efficiency relative to a neural network programmed without first-class iteration.
+A key lesson is that recurrent neurons enable a rich interplay between learning and the discrete structures of
+ordinary programming.
+
+1
+
+INTRODUCTION
+
+Functions over discrete structures lack overt derivatives. Nevertheless, they could be differentiated if compiled to differentiable form, enabling discrete structure to appear anywhere
+in a differentiable program. But it is not yet clear how to
+build these compilers. For conditionals, recent work shows
+it is possible by compiling programs to linear neurons1 [20].
+For iteration over natural numbers, we build on those efforts
+to show it is also possible—by compiling programs to linear
+recurrent neurons.2 This allows us to directly express differentiable algorithms with discrete iterative structure. For
+example, consider the following image transformation in Fig.
+1.
+⊲ If 𝑥 is the digit 0, return 𝑥
+
+f(
+
+)
+
+f(
+
+)
+
+f(
+
+)
+
+f(
+
+)
+
+Fig. 1. Iterative image transform
+
+⊲ If 𝑥 is the digit 𝑛, apply vertical blur 𝑛 times to 𝑥
+Recognizing whether a digit is 0 or some 𝑛 is a classic differentiable algorithm that a neural
+network can learn [14]. However, applying vertical blur 𝑛 times is not overtly differentiable with
+1 Linear neurons are essentially linear maps.
+2 Linear recurrent neurons are essentially linear dynamical systems.
+
+Authors’ addresses: Joey Velez-Ginorio, joeyv@seas.upenn.edu, University of Pennsylvania, USA; Nada Amin, namin@seas.
+harvard.edu, Harvard University, USA; Konrad Paul Kording, kording@upenn.edu, University of Pennsylvania, USA; Steve
+Zdancewic, stevez@seas.upenn.edu, University of Pennsylvania, USA.
+
+2
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+vblur
+
+f :: Real(28,28) -> Real(28,28)
+f image = case (digit image) of
+(Zero)
+-> x
+(Succ n) with y -> vblur y
+where digit x = _
+vblur x = _
+
+(a) Programming an iterative image transform
+
+digit
+(b) Compiling iteration into differentiable form
+
+Fig. 2. Programming and compiling an iterative image transform
+
+respect to the natural number 𝑛. Therefore it seems a neural network could not be programmed
+with this algorithm, as the derivatives necessary for gradient-based learning would be absent for 𝑛.
+But it is possible. With Cajal (⊸, 2, N ) , a neural network can be programmed, as in Fig. 2a, to learn
+the iterative transformation. The program pattern matches on the output of (digit image), a neural
+network which checks whether image is the digit 0 or some 𝑛. If it is 0, the program returns the
+original image. Otherwise, it will use vblur to apply vertical blur 𝑛 times to image. Both digit and
+vblur are left undefined; a neural network will learn them. Though for this to work, Cajal (⊸, 2, N )
+must compile iteration into differentiable form.
+Prior work identifies linear programming languages as promising source languages for such
+compilers [20]. Their semantic connection to linear algebra opens a route towards differentiating
+discrete structure, by compiling linear programs to linear maps between R-vector spaces. However,
+while the case of conditionals is clear, the differentiable status of iteration is more subtle. In
+prior work, the compiled linear maps were between finite-dimensional R-vector spaces, which
+are unambiguously differentiable [18]. For iteration, the compiled linear maps can be between
+infinite-dimensional R-vector spaces—and without additional assumption, these linear maps may
+not be differentiable [13].
+Fortunately, an assumption is common when programming recurrent neurons: you differentiate
+with respect to a finite-dimensional subspace. For example, we show that the program in Fig. 2a
+compiles to the recurrent neural network in Fig. 2b, which can be implemented as a differentiable
+program (Section 5). The critical observation is that the recurrence if observed finitely, renders a
+linear recurrent neuron equivalent to a linear map between finite-dimensional R-vector spaces.
+With Cajal (⊸, 2, N ) , our aim is to present these essential issues in plain terms, using a minimal
+calculus whose formal specification and metatheory are tractable and pleasing to explore. We are
+interested in an empirical and mathematical method for giving discrete structure first-class status
+in differentiable programming. Specifically, our contributions are:
+⊲ We specify the syntax, evaluation, and typing of Cajal (⊸, 2, N ) programs (Section 4.1).
+⊲ We prove that Cajal (⊸, 2, N ) programs compile correctly to recurrent neurons (Section 4.2).
+⊲ We implement Cajal (⊸, 2, N ) , programming a neural network to solve the iterative transform
+task (Fig. 1) and a conditional variant using first-class conditionals and iteration (Section 5).
+These findings suggest that more complex forms of recurrence in neural networks could implement richer forms of differentiable primitive recursion—over lists, trees, and arbitrary algebraic
+data (Section 7).
+
+Compiling to recurrent neurons
+
+2
+
+3
+
+LINEAR RECURRENT NEURONS
+
+Linear recurrent neurons are discrete-time linear dynamical systems [2]. They transform vectors
+using linear maps, but are additionally parameterized by time. For example, consider the following
+system whose input is a timestep 𝑛 ∈ N, and whose output is a vector 𝑣 ∈ R2 .
+ 
+
+
+
+1
+0 2 
+𝑓 (0) =
+𝑓 (𝑛 + 1) =
+𝑓 (𝑛)
+0
+3 0
+We can imagine this system evolving over time by enumerating in sequence its state at each 𝑛.
+!
+       
+1 0 6
+0
+,
+,
+,
+,···
+0 3 0 18
+It is a linear system because each transition is determined by a matrix multiplication; the next
+state is a linear combination of its previous state. And it is a discrete-time system because time is
+parameterized by the natural numbers.
+Equivalently, we may view the system as a linear recurrent neural network with two recurrent neurons, shown in Fig. 3a. The input is the initial state determined by 𝑓 (0). The recurrent
+connections between the two neurons ℎ 0 and ℎ 1 are determined by the coefficients of the matrix
+in 𝑓 (𝑛 + 1). Its output at any timestep 𝑛 is given by 𝑦 = 𝑓 (𝑛). Importantly, when unfolding the
+dynamics up to a particular timestep 𝑛, as in Fig. 3b, recurrent neurons become equivalent to an
+ordinary linear neural network. They are linear and differentiable maps in the initial state 𝑓 (0).
+0
+1
+
+ℎ0
+3
+
+0
+
+𝑦0
+
+1
+
+1
+3
+2
+
+2
+ℎ1
+
+0
+
+𝑦1
+
+0
+
+0
+
+6
+
+6
+
+0
+
+0
+
+3
+2
+3
+
+0
+(a) Linear recurrent neurons
+
+(b) Unfolding linear recurrent neurons for 𝑛 = 2
+
+Fig. 3. Linear recurrent neurons and their dynamics
+
+However, observe that 𝑓 is not overtly differentiable in 𝑛. The derivative should describe how
+small changes to 𝑛 impact the behavior of 𝑓 . But natural numbers, as in other discrete structure,
+lack an adequate notion of small changes. As a result, there is no overt derivative with respect to 𝑛.
+Yet there is recourse. Consider the following function 𝑔 whose input is an infinite sequence of real
+numbers 𝑥𝑖 with finite support, and whose output is a vector 𝑣 ∈ R2 .
+
+𝑛  
+∑︁
+0 2  1 
+𝑔(𝑥) =
+𝑥𝑛 ·
+3 0
+0
+𝑛∈ N
+
+First, observe that 𝑔 is linear in 𝑥.
+
+4
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+
+
+
+
+
+
+
+
+3 · 𝑔( 1 2 0 · · · ) + 4 · 𝑔( 0 3 0 · · · ) = 𝑔(3 · 1 2 0 · · · + 4 · 0 3 0 · · · )
+Next, if we restrict 𝑥 to be a finite3 sequence, then 𝑔 is also differentiable in 𝑥. For example, consider
+the restriction of 𝑔 to sequences of length 3.
+
+
+
+0
+𝑔 |3 ( 7 8 9 ) = 7 ·
+3
+
+0  
+
+2  1 
+0
++8·
+0
+0
+3
+
+1  
+
+2  1 
+0
++9·
+0
+0
+3
+
+2  
+ 
+2  1 
+61
+=
+0
+0
+24
+
+From 𝑔 we obtain a linear map 𝑔 |3 : R3 → R2 . The meaning of a small change to its input is standard.
+From the above example, you can imagine how these changes would impact its behavior. But the
+most remarkable property of 𝑔 |3 is that, with appropriate choice of 𝑥, it exactly implements the
+system 𝑓 up to its first three states as a linear and differentiable map.
+
+
+
+0
+𝑔 |3 ( 1 0 0 ) = 1 ·
+3
+
+
+
+0
+𝑔 |3 ( 0 1 0 ) = 0 ·
+3
+
+
+
+0
+𝑔 |3 ( 0 0 1 ) = 0 ·
+3
+
+0  
+
+2  1 
+0
++0·
+0
+0
+3
+0  
+
+2
+1
+0
++1·
+0
+0
+3
+0  
+
+2
+1
+0
++0·
+0
+0
+3
+
+1  
+
+2  
+ 
+2  1 
+0 2  1 
+1
++0·
+=
+= 𝑓 (0)
+0
+0
+3 0
+0
+0
+1  
+
+2  
+ 
+2  1 
+0 2  1 
+0
++0·
+=
+= 𝑓 (1)
+0
+0
+3 0
+0
+3
+1  
+
+2  
+ 
+2  1 
+0 2  1 
+6
++1·
+=
+= 𝑓 (2)
+0
+0
+3 0
+0
+0
+
+This is the essential theory underlying how we compile iteration in Cajal (⊸, 2, N ) . In fact, 𝑔 |3
+implements (modulo rescaling) the logical operator not iterated over true (Section 4).
+3
+
+LINEAR PROGRAMS
+
+Cajal (⊸, 2, N ) is a linearly typed programming language. Linear types restrict how variables are
+used in a program [21]. They carefully permit the duplication of variables and forbid the discarding
+of variables. Curiously, these restrictions are the basis for their connection to linear algebra [16]. It
+is what links linear programs and linear maps.
+tru :: Bool -> Bool
+tru x = if x then True else x
+
+tru :: Bool -> Bool
+tru x = if x then True else True
+
+(a) Programming nonlinearly
+
+(b) Programming linearly
+
+Fig. 4. Programming with and without duplicating/discarding x
+
+Consider the linear and nonlinear version of tru in Fig. 4. Both implement a constant function
+which always return true. However, observe that the nonlinear version in Fig. 4a duplicates x in the
+else branch of the conditional. If applied to an argument, tru uses x when checking the condition
+and to return a value in the else branch. But the linear version in Fig. 4b only uses x once when
+checking the condition. Additionally, observe that the nonlinear version in Fig. 4a does not use
+x, which is in scope, when returning true in the if branch. But the linear version in Fig. 4b uses
+everything in scope, as x is not in scope in either branch.
+3 The finiteness assumption is necessary for the notion of differentiation to be canonical.
+
+Compiling to recurrent neurons
+
+✗
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+5
+
+𝑥 : 2 ⊢ tt : 2
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+𝑥 : 2 ⊢ if 𝑥 then tt else 𝑥 : 2
+
+✓
+
+∅ ⊢ 𝜆𝑥 .if 𝑥 then tt else 𝑥 : 2 → 2
+
+𝑥 :2 ⊢ 𝑥 : 2
+
+∅ ⊢ tt : 2
+
+∅ ⊢ tt : 2
+
+𝑥 : 2 ⊢ if 𝑥 then tt else tt : 2
+∅ ⊢ 𝜆𝑥 .if 𝑥 then tt else tt : 2 ⊸ 2
+
+(a) Typing nonlinearly
+
+(b) Typing linearly
+
+Fig. 5. Typing with and without duplicating/discarding x
+
+Typing can detect these distinctions. The nonlinear typing in Fig. 5a duplicates 𝑥 : 2 when typing
+the conditional; it duplicates its context across each subprogram. But the linear typing in Fig. 5b
+does not duplicate 𝑥 : 2 when typing the conditional. Its context is split across each subprogram.
+Additionally, the nonlinear typing in Fig. 5a discards the variable 𝑥 : 2 when typing tt in the then
+branch of the conditional. However, by splitting the context, the linear typing in Fig. 5b does not
+discard anything.
+Generally, linear typing must ensure the structural rules of contraction and weakening are not
+permissible [21]. Their impermissibility establish an important link between linear programs and
+linear maps, a connection we can use to differentiate through discrete structure.
+4
+
+CAJAL (⊸, 2, N)
+
+̸⇓
+ff
+
+iter{tt | 𝑥 ↩→ not 𝑥 }(2)
+
+⇓
+tt
+
+⟦−⟧
+
+⟦−⟧
+
+≠
+
+0
+ 
+0
+∑︁   0
+1 ·
+1
+ 
+𝑛∈ N 0
+ .. 
+.
+ 𝑛
+
+1
+0
+
+⟦−⟧
+
+𝑛    
+1
+0
+
+ 
+0
+1
+
+=
+ 
+1
+0
+
+Fig. 6. Correctly compiling to recurrent neurons
+
+To enable first-class iteration in differentiable programming, a correct compiler should establish a correspondence between evaluation ⇓ of Cajal (⊸, 2, N ) programs and equations underlying
+the dynamics of linear recurrent neurons. Fig. 6 details this notion of correctness, equivalent to
+establishing the soundness and adequacy of a denotational semantics [22]. Establishing this correspondence is the central focus of this section. It sets the stage for differentiable programming
+
+6
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+with first-class iteration, where we program neural networks with discrete iterative structure in a
+differentiable way (Section 5).
+4.1
+
+Defining
+
+Syntax
+𝑒 ∈ Expression
+𝑒 B
+
+𝑥 ∈ Var
+| tt
+| ff
+|0
+| succ(𝑒)
+| iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )
+| 𝜆𝑥 .𝑒
+| 𝑒 1𝑒 2
+
+variable
+true
+false
+zero
+successor
+iterator
+linear map
+linear application
+
+𝜏 ∈ Type
+𝜏 B 2
+|N
+| 𝜏1 ⊸ 𝜏2
+
+boolean
+natural number
+linear map
+
+𝑣 ∈ Value
+𝑣 B tt
+| ff
+|0
+| succ(𝑣)
+| 𝜆𝑥 .𝑒
+
+true
+false
+zero
+successor
+linear map
+
+Δ ∈ Context
+Δ B ∅
+| Δ, 𝑥 :𝜏
+
+empty
+binder
+
+Fig. 7. Syntax of Cajal (⊸, 2, N )
+
+4.1.1 Syntax. Cajal (⊸, 2, N ) is a minimal typed, higher-order and linear programming language.
+Fig. 7 details its syntax, similar to Gödel’s System T of higher-order primitive recursion [8]. The
+main differences are the use of iterators (rather than recursors) for natural numbers and inclusion
+of a boolean type. These distinctions are inessential to the underlying theory, but simplify the
+presentation of certain ideas. When convenient, instead of explicit successors, we use an ordinary
+syntax for natural numbers. For example, using 2 instead of succ(succ(0)).
+4.1.2 Evaluating. Cajal (⊸, 2, N ) expressions evaluate according to the big-step evaluation relation
+in Fig. 8; it specifies a call-by-value interpreter for the language. The notation {𝑥 ↦→ 𝑣 }(𝑒) describes
+a capture-avoiding substitution, where 𝑥 is replaced by 𝑣 in the expression 𝑒. In general, evaluation
+is similar to a simply-typed lambda calculus, with iteration as an exception. To clarify, consider the
+following iterator which doubles 1 to 2.
+0⇓0
+0⇓0
+
+0⇓0
+
+iter{0 | 𝑦 ↩→ succ(succ(𝑦))}(0) ⇓ 0
+
+succ(0) ⇓ succ(0)
+
+0⇓0
+
+{𝑦 ↦→ 0}(succ(succ(𝑦))) ⇓ succ(succ(0))
+
+succ(0) ⇓ succ(0)
+
+iter{0 | 𝑦 ↩→ succ(succ(𝑦))}(succ(0)) ⇓ succ(succ(0))
+
+The iterator dispatches on the value of 𝑒 3 . If it is 0, it returns the value of the base case 𝑒 1 .
+Otherwise, if it is 𝑛 then the recurrence (𝑦 ↩→ 𝑒 2 ) will apply 𝑛 times over the base case.
+
+Compiling to recurrent neurons
+
+7
+
+Evaluating
+𝑒 ⇓ 𝑣 ⇐⇒ expression 𝑒 evaluates to 𝑣
+𝑒 ⇓𝑣
+𝑣 ⇓𝑣
+
+𝑒 1 ⇓ 𝜆𝑥 .𝑒
+
+𝑒 1 ⇓ tt
+
+𝑒2 ⇓ 𝑣 2
+
+𝑒 1 ⇓ ff
+
+𝑒3 ⇓ 𝑣 3
+
+if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 3
+
+iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑣 3 ) ⇓ 𝑣 n
+
+𝑒3 ⇓ 0
+
+{𝑥 ↦→ 𝑣 2 }(𝑒) ⇓ 𝑣
+
+𝑒 1𝑒 2 ⇓ 𝑣
+
+if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 2
+𝑒1 ⇓ 𝑣 1
+
+𝑒2 ⇓ 𝑣 2
+
+succ(𝑒) ⇓ succ(𝑣)
+
+iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) ⇓ 𝑣 1
+
+{𝑦 ↦→ 𝑣 n }(𝑒 2 ) ⇓ 𝑣
+
+𝑒 3 ⇓ succ(𝑣 3 )
+
+iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) ⇓ 𝑣
+
+Fig. 8. Evaluating Cajal (⊸, 2, N ) programs
+
+Typing
+Δ ⊢ 𝑒 : 𝜏 ⇐⇒ program 𝑒 has type 𝜏
+
+𝑥 :𝜏 ⊢ 𝑥 : 𝜏
+
+∅ ⊢ tt : 2
+
+∅ ⊢ ff : 2
+
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2
+Δ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2
+Δ1 ⊢ 𝑒 1 : 2 Δ2 ⊢ 𝑒 2 : 𝜏 Δ2 ⊢ 𝑒 3 : 𝜏
+Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+
+∅⊢0:N
+
+Δ⊢𝑒 :N
+Δ ⊢ succ(𝑒) : N
+
+Δ1 ⊢ 𝑒 1 : 𝜏 1 ⊸ 𝜏 2 Δ2 ⊢ 𝑒 2 : 𝜏 1
+Δ1 ◦ Δ2 ⊢ 𝑒 1 𝑒 2 : 𝜏 2
+Δ1 ⊢ 𝑒 1 : 𝜏
+
+Δ2, 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏
+
+Δ3 ⊢ 𝑒 3 : N
+
+Δ1 ◦ Δ2 ◦ Δ3 ⊢ iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏
+
+Fig. 9. Typing Cajal (⊸, 2, N ) programs
+
+4.1.3 Typing. Cajal (⊸, 2, N ) is linearly typed. The presence of context splitting in typing application,
+conditionals, and iteration ensures that the structural rule contraction is not permissible. This relation
+relates two contexts if their variable names are disjoint. For example, (𝑥 : 2, 𝑦 : 2) ◦ (𝑧 : 2) inhabits
+the relation, but (𝑥 : 2, 𝑦 : 2) ◦ (𝑦 : 2) does not (Appendix A.1). Separately, the demand of singleton
+or empty contexts in typing variables or constants ensures that the structural rule weakening is not
+permissible.
+There is now a key property we must prove about typing—well typed programs must have
+behavior. Otherwise, we cannot establish a correspondence with equations underlying the dynamics
+of recurrent neurons. Later, it helps us prove our analog of adequacy for a denotational semantics.
+Theorem 1: (Programs evaluate to values)
+If ∅ ⊢ 𝑒 : 𝜏 , then ∃𝑣, 𝑒 ⇓ 𝑣
+
+8
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Proof sketch. The argument is similar to logical relations proofs of termination for typed lambda
+calculi. Appendix B.1 contains a detailed proof. In short, the argument shows that Cajal (⊸, 2, N )
+programs inhabit the logical relation shown in Fig. 10, and that programs in this logical relation
+terminate.
+
+Logical Relation
+n
+o
+R V ⟦_⟧ : Type → Value
+
+n
+o
+R⟦_⟧ : Context → Environment
+
+o
+tt, ff
+n
+o n
+o
+R V ⟦N⟧ = 0 ∪ succ(𝑣) | 𝑣 ∈ R V ⟦N⟧
+n
+o
+R V ⟦𝜏1 ⊸ 𝜏2 ⟧ = 𝜆𝑥 .𝑒 | ∀𝑣 ∈ R V ⟦𝜏1 ⟧, (𝜆𝑥 .𝑒)𝑣 ∈ R E ⟦𝜏2 ⟧
+R V ⟦2⟧ =
+
+n
+
+n o
+R⟦∅⟧ = ∅
+n
+o
+R⟦Δ, 𝑥 :𝜏⟧ = 𝜎 {𝑥 ↦→ 𝑣 } | 𝜎 ∈ R⟦Δ⟧, 𝑣 ∈ R V ⟦𝜏⟧
+
+n
+o
+R E ⟦_⟧ : Type → Expression
+
+R E ⟦𝜏⟧ = 𝑒
+
+𝑒 ⇓ 𝑣,
+𝑣 ∈ R V ⟦𝜏⟧
+
+Logical Typing
+Δ ⊨ 𝑒 : 𝜏 ⇐⇒ ∀𝜎 ∈ R⟦Δ⟧, 𝜎 (𝑒) ∈ R E ⟦𝜏⟧
+
+
+
+Fig. 10. Logical Relation for Cajal (⊸, 2, N )
+
+At each type, the logical relation R E ⟦𝜏⟧ returns a set of terminating Cajal (⊸, 2, N ) expressions.
+It includes expressions which are not syntactically well-typed. For example, (if tt then tt else 0) ∈
+R E ⟦2⟧. We say these expression are logically well-typed, ∅ ⊨ if tt then tt else 0 : 2. To show
+termination for Cajal (⊸, 2, N ) , we first prove by induction on typing derivations that syntactically
+well-typed programs can be logically typed.
+Lemma 1: (Programs can be logically typed)
+If Δ ⊢ 𝑒 : 𝜏 , then Δ ⊨ 𝑒 : 𝜏
+The bulk of the effort is proving that programs can be logically typed. Afterwards, it is immediate
+from the definition of the logical relation that logically typed programs terminate.
+Lemma 2: (Logically typed programs evaluate to values)
+If Δ ⊨ 𝑒 : 𝜏 , then ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+From these lemmas, it follows that syntactically well-typed programs in Cajal (⊸, 2, N ) evaluate
+to values. In other words, they have behavior. Our efforts may now shift toward implementing
+these behaviors with the dynamics of recurrent neurons.
+4.2
+
+Compiling
+
+4.2.1 Types. The first step in compiling Cajal (⊸, 2, N ) is to compile its types to R-vector spaces.
+To implement a type with 𝑛 distinct4 values, an 𝑛-dimensional space generally suffices. For finite
+4 Distinct meaning not contextually equivalent. For example, 𝜆𝑥 .𝑥 and 𝜆𝑦.𝑦 are contextually equivalent.
+
+Compiling to recurrent neurons
+
+9
+
+data like booleans, the choice of 𝑛-dimensional space is simple. R2 suffices to implement boolean
+programs as linear maps, shown in Fig. 11. Note that if the target vector space has too few dimensions,
+then a linear map that adequately implements a program may not exist.
+
+Compiling𝜏
+⟦_⟧ : Type → Vector Space
+⟦2⟧ = R2
+
+⟦N⟧ = 𝑥 : N → R | ∃𝑛, supp(𝑥) = 𝑛
+⟦𝜏1 ⊸ 𝜏2 ⟧ = Lin(⟦𝜏1 ⟧, ⟦𝜏2 ⟧)
+
+Fig. 11. Compiling Cajal (⊸, 2, N ) types
+
+For natural numbers, the choice of vector space is more subtle. In Fig. 11, natural numbers
+compile to an infinite-dimensional sequence space. Each vector is an infinite-length sequence,
+represented as a function which yields the value of the sequence at any index 𝑛 ∈ N. The support
+of these functions is finite—only a finite number of entries in a sequence may be non-zero. This
+assumption is critical because our strategy for compiling iteration involves a summation over
+sequences, and this summation is not well-defined without finite support. To form a vector space,
+vector addition and scalar multiplication are defined pointwise.
+For functions, we compile to the vector space of linear maps between the compiled input
+and output types. To form a vector space, vector addition and scalar multiplication are defined
+pointwise. Our approach differs from prior work studying first-class conditionals in differentiable
+programming, where functions compiled to matrix spaces [20]. As we developed our metatheory
+and implementation, we found it much simpler to represent function types abstractly as linear
+maps. If necessary, the matrix of a linear map can be determined in a separate compiler pass.
+4.2.2 Contexts. Programs with free variables require us to compile contexts, shown in Fig. 12.
+These compiled contexts specify which vectors we can link compiled neurons against. Generally, a
+context with 𝑘 variables compiles to a 𝑘-tuple of vectors.5
+
+Compiling Δ
+⟦_⟧ : Context → Tuple(Vector)
+⟦∅⟧ = {0}
+⟦Δ, 𝑥 :𝜏⟧ = ⟦Δ⟧ × ⟦𝜏⟧
+
+Fig. 12. Compiling Cajal (⊸, 2, N ) contexts
+
+5 By convention we denote elements of a compiled 1-tuple using ®
+𝑥, and elements of a compiled 𝑘-tuple as ®
+𝜎.
+
+10
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+4.2.3 Programs. Using a compiler for contexts and types, we compile typing judgments Δ ⊢ 𝑒 : 𝜏
+to multilinear maps from ⟦Δ⟧ to ⟦𝜏⟧. Generally, a typing judgment with 𝑘 variables in the context
+will compile to a 𝑘-linear map. The compiler is a function defined recursively on the structure
+of typing derivations, shown in Fig. 13. Prior work on first-class conditionals used a relational
+specification. However, we find a functional specification leads to simpler proofs and a simpler
+implementation.
+
+Compiling𝑒
+⟦−⟧ : Program → Multilinear map
+⟦𝑥 :𝜏 ⊢ 𝑥 : 𝜏⟧( ®
+𝑥) = 𝑥®
+ 
+⟦∅ ⊢ tt : 2⟧(0) = 1 0
+ 
+⟦∅ ⊢ ff : 2⟧(0) = 0 1
+(
+⟦∅ ⊢ 0 : N⟧(0) = 𝑛 ↦→
+
+1 if 𝑛 = 0
+0 otherwise
+(
+
+⟦Δ ⊢ succ(𝑒) : N⟧(®
+𝜎 ) = 𝑛 ↦→
+
+0
+⟦𝑒⟧( ®
+𝜎) (𝑛 − 1)
+
+if 𝑛 = 0
+otherwise
+
+⟦Δ ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 ⟧( ®
+𝜎) = 𝑥® ↦→ ⟦𝑒⟧(®
+𝜎, ®
+𝑥)
+⟦Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 ⟧( ®
+𝜎) = ⟦𝑒 1 ⟧(𝜎® Δ1 ) (⟦𝑒 2 ⟧(𝜎® Δ2 ))
+⟦Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏2 ⟧( ®
+𝜎) = 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ1 )) · ⟦𝑒 2 ⟧(𝜎® Δ2 ) + 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ1 )) · ⟦𝑒 3 ⟧(𝜎® Δ2 )
+⟦Δ1 ◦ Δ2 ◦ Δ3 ⊢ iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏⟧( ®
+𝜎) =
+
+∑︁
+
+⟦𝑒 3 ⟧(𝜎® Δ3 ) (𝑛) · (⟦𝑒 2 ⟧(𝜎® Δ2 ))𝑛 (⟦𝑒 1 ⟧(𝜎® Δ1 ))
+
+𝑛∈ N
+
+Fig. 13. Compiling Cajal (⊸, 2, N ) programs
+
+Compiling variables is straight-forward. The variable rule maps to identity at each type.
+⟦𝑥 : 2 ⊢ 𝑥 : 2⟧ ↦→ (𝑥® ∈ R2 ↦→ ®
+𝑥)
+Our specification in Fig. 13 uses an equivalent, less verbose notation. Moreover, we often omit
+specifying the domain of these multilinear maps. The domain is always ⟦Δ⟧.
+The constants tt, ff, and 0 compile to constant 0-linear maps. Their domain is {0} and they are
+vacuously linear in 0 arguments. These 0-linear maps generally map 0 to orthonormal bases in ⟦𝜏⟧.
+These are so-called one-hot encodings. Observe that for natural numbers these encodings occur in
+time.
+
+Compiling to recurrent neurons
+
+11
+
+
+
+⟦∅ ⊢ 0 : N⟧(0) = 1 0 0 · · ·
+
+
+⟦∅ ⊢ succ(0) : N⟧(0) = 0 1 0 · · ·
+
+
+⟦∅ ⊢ succ(succ(0)) : N⟧(0) = 0 0 1 · · ·
+Using time, a single recurrent neuron can implement natural numbers.
+The successor 𝑥 : N ⊢ succ(𝑥) : N compiles to a 1-linear right-shift operator on sequences. Since
+succ(𝑥) contains a free variable 𝑥, this compiled program can be linked with an environment. An
+environment is any element of ⟦𝑥 : N⟧, and linking is any application of the 1-linear right-shift
+operator to these elements, shown in the following example.
+
+
+
+
+⟦𝑥 : N ⊢ succ(𝑥) : N⟧( 10 20 30 · · · ) = 0 10 20 · · ·
+If we bind 𝑥 using 𝜆, this compiles instead to a 0-linear map which returns a linear map.
+
+
+⟦∅ ⊢ 𝜆𝑥 .succ(𝑥) : N ⊸ N⟧(0) = 𝑥® ∈ ⟦N⟧ ↦→ 0 𝑥®0 𝑥®1 · · ·
+Note that our specification in Fig. 13 omits typing information when it is clear from context. For
+example, ⟦𝑒⟧ is used in the function case. But the compiler is defined on typing derivations, not
+expressions. This is shorthand for ⟦Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 ⟧; the convention is very useful in simplifying
+definitions and proofs.
+An application compiles to function application. However, context splitting introduces some
+subtlety. Observe how the environment 𝑦® propagates only to specific subprograms in this example.
+⟦𝑦 : N ⊢ (𝜆𝑥 .succ(𝑥))𝑦 : N⟧( ®
+𝑦)
+= ⟦𝜆𝑥 .succ(𝑥)⟧(𝑦®∅ ) (⟦𝑦⟧(𝑦®𝑦:N ))
+
+By compiling
+
+= ⟦𝜆𝑥 .succ(𝑥)⟧(0) (⟦𝑦⟧( ®
+𝑦))
+
+ 
+
+𝑦®0 𝑦®1 𝑦®2 · · ·
+= 𝑥® ∈ ⟦N⟧ ↦→ 0 𝑥®0 𝑥®1 · · ·
+
+
+= 0 𝑦®0 𝑦®1 · · ·
+
+By restricting the environment
+By compiling
+By function application
+
+Essentially, the environment must be split to mirror context splitting. In Fig. 13, the notation 𝜎® Δ
+handles this. It defines the restriction of an environment 𝜎® according to a context Δ. Appendix A.7
+contains a detailed specification.
+Conditionals compile to a soft-branching conditional. Both branches evaluate, returning a linear
+combination of their values. It implements ordinary hard-branching conditionals, but in a fully
+differentiable way. Observe how the following example is differentiable in the environment, enabling
+first-class differentiable programming with conditionals. It is a differentiable not operator.
+
+
+⟦𝑥 : 2 ⊢ if 𝑥 then ff else tt : 2⟧ 𝛼 1 𝛼 2
+
+
+
+
+= 𝜋1 ⟦𝑥⟧ 𝛼 1 𝛼 2
+· ⟦ff⟧(0) + 𝜋1 ⟦𝑥⟧ 𝛼 1 𝛼 2
+· ⟦tt⟧(0)
+
+  
+
+  
+= 𝜋1 𝛼 1 𝛼 2 · 0 1 + 𝜋2 𝛼 1 𝛼 2 · 1 0
+ 
+ 
+= 𝛼1 · 0 1 + 𝛼2 · 1 0
+
+By compiling
+By compiling
+By projections 𝜋𝑖
+
+The functions 𝜋1 and 𝜋 2 used in Fig. 13 are the first and second projection for 𝑣 ∈ R2 .
+Iteration compiles to equations underlying the dynamics of linear recurrent neurons, as in Fig 6.
+It computes a linear combination of states in a linear dynamical system. Recall that with particular
+
+12
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+inputs, these equations exactly implement the dynamics of linear recurrent neurons (Section 2).
+This example shows how to compile the iterated not operator from Fig. 6.
+⟦∅ ⊢ iter{tt | 𝑥 ↩→ if 𝑥 then ff else tt}(2) : 2⟧ 0)
+∑︁
+=
+(⟦2⟧(0)) (𝑛) · (⟦if 𝑥 then ff else tt⟧(0))𝑛 (⟦tt⟧(0))
+
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁ 
+
+
+ 𝑛   
+0 0 1 0 · · · 𝑛 · ⟦if 𝑥 then ff else tt⟧ 0
+1 0
+
+By compiling
+
+
+ 𝑛   
+0 0 1 0 · · · 𝑛 · 𝑥® ↦→ ⟦if 𝑥 then ff else tt⟧ 𝑥®
+1 0
+
+By partial application
+
+𝑛∈ N
+
+=
+
+∑︁ 
+𝑛∈ N
+
+≃
+
+∑︁ 
+𝑛∈ N
+
+
+
+0
+0 0 1 0 ··· 𝑛 ·
+1
+
+1
+0
+
+𝑛
+
+
+
+1 0
+
+
+
+By matrix of a linear map
+
+Observe that this example satisfies the desired correspondence from Fig. 6 between evaluation
+and the dynamics of linear recurrent neurons. From now on, ⟦𝑒⟧ is shorthand for ⟦𝑒⟧(0).
+⟦iter{tt | 𝑥 ↩→ if 𝑥 then ff else tt}(2)⟧ = ⟦tt⟧ ≠ ⟦ff⟧
+This correspondence holds for any closed6 program of type N or 2.
+Theorem 2: (Compiler preserves program behavior)
+If ∅ ⊢ 𝑒 : base(𝜏), then
+(𝑎) 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ = ⟦𝑣⟧
+(𝑏) 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ ≠ ⟦𝑣⟧
+Proof sketch. The argument requires showing that the compiler preserves what programs will
+(𝑎) and won’t (𝑏) do. These correspond to soundness and adequacy of a denotational semantics.
+Appendix B.4 contains a detailed proof. In short, the argument for (𝑎) is by induction on evaluation.
+Then (𝑏) follows as a corollary of (𝑎) and Theorem 1.
+For (𝑎), the induction on evaluation proceeds on the following lemma, which generalizes the
+type. This gives a sufficient induction hypothesis.
+Lemma 3: (Compiler preserves what programs will do)
+If ∅ ⊢ 𝑒 : 𝜏 and 𝑒 ⇓ 𝑣 , then ⟦𝑒⟧ = ⟦𝑣⟧
+It is worth considering the iteration case in detail iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) ⇓ 𝑣, where 𝑒 3 evaluates
+to succ(𝑣 3 ). It captures the essential reasoning happening across cases in the proof. We must show
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧ = ⟦𝑣⟧.
+6 A closed program has no free variables.
+
+Compiling to recurrent neurons
+
+13
+
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧
+∑︁
+=
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Because 𝑓 𝑛 (𝑣) = 𝑓 (𝑓 (𝑛−1) (𝑣))
+
+⟦succ(𝑣 3 )⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+By induction
+
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+∑︁
+
+= ⟦succ(𝑣 3 )⟧(0) · ⟦𝑒 2 ⟧0 (⟦𝑒 1 ⟧) +
+
+⟦succ(𝑣 3 )⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Because
+
+∑︁
+
+𝑓 (𝑛) = 𝑓 (0) +
+
+𝑛∈ N
+
+𝑛∈ N\0
+
+= 0 · ⟦𝑒 2 ⟧0 (⟦𝑒 1 ⟧) +
+
+∑︁
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+∑︁
+
+𝑓 (𝑛)
+
+𝑛∈ N\0
+
+By compiling
+
+𝑛∈ N\0
+
+=
+
+∑︁
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+By scalar multiplication
+
+⟦𝑒 2 ⟧(⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Compiling maps to multilinear maps
+
+ ∑︁
+
+Compiling maps to multilinear maps
+
+𝑛∈ N\0
+
+=
+
+∑︁
+𝑛∈ N\0
+
+= ⟦𝑒 2 ⟧
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧)
+
+
+
+𝑛∈ N\0
+
+= ⟦𝑒 2 ⟧
+
+ ∑︁
+
+⟦𝑣 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+
+
+Because
+
+𝑛∈ N
+
+∑︁
+
+𝑓 (𝑛 − 1) =
+
+𝑛∈ N\0
+
+∑︁
+
+𝑓 (𝑛)
+
+𝑛∈ N
+
+= ⟦𝑒 2 ⟧(⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑣 3 )⟧)
+
+By compiling
+
+= ⟦𝑒 2 ⟧(⟦𝑣 n ⟧)
+
+By induction
+
+= ⟦{𝑦 ↦→ 𝑣 n }(𝑒 2 )⟧
+
+Compiling commutes with substitution
+
+= ⟦𝑣⟧
+
+By induction
+
+The argument introduces two key lemmas, used across cases. The first states our compiler
+produces multilinear maps, as indicated in Fig. 13.
+Lemma 4: (Compiler maps programs to multilinear maps)
+If Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 , then
+⟦𝑒⟧( ®
+𝜎, 𝛼 1 · 𝑥®1 + 𝛼 2 · 𝑥®2 ) = 𝛼 1 · ⟦𝑒⟧( ®
+𝜎, 𝑥®1 ) + 𝛼 2 · ⟦𝑒⟧( ®
+𝜎, 𝑥®2 )
+
+The second is a substitution lemma, typical of compiler correctness proofs. Both are shown by
+structural induction on 𝑒. Appendix B.7/B.10 contain detailed proofs.
+Lemma 5: (Compiler commutes with substitution )
+If Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 , then ⟦{𝑥 ↦→ 𝑣 }(𝑒)⟧( ®
+𝜎) = ⟦𝑒⟧( ®
+𝜎, ⟦𝑣⟧)
+These are the essential arguments in establishing the correctness of our compiler. Now we
+address the empirical question, as to whether the correctness of our compiler yields any benefit to
+differentiable programming.
+
+14
+
+5
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+EXPERIMENTS
+
+Our experiments test whether programming neural networks with Cajal (⊸, 2, N ) helps them learn
+tasks with discrete structure, and whether the correctness theorem we proved is actually driving this
+benefit. Programming a neural network with Cajal (⊸, 2, N ) means that we specify part of the neural
+network using an open7 Cajal (⊸, 2, N ) program, which compiles to a 𝑘-linear map implemented in a
+differentiable programming language. When programming neural networks this way, the equations
+defining their behavior can look as follows—a composition of matrices, nonlinear functions, and
+compiled 𝑘-linear maps.
+𝜂 (𝑥) = 𝑊2 ◦ relu ◦ ⟦𝑒⟧ ◦ relu ◦ 𝑊1
+Our implementation of Cajal (⊸, 2, N ) is a simple prototype built in PyTorch, a domain-specific
+language for programming neural networks in Python [17]. It extends PyTorch with the primitives in Cajal (⊸, 2, N ) , enriching it with first-class iteration and conditionals. The compiler, which
+implements the specification in Fig. 13, is roughly 200 lines of Python.
+The experiments study two related image transformation tasks. The first is the iterative image
+transformation task from Fig. 1, where a neural network is programmed to solve it using first-class
+iteration. The second experiment is a conditional and iterative image transformation—if the input
+is an even digit, apply vertical blur iteratively, else return the original image. A neural network is
+programmed to solve it using first-class iteration and conditionals. These experiments illustrate,
+but do not exhaust, possible approaches to these tasks. They are meant to highlight the benefits
+and challenges inherent to differentiable programming with first-class discrete structure.
+To briefly summarize our results, we find that programming neural networks with first-class
+discrete structure helps them learn faster and with greater data-efficiency relative to a neural
+network programmed without first-class iteration. These benefits persist even when using the
+compiler in an alternative type-preserving way—returning instead a random 𝑘-linear map from
+⟦Δ⟧ to ⟦𝜏⟧. The data also reveal an interesting limitation of our specification. Linking with vectors
+of large norm can destabilize learning dynamics. Yet it is allowed by our specification, which only
+demands that these vectors are in ⟦Δ⟧. By bounding the norm of linked vectors, a compiler could
+feasibly prevent this instability.
+Appendix C.1-4 contains 4 additional experiments, which replicate experiments from prior
+work on differentiable programming with first-class conditionals [20]. Since our specification and
+implementation differ, these data were helpful to establish consistency with prior work.
+5.1
+
+Experiment 1: Iterative image transformation
+
+5.1.1
+
+Task. Our first experiment studies the iterative image transformation task from Fig. 1.
+
+⊲ If 𝑥 is the digit 0, return 𝑥
+⊲ If 𝑥 is the digit 𝑛, apply vertical blur 𝑛 times to 𝑥
+5.1.2 Models. Each model is a neural network implemented in PyTorch, and trained to solve the
+iterative image transformation.
+Model D is a neural network similar to Fig. 2b. The iterative structure is directly programmed
+using our compiler.
+⟦iter{𝑥 | 𝑦 ↩→ vblur 𝑦}(𝑛)⟧(𝑥® : R784, vblur : Lin(R784, R784 ), 𝑛® : R10 )
+The program compiles to a 3-linear map, which implements the dynamics of linear recurrent
+neurons. Its inputs ( ®
+𝑥, vblur, ®
+𝑛) are determined by neural networks. 𝑥® is the base case of iteration,
+7 Open programs have free variables.
+
+Compiling to recurrent neurons
+
+15
+
+and is simply the original image. vblur is the linear map we iteratively apply, a linear convolution
+whose kernel weights are determined by a 3-layer convolutional neural network. 𝑛® controls how
+many times to iterate, up to 10 steps.8 It is also determined by a 3-layer convolutional neural
+network.
+Model T is similar to Model D. But it compiles a simpler program ⟦iter{𝑥 | 𝑦 ↩→ 𝑦}(𝑛)⟧( ®
+𝑥, ®
+𝑛)
+and replaces its 2-linear map with a random matrix 𝑊 .9
+𝑊 (𝑥® ⊗ ®
+𝑛)
+Observe that the tensor product is used to form a linear map from a 2-linear map. It is type-preserving
+because it keeps the type translation from our compiler. However, the random matrix 𝑊 does not
+generally satisfy the compiler correctness theorem.
+Model I is a 3-layer convolutional neural network, a simple baseline from which to compare the
+impacts of programming with and without first-class iteration. It is not directly programmed with
+any iterative structure, thus we say it is programmed indirectly to solve the task.
+Further details on model parameters are available in the artifact.
+5.1.3 Measures. The experiments take several measures of each model to help distinguish their
+learning dynamics. These feature prominently in Figs. 14, 15, 16, and 17.
+The first measure is the model loss on the training and test set. These models learn by iterative
+adjustments of their parameters in order to minimize a loss function. The model loss helps us see
+if model training converges, and to what extent this convergence is stable. However, models can
+have similar loss curves while behaving in distinct ways. Therefore we use an additional measure
+that helps distinguish model behavior.
+The second measure of learning dynamics is the peak signal-to-noise ratio (PSNR) between a
+model output and the target output specified in the test set. It is a kind of image distance, and is
+a useful measure for understanding actual model behavior [9]. Qualitatively distinct behaviors
+correlate well with distinct PSNR curves. Higher PSNR indicates two images are more similar.
+5.1.4 Results. Each model was trained to approximate the image transformation specified in a
+training dataset of 60,000 image inputs and corresponding outputs. They were then tested on a
+distinct dataset of 10,000 image pairs. Using L1 loss, the Adam optimizer computed parameter
+updates to each model [11]. During training, the previously described measures were recorded at
+regular intervals. This was done for 10 random seeds, 3 learning rates, and 3 training batch sizes.
+Fig. 14 presents the typical observed dynamics of learning for each model. On the 𝑥-axis, a step
+indicates a parameter update to the models. The 𝑦-axis contains previously discussed measures, in
+addition to model outputs across training time. For model outputs, the first image on the left is the
+input. The data for each seed is shown. To understand both early and late training dynamics, the
+left-half of the figure focuses on the first 200 training steps, and the right-half on the first 10,000.
+These results show that Model D and Model T learn to iteratively apply the image transformation.
+But Model I does not. It instead applies a more uniform blur to digits. For reference, the outputs
+specified in the test set for these inputs are in Fig. 1.
+At a finer level, Model D and Model T learn comparably well, observed by their outputs and
+PSNR. However, they arrive at similar solutions in distinct ways. Model D first learns to reconstruct
+the original image, and then to iteratively apply blur. Model T instead slowly learns to iteratively
+blur the original image without passing through a stage where it reconstructs the original image.
+Interestingly, Model D is less stable in its early training dynamics. When vblur has a large norm,
+8 During training it is typical to assume a maximum number of steps the recurrent neural network takes through time.
+9 The exclusion of vblur is necessary, otherwise the dimensionality explodes.
+
+16
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fig. 14. Prototypical learning dynamics for Experiment 1
+
+its iterative application explodes model outputs. Before learning to produce appropriate values of
+vblur, Model T encounters these unstable inputs early in training.
+Overall, model performance is generally consistent across learning rate and training batch size.
+Fig. 15 shows this using PSNR, the measure which best correlates with model performance.
+5.2
+
+Experiment 2: Conditional and iterative image transformation
+
+5.2.1 Task. Our second experiment studies a conditional and iterative image transformation task
+similar to Fig. 1. The only difference is that the iterative image transform only applies if the input
+digit is odd.
+⊲ If 𝑥 is an even digit, return 𝑥
+⊲ If 𝑥 is an odd digit 𝑛, apply vertical blur 𝑛 times to 𝑥
+
+Compiling to recurrent neurons
+
+17
+
+PSNR Dynamics
+22.5
+
+(bs: 32, lr: 0.0001)
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+20.0
+17.5
+15.0
+
+PSNR
+
+22.5
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 32, lr: 0.0005)
+
+(bs: 64, lr: 0.0005)
+
+(bs: 128, lr: 0.0005)
+
+20.0
+17.5
+15.0
+
+22.5
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 32, lr: 0.001)
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+20.0
+17.5
+15.0
+0
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+10000
+
+0
+
+5000
+
+0
+
+2000
+
+4000
+
+Steps
+Fig. 15. Summary of dynamics across configurations for Experiment 1
+
+PSNR Dynamics
+40
+
+(bs: 32, lr: 0.0001)
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+30
+
+20
+
+PSNR
+
+40
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 32, lr: 0.0005)
+
+(bs: 64, lr: 0.0005)
+
+(bs: 128, lr: 0.0005)
+
+30
+
+20
+
+40
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 32, lr: 0.001)
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+30
+
+20
+0
+
+10000
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+0
+
+5000
+
+I
+
+0
+
+2000
+
+4000
+
+Steps
+Fig. 16. Summary of dynamics across configurations for Experiment 2
+
+18
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fig. 17. Prototypical learning dynamics for Experiment 2
+
+5.2.2 Models. The models are similar to the first experiment. Model D is a neural network with
+conditional and iterative structure directly programmed using our compiler.
+⟦if 𝑏 then 𝑥 else iter{𝑥 | 𝑦 ↩→ vblur 𝑦}(𝑛)⟧(𝑏® : R2, 𝑥® : R784, vblur : Lin(R784, R784 ), 𝑛® : R10 )
+® ®
+The program compiles to a 4-linear map. Its inputs (𝑏,
+𝑥, vblur, ®
+𝑛) are determined by neural
+networks. 𝑏® is the condition checked in the conditional, determined by a 2-layer neural network.
+Other inputs are determined exactly as in the first experiment.
+® ®
+Model T is similar to Model D. But compiles ⟦if 𝑏 then 𝑥 else iter{𝑥 | 𝑦 ↩→ 𝑦}(𝑛)⟧(𝑏,
+𝑥, ®
+𝑛) and
+replaces its 3-linear map with a random matrix 𝑊 .
+𝑊 (𝑏® ⊗ 𝑥® ⊗ ®
+𝑛)
+Model I is the same model from the first experiment.
+
+Compiling to recurrent neurons
+
+5.2.3
+
+19
+
+Measures. The measures are unchanged from the first experiment.
+
+5.2.4 Results. The model training and data collection mirror the first experiment, using new training and test datasets (of same size) which specify the conditional and iterative image transformation.
+Fig. 16 and 17 also mirror the analyses from the first experiment. The trends in the data are also
+similar. However, Model D now exhibits the best PSNR. Because it programs in the identity for
+when an input image is even, if the network can just learn to classify even digits, it will produce
+correct outputs on many test cases. This drives up its PSNR measure. The quality of its blurring is
+similar to the first experiment.
+6
+
+RELATED WORK
+
+Cajal (⊸, 2, N ) was deeply inspired by research in neurosymbolic programming, denotational semantics, and differentiable programming. We highlight their key insights while also taking the
+chance to identify where our work differs.
+6.1
+
+Neurosymbolic programming
+
+Neurosymbolic programs combine neural networks with discrete components. There are many
+approaches, but we focus on those which compile discrete components into differentiable form.
+Scallop, TerpreT, and Differentiable Forth are programming languages where discrete components
+are compiled into differentiable form [3, 7, 15]. Their programming paradigms differ—across
+logic, imperative, and probabilistic programming. Their programs blend neural networks solving
+perceptual tasks with discrete components performing logical tasks, mediated by the compiler
+as in Cajal (⊸, 2, N ) . These languages established that this kind of programming is possible for a
+rich array of tasks, and that it has positive impacts on learning dynamics. Our first intuitions on
+compiling discrete structure to differentiable form came from these languages.
+However, they lack a theory of compiler correctness. No compiler correctness theorems and
+proofs are available for these languages. As a result, some principles underlying their design
+are difficult to understand or fix. For example, these languages lack first-class iteration. Before
+completing our work, it was unclear whether its absence was fundamental. Cajal (⊸, 2, N ) offers a
+simple setting to isolate and resolve these basic language design issues, not only for iteration but
+also other discrete structures (Section 7).
+6.2
+
+Denotational semantics
+
+Linear types originate from linear logic, whose denotational semantics exposed a connection
+between linear programs and linear maps. These semantics span decades. Of special relevance are
+semantics which explicitly show the connection by computing denotations of programs as linear
+maps.
+Our semantic approach is inspired by work from Valiron and Zdancewic, on categorical models
+of lambda calculi [19]. They denote programs by linear maps between finite-dimensional vector
+spaces over finite fields, and their translation is proved sound and adequate. Several examples show
+programs with discrete structure denoted as matrices—though not over R-vector spaces. From
+these examples, we realized that if we could develop translations to R-vector spaces, then we could
+associate differentiable forms to discrete programs. But it was not clear whether this was possible.
+Fortunately, we encountered a denotational semantics of linear logic to Köthe sequence spaces [5].
+These semantics denote programs by linear maps between topological vector spaces over R, notably
+including infinite-dimensional spaces.
+However, their motivations differ substantially from ours. As a result, their translation inherits
+commitments that either prevent or complicate their use in our setting. For example, Köthe sequence
+
+20
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+spaces are more complicated than ordinary vector spaces; they are topological vector spaces. This
+is reasonable for their aims, but not necessary here.
+6.3
+
+Differentiable programming
+
+PyTorch and JAX are differentiable programming languages widely used to build and train neural
+networks [4, 17]. Automatic differentiation in these languages frees programmers from manually
+implementing derivatives necessary for gradient-based learning in neural networks. They also
+make it easier to train neural networks at scale; they support specialized hardware which greatly
+accelerate training. There is growing interest in developing their programming language theory—
+especially on automatic differentiation [1, 6, 12]. Recent work introduced a new branch in this
+developing theory, on the prospect of first-class discrete structure in differentiable programming
+[20]. They show conditionals can be first-class, but defer on more complicated discrete structure.
+With Cajal (⊸, 2, N ) , it is now clear iteration can be first-class.
+7
+
+DISCUSSION
+
+Discrete structure is not overtly differentiable. However, compilers can translate discrete structure
+to differentiable form—broadening the class of differentiable algorithms we can express. Our work
+shows Cajal (⊸, 2, N ) can be used to develop these compilers. Its formal specification and metatheory
+are tractable, and yield a simple implementation for empirical studies on the interplay between
+learning and the discrete structures of ordinary programming. These efforts set up an exciting
+possibility, on whether algebraic data like lists and trees could be first-class in differentiable
+programming.
+We suspect that these structures could be compiled to differentiable form by compiling to linear
+recursive neurons [10]. With recurrent neurons, their recurrent structure is simple and mirrors the
+natural numbers. But recursive neurons exhibit hierarchical recurrent structure—similar to the
+hierarchical structure found in algebraic data like trees. Establishing their formal correspondence
+would enable differentiable programming with first-class primitive recursion over algebraic data, a
+powerful programming abstraction. It is our next step.
+REFERENCES
+[1] Martín Abadi and Gordon D Plotkin. 2019. A simple differentiable programming language. Proceedings of the ACM on
+Programming Languages 4, POPL (2019), 1–28.
+[2] Panos J Antsaklis and Anthony N Michel. 2006. Linear systems. Springer.
+[3] Matko Bosnjak, Tim Rocktaschel, Jason Naradowsky, and Sebastian Riedel. 2017. Programming with a differentiable
+forth interpreter. In International conference on machine learning. PMLR, 547–556.
+[4] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George Necula,
+Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, and Qiao Zhang. 2018. JAX: composable transformations of
+Python+NumPy programs. http://github.com/jax-ml/jax
+[5] Thomas Ehrhard. 2002. On Köthe sequence spaces and linear logic. Mathematical Structures in Computer Science 12, 5
+(2002), 579–623.
+[6] Conal Elliott. 2018. The simple essence of automatic differentiation. Proceedings of the ACM on Programming Languages
+2, ICFP (2018), 1–29.
+[7] Alexander L Gaunt, Marc Brockschmidt, Nate Kushman, and Daniel Tarlow. 2017. Differentiable programs with neural
+libraries. In International Conference on Machine Learning. PMLR, 1213–1222.
+[8] Robert Harper. 2016. Practical foundations for programming languages. Cambridge University Press.
+[9] Alain Hore and Djemel Ziou. 2010. Image quality metrics: PSNR vs. SSIM. In 2010 20th international conference on
+pattern recognition. IEEE, 2366–2369.
+[10] Ozan Irsoy and Claire Cardie. 2014. Deep recursive neural networks for compositionality in language. Advances in
+neural information processing systems 27 (2014).
+[11] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv preprint arXiv:1412.6980 (2014).
+
+Compiling to recurrent neurons
+
+21
+
+[12] Faustyna Krawiec, Simon Peyton Jones, Neel Krishnaswami, Tom Ellis, Richard A Eisenberg, and Andrew Fitzgibbon.
+2022. Provably correct, asymptotically efficient, higher-order reverse-mode automatic differentiation. Proceedings of
+the ACM on Programming Languages 6, POPL (2022), 1–30.
+[13] Erwin Kreyszig. 1991. Introductory functional analysis with applications. John Wiley & Sons.
+[14] Yann LeCun, Bernhard Boser, John Denker, Donnie Henderson, Richard Howard, Wayne Hubbard, and Lawrence Jackel.
+1989. Handwritten digit recognition with a back-propagation network. Advances in neural information processing
+systems 2 (1989).
+[15] Ziyang Li, Jiani Huang, and Mayur Naik. 2023. Scallop: A language for neurosymbolic programming. Proceedings of
+the ACM on Programming Languages 7, PLDI (2023), 1463–1487.
+[16] Paul-André Mellies. 2009. Categorical semantics of linear logic. Panoramas et syntheses 27 (2009), 15–215.
+[17] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin,
+Natalia Gimelshein, Luca Antiga, et al. 2019. Pytorch: An imperative style, high-performance deep learning library.
+Advances in neural information processing systems 32 (2019).
+[18] Michael Spivak. 2018. Calculus on manifolds: a modern approach to classical theorems of advanced calculus. CRC press.
+[19] Benoît Valiron and Steve Zdancewic. 2014. Finite vector spaces as model of simply-typed lambda-calculi. In International
+Colloquium on Theoretical Aspects of Computing. Springer, 442–459.
+[20] Joey Velez-Ginorio, Nada Amin, Konrad Kording, and Steve Zdancewic. 2026. Compiling to linear neurons. Proceedings
+of the ACM on Programming Languages, POPL (2026).
+[21] David Walker. 2005. Substructural type systems. Advanced topics in types and programming languages (2005), 3–44.
+[22] Glynn Winskel. 1993. The formal semantics of programming languages: an introduction. MIT press.
+
+22
+
+A
+A.1
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+DEFINITIONS
+Context Splitting
+Δ = Δ1 ∪ Δ2
+
+A.2
+
+∅ = dom(Δ1 ) ∩ dom(Δ2 )
+Δ = Δ1 ◦ Δ2
+
+Length of a context
+len(_) : Context → N
+len(∅) = 0
+len(Δ, 𝑥 :𝜏) = 1 + len(Δ)
+
+A.3
+
+Index set of context
+𝜄 (_) : Context → {N}
+𝜄 (Δ) = {1, ..., len(Δ)}
+
+A.4
+
+Index of variable in context
+𝜄 _ (_) : Var × Context → N
+𝜄𝑥 (∅) = 0
+(
+𝜄𝑥 (Δ, 𝑦 :𝜏) =
+
+A.5
+
+len(Δ, 𝑦 :𝜏)
+𝜄𝑥 (Δ)
+
+if 𝑥 = 𝑦
+otherwise
+
+Context concatenation
+_ || _ : Context × Context → Context
+Δ1 || (∅) = Δ1
+Δ1 || (Δ2, 𝑥 :𝜏) = (Δ1 || Δ2 ), 𝑥 :𝜏
+
+A.6
+
+Restricting a source environment
+
+If 𝜎 ∈ R⟦Δ1 ⟧, then (𝜎)Δ2 is the restriction of 𝜎 to the domain of Δ2 ,
+(𝜎)∅ = ∅
+(
+(𝜎)Δ2,𝑥:𝜏 =
+
+(𝜎)Δ2 {𝑥 ↦→ 𝜎 (𝑥)}
+(𝜎)Δ2
+
+if 𝑥 ∈ dom(𝜎)
+otherwise
+
+Compiling to recurrent neurons
+
+A.7
+
+23
+
+Restricting a target environment
+
+If 𝜎® ∈ ⟦Δ1 ⟧ and set(Δ2 ) ⊆ set(Δ1 ), then ( ®
+𝜎)ΔΔ21 ∈ ⟦Δ2 ⟧ is the restructuring of 𝜎® according to ⟦Δ2 ⟧.
+When the source context Δ1 is clear from context we use the notation 𝜎® Δ2 as shorthand.
+Δ1
+(®
+𝜎)∅
+= {0}
+
+(®
+𝜎) Δ1 Δ2,𝑥:𝜏 = ( ®
+𝜎) Δ1 Δ2 × 𝜋 𝜄𝑥 (Δ1 ) ( ®
+𝜎)
+
+B
+B.1
+
+PROOFS
+Theorem (Programs evaluate to values)
+∅ ⊢ 𝑒 : 𝜏 =⇒ ∃𝑣, 𝑒 ⇓ 𝑣
+
+Proof.
+Because programs can be logically typed ∅ ⊨ 𝑒 : 𝜏
+By empty substitution and logical typing ∅(𝑒) = 𝑒 ∈ R E ⟦𝜏⟧
+Because logically typed programs terminate ∃𝑣, 𝑒 ⇓ 𝑣
+
+B.2
+
+Lemma (Programs can be logically typed)
+Δ ⊢ 𝑒 : 𝜏 =⇒ Δ ⊨ 𝑒 : 𝜏
+
+Proof.
+By induction on Δ ⊢ 𝑒 : 𝜏,
+⊲ Case ∅ ⊢ 0 : N
+Show 0 ∈ R E ⟦N⟧
+Consider each condition,
+⊲ Condition ∃𝑣, 0 ⇓ 𝑣
+Let ∃𝑣 = 0
+By evaluation 0 ⇓ 0
+⊲ Condition 0 ∈ R V ⟦N⟧
+By logical relation 0 ∈ R V ⟦N⟧
+⊲ Case Δ ⊢ succ(𝑒) : N
+Show succ(𝜎 (𝑒)) ∈ R E ⟦N⟧
+Consider each condition,
+⊲ Condition ∃𝑣, succ(𝜎 (𝑒)) ⇓ 𝑣
+By assumption Δ ⊢ 𝑒 : N
+By induction Δ ⊨ 𝑒 : N
+By logical relation 𝜎 (𝑒) ⇓ 𝑣 where 𝑣 ∈ R V ⟦N⟧
+Let ∃𝑣 = succ(𝑣)
+By evaluation succ(𝜎 (𝑒)) ⇓ succ(𝑣)
+
+□
+
+24
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Condition succ(𝑣) ∈ R V ⟦𝜏2 ⟧
+Recall by logical relation 𝜎 (𝑒) ⇓ 𝑣 where 𝑣 ∈ R V ⟦N⟧
+By logical relation succ(𝑣) ∈ R V ⟦N⟧
+⊲ Case 𝑥 :𝜏 ⊢ 𝑥 : 𝜏
+Show {𝑥 ↦→ 𝑣 }(𝑥) ∈ R E ⟦𝜏⟧ where {𝑥 ↦→ 𝑣 } ∈ R⟦𝑥 :𝜏⟧
+Consider each condition,
+⊲ Condition ∃𝑣 1, {𝑥 ↦→ 𝑣 }(𝑥) ⇓ 𝑣 1
+By substitution {𝑥 ↦→ 𝑣 }(𝑥) = 𝑣
+Let ∃𝑣 1 = 𝑣
+By evaluation 𝑣 ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏⟧
+By logical relation {𝑥 ↦→ 𝑣 } ∈ R⟦𝑥 :𝜏⟧ where 𝑣 ∈ R V ⟦𝜏⟧
+⊲ Case Δ ⊢ 𝜆𝑦.𝑒 : 𝜏1 ⊸ 𝜏2
+Show 𝜆𝑦.𝜎 (𝑒) ∈ R E ⟦𝜏1 ⊸ 𝜏2 ⟧ where 𝜎 ∈ R⟦Δ⟧
+Consider each condition,
+⊲ Condition ∃𝑣, 𝜆𝑦.𝜎 (𝑒) ⇓ 𝑣
+Let ∃𝑣 = 𝜆𝑦.𝜎 (𝑒)
+By evaluation 𝜆𝑦.𝜎 (𝑒) ⇓ 𝜆𝑦.𝜎 (𝑒)
+⊲ Condition 𝜆𝑦.𝜎 (𝑒) ∈ R V ⟦𝜏1 ⊸ 𝜏2 ⟧
+Show (𝜆𝑦.𝜎 (𝑒))𝑣 1 ∈ R E ⟦𝜏2 ⟧
+By assumption 𝑣 1 ∈ R V ⟦𝜏1 ⟧
+Consider each condition,
+⊲ Condition ∃𝑣, (𝜆𝑦.𝜎 (𝑒))𝑣 1 ⇓ 𝑣
+By assumption Δ, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2
+By induction Δ, 𝑦 :𝜏1 ⊨ 𝑒 : 𝜏2 i.e. 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) ∈ R E ⟦𝜏2 ⟧
+By logical relation 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+Because substitutions commute 𝜎 {𝑦 ↦→ 𝑣 1 }(𝑒) = {𝑦 ↦→ 𝑣 1 }(𝜎 (𝑒))
+Let ∃𝑣 = 𝑣
+By evaluation (𝜆𝑦.𝜎 (𝑒))𝑣 1 ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏2 ⟧
+By logical relation {𝑦 ↦→ 𝑣 1 }(𝜎 (𝑒)) ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+⊲ Case Δ1 ◦ Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2
+Show 𝜎 (𝑒 1 )𝜎 (𝑒 2 ) ∈ R E ⟦𝜏2 ⟧
+Consider each condition,
+⊲ Condition ∃𝑣 •, 𝜎 (𝑒 1 )𝜎 (𝑒 2 ) ⇓ 𝑣 •
+By induction Δ1 ⊨ 𝑒 1 : 𝜏1 ⊸ 𝜏2
+By induction Δ2 ⊨ 𝑒 2 : 𝜏1
+By logical relation 𝜎Δ1 (𝑒 1 ) ⇓ 𝜆𝑥 .𝑒 where 𝜆𝑥 .𝑒 ∈ R V ⟦𝜏1 ⊸ 𝜏2 ⟧
+By logical relation 𝜎Δ2 (𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏1 ⟧
+By logical relation (𝜆𝑥 .𝑒)𝑣 2 ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+
+Compiling to recurrent neurons
+
+Note that 𝜎Δ1 (𝑒 1 ) = 𝜎 (𝑒 1 ) and 𝜎Δ2 (𝑒 2 ) = 𝜎 (𝑒 2 )
+Let ∃𝑣 • = 𝑣
+By evaluation 𝜎 (𝑒 1 )𝜎 (𝑒 2 ) ⇓ 𝑣
+⊲ Condition 𝑣 ∈ R V ⟦𝜏2 ⟧
+By logical relation (𝜆𝑥 .𝑒)𝑣 2 ⇓ 𝑣 where 𝑣 ∈ R V ⟦𝜏2 ⟧
+⊲ Case Δ1 ◦ Δ2 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+Show if 𝜎 (𝑒 1 ) then 𝜎 (𝑒 2 ) else 𝜎 (𝑒 3 ) ∈ R E ⟦𝜏2 ⟧
+Consider each condition,
+⊲ Condition ∃𝑣 •, if 𝜎 (𝑒 1 ) then 𝜎 (𝑒 2 ) else 𝜎 (𝑒 3 ) ⇓ 𝑣 •
+By induction Δ1 ⊨ 𝑒 1 : 2
+By induction Δ2 ⊨ 𝑒 2 : 𝜏 and Δ2 ⊨ 𝑒 3 : 𝜏
+By logical relation 𝜎Δ1 (𝑒 1 ) ⇓ 𝑣 where 𝑣 ∈ R V ⟦2⟧ = {tt, ff}
+Consider whether 𝑣 = tt or 𝑣 = ff,
+⊲ Case 𝑣 = tt
+By logical relation 𝜎Δ2 (𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏⟧
+Note that 𝜎Δ1 (𝑒 1 ) = 𝜎 (𝑒 1 ) and 𝜎Δ2 (𝑒 2 ) = 𝜎 (𝑒 2 )
+Let ∃𝑣 • = 𝑣 2
+By evaluation if 𝜎 (𝑒 1 ) then 𝜎 (𝑒 2 ) else 𝜎 (𝑒 3 ) ⇓ 𝑣 2
+⊲ Condition 𝑣 2 ∈ R V ⟦𝜏⟧
+Recall by logical relation 𝑣 2 ∈ R V ⟦𝜏⟧
+⊲ Case 𝑣 = ff
+Similar to previous case
+⊲ Case Δ1 ◦ Δ2 ◦ Δ3 ⊢ iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏
+Show iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(𝜎 (𝑒 3 )) ∈ R E ⟦𝜏⟧
+By assumption Δ3 ⊢ 𝑒 3 : N
+By induction Δ3 ⊨ 𝑒 3 : N
+By logical relation 𝜎Δ3 (𝑒 3 ) ⇓ 𝑣 3 where 𝑣 3 ∈ R V ⟦N⟧ = {0} ∪ {succ(𝑣 • ) | 𝑣 • ∈ R V ⟦N⟧}
+It suffices to show iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(𝑣 3 ) ∈ R E ⟦𝜏⟧ by backward closure of logical
+relation
+By induction on 𝑣 3 where,
+⊲ Case 𝑣 3 = 0
+Consider each condition,
+⊲ Condition ∃𝑣, iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(0) ⇓ 𝑣
+By assumption Δ2, 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏 and Δ1 ⊢ 𝑒 1 : 𝜏
+By induction Δ2, 𝑦 :𝜏 ⊨ 𝑒 2 : 𝜏 and Δ1 ⊨ 𝑒 1 : 𝜏
+By logical relation 𝜎Δ1 (𝑒 1 ) ⇓ 𝑣 1 where 𝑣 1 ∈ R V ⟦𝜏⟧
+Note that 𝜎Δ1 (𝑒 1 ) = 𝜎 (𝑒 1 )
+Let ∃𝑣 = 𝑣 1
+By evaluation iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(0) ⇓ 𝑣 1
+
+25
+
+26
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Condition 𝑣 1 ∈ R V ⟦𝜏⟧
+Recall by logical relation 𝜎 (𝑒 1 ) ⇓ 𝑣 1 where 𝑣 1 ∈ R V ⟦𝜏⟧
+⊲ Case 𝑣 3 = succ(𝑣 • )
+Consider each condition,
+⊲ Condition ∃𝑣, iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(𝑣 3 ) ⇓ 𝑣
+By assumption 𝑣 • ∈ R V ⟦N⟧
+By induction Δ1 ⊨ 𝑒 1 : 𝜏 and Δ2, 𝑦 :𝜏 ⊨ 𝑒 2 : 𝜏
+By induction iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(𝑣 • ) ∈ R E ⟦𝜏⟧
+By logical relation iter{𝜎Δ1 (𝑒 1 ) | 𝑦 ↩→ 𝜎Δ2 (𝑒 2 )}(𝑣 3 ) ⇓ 𝑣 n
+By logical relation 𝜎Δ2 {𝑦 ↦→ 𝑣 n }(𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏⟧
+Because substitutions commute {𝑦 ↦→ 𝑣 n }(𝜎Δ2 (𝑒 2 )) ⇓ 𝑣 2
+By logical relation 𝜎1 (𝑒 1 ) ⇓ 𝑣 1 where 𝑣 1 ∈ R V ⟦𝜏⟧
+Note that 𝜎Δ1 (𝑒 1 ) = 𝜎 (𝑒 1 ) and 𝜎Δ2 (𝑒 2 ) = 𝜎 (𝑒 2 ) and {𝑦 ↦→ 𝑣 n }(𝜎Δ2 (𝑒 2 )) =
+{𝑦 ↦→ 𝑣 n }(𝜎 (𝑒 2 ))
+Let ∃𝑣 = 𝑣 2
+By evaluation iter{𝜎 (𝑒 1 ) | 𝑦 ↩→ 𝜎 (𝑒 2 )}(𝜎 (𝑒 3 )) ⇓ 𝑣 2
+⊲ Condition 𝑣 ∈ R V ⟦𝜏⟧
+Recall by logical relation 𝜎 {𝑦 ↦→ 𝑣 2 }(𝑒 2 ) ⇓ 𝑣 2 where 𝑣 2 ∈ R V ⟦𝜏⟧
+□
+B.3
+
+Lemma (Logically typed programs evaluate to values)
+
+Where 𝜎 ∈ R⟦Δ⟧,
+Δ ⊨ 𝑒 : 𝜏 =⇒ ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+Proof.
+By logical typing 𝜎 (𝑒) ∈ R E ⟦𝜏⟧
+By logical relation ∃𝑣, 𝜎 (𝑒) ⇓ 𝑣
+
+B.4
+
+□
+
+Theorem (Compiler preserves program behavior)
+
+If ∅ ⊢ 𝑒 : base(𝜏), then
+(𝑎) 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ = ⟦𝑣⟧
+(𝑏) 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ ≠ ⟦𝑣⟧
+Proof.
+Consider each condition,
+⊲ Condition (𝑎),
+Because compiler preserves what programs will do ⟦𝑒⟧ = ⟦𝑣⟧
+⊲ Condition (𝑏),
+Because compiler preserves what programs won’t do ⟦𝑒⟧ ≠ ⟦𝑣⟧
+□
+
+Compiling to recurrent neurons
+
+B.5
+
+27
+
+Lemma (Compiler preserves what programs will do)
+∅ ⊢ 𝑒 : 𝜏 and 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ = ⟦𝑣⟧
+
+Proof.
+By induction on 𝑒 ⇓ 𝑣,
+⊲ Case 𝑣 ⇓ 𝑣
+Because compiler is deterministic ⟦𝑣⟧ = ⟦𝑣⟧
+⊲ Case succ(𝑒) ⇓ succ(𝑣)
+By assumption succ(𝑒) : N
+By inversion on typing 𝑒 : N
+⟦succ(𝑒)⟧
+(
+0
+= 𝑛 ↦→
+⟦𝑒⟧(𝑛 − 1)
+(
+0
+= 𝑛 ↦→
+⟦𝑣⟧(𝑛 − 1)
+
+if 𝑛 = 0
+otherwise
+
+By compiling
+
+if 𝑛 = 0
+otherwise
+
+By induction
+
+= ⟦succ(𝑣)⟧
+
+By compiling
+
+⊲ Case 𝑒 1𝑒 2 ⇓ 𝑣
+By assumption 𝑒 1 ⇓ 𝜆𝑥 .𝑒 and 𝑒 2 ⇓ 𝑣 2 and {𝑥 ↦→ 𝑣 2 }(𝑒) ⇓ 𝑣
+By assumption 𝑒 1𝑒 2 : 𝜏2
+By inversion on typing 𝑒 1 : 𝜏1 ⊸ 𝜏2 and 𝑒 2 : 𝜏1
+Because evaluation preserves typing 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 and 𝑣 2 : 𝜏1
+By inversion on typing 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2
+Because closing substitutions preserve typing {𝑥 ↦→ 𝑣 2 }(𝑒) : 𝜏2
+⟦𝑒 1𝑒 2 ⟧
+= ⟦𝑒 1 ⟧(⟦𝑒 2 ⟧)
+
+By compiling
+
+= ⟦𝜆𝑥 .𝑒⟧(⟦𝑣 2 ⟧)
+
+By induction
+
+= (𝑥® ↦→ ⟦𝑒⟧( ®
+𝑥)) (⟦𝑣 2 ⟧)
+
+By compiling
+
+= ⟦𝑒⟧(⟦𝑣 2 ⟧)
+
+By function application
+
+= ⟦{𝑥 ↦→ 𝑣 2 }(𝑒)⟧
+
+Compiling commutes with substitution
+
+= ⟦𝑣⟧
+
+By induction
+
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 2
+By assumption 𝑒 1 ⇓ tt and 𝑒 2 ⇓ 𝑣 2
+By assumption if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+By inversion on typing 𝑒 1 : 2 and 𝑒 2 : 𝜏
+
+28
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧
+= 𝜋1 (⟦𝑒 1 ⟧) · ⟦𝑒 2 ⟧ + 𝜋2 (⟦𝑒 1 ⟧) · ⟦𝑒 3 ⟧ By compiling
+= 𝜋1 (⟦tt⟧) · ⟦𝑣 2 ⟧ + 𝜋 2 (⟦tt⟧) · ⟦𝑒 3 ⟧
+
+By induction
+
+= 1 · ⟦𝑣 2 ⟧ + 0 · ⟦𝑒 3 ⟧
+
+By compiling
+
+= ⟦𝑣 2 ⟧
+
+By scalar multiplication
+
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3 ⇓ 𝑣 2
+Similar to previous case
+⊲ Case iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) ⇓ 𝑣 1
+By assumption 𝑒 1 ⇓ 𝑣 1 and 𝑒 3 ⇓ 0
+By assumption iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏
+By inversion on typing 𝑒 1 : 𝜏 and 𝑒 3 : N
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧
+∑︁
+=
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+By compiling
+
+𝑛∈ N
+
+= ⟦𝑒 3 ⟧(0) · ⟦𝑒 2 ⟧0 (⟦𝑒 1 ⟧) +
+
+∑︁
+
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+𝑛∈ N\0
+
+= ⟦0⟧(0) · ⟦𝑒 2 ⟧0 (⟦𝑣 1 ⟧) +
+
+∑︁
+
+⟦0⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑣 1 ⟧)
+
+Because
+
+∑︁
+
+𝑓 (𝑛) = 𝑓 (0) +
+
+𝑛∈ N
+
+∑︁
+
+𝑓 (𝑛)
+
+𝑛∈ N\0
+
+By induction
+
+𝑛∈ N\0
+
+= 1 · ⟦𝑒 2 ⟧0 (⟦𝑣 1 ⟧) +
+
+∑︁
+
+⟦0⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑣 1 ⟧)
+
+By compiling
+
+𝑛∈ N\0
+
+= 1 · ⟦𝑣 1 ⟧ +
+
+∑︁
+
+⟦0⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑣 1 ⟧)
+
+Because 𝑓 0 (𝑣) = 𝑣
+
+𝑛∈ N\0
+
+= ⟦𝑣 1 ⟧ +
+
+∑︁
+
+0 · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+Because ⟦0⟧(𝑛) = 0 if 𝑛 ≠ 0
+
+𝑛∈ N\0
+
+= ⟦𝑣 1 ⟧
+
+By addition
+
+⊲ Case iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) ⇓ 𝑣
+By assumption iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑣 3 ) ⇓ 𝑣 n and {𝑦 ↦→ 𝑣 n }(𝑒 2 ) ⇓ 𝑣 and 𝑒 3 ⇓ succ(𝑣 3 )
+By assumption iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏
+By inversion on typing 𝑒 1 : 𝜏 and 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏 and 𝑒 3 : N
+Because evaluation preserves typing succ(𝑣 3 ) : N
+By inversion on typing 𝑣 3 : N
+By typing iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑣 3 ) : 𝜏
+Because evaluation preserves typing 𝑣 n : 𝜏
+Because substitutions preserve typing {𝑦 ↦→ 𝑣 n }(𝑒 2 ) : 𝜏
+
+Compiling to recurrent neurons
+
+29
+
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧
+∑︁
+=
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Because 𝑓 𝑛 (𝑣) = 𝑓 (𝑓 (𝑛−1) (𝑣))
+
+⟦succ(𝑣 3 )⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+By induction
+
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+= ⟦succ(𝑣 3 )⟧(0) · ⟦𝑒 2 ⟧0 (⟦𝑒 1 ⟧) +
+
+∑︁
+
+⟦succ(𝑣 3 )⟧(𝑛) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Because
+
+∑︁
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+𝑓 (𝑛) = 𝑓 (0) +
+
+𝑛∈ N
+
+𝑛∈ N\0
+
+= 0 · ⟦𝑒 2 ⟧0 (⟦𝑒 1 ⟧) +
+
+∑︁
+
+∑︁
+
+𝑓 (𝑛)
+
+𝑛∈ N\0
+
+By compiling
+
+𝑛∈ N\0
+
+=
+
+∑︁
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧(⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+By scalar multiplication
+
+⟦𝑒 2 ⟧(⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+Compiling maps to multilinear maps
+
+∑︁
+
+Compiling maps to multilinear maps
+
+𝑛∈ N\0
+
+=
+
+∑︁
+𝑛∈ N\0
+
+= ⟦𝑒 2 ⟧(
+
+⟦𝑣 3 ⟧(𝑛 − 1) · ⟦𝑒 2 ⟧ (𝑛−1) (⟦𝑒 1 ⟧))
+
+𝑛∈ N\0
+
+!
+= ⟦𝑒 2 ⟧
+
+∑︁
+
+⟦𝑣 3 ⟧(𝑛) · ⟦𝑒 2 ⟧𝑛 (⟦𝑒 1 ⟧)
+
+Because
+
+𝑛∈ N
+
+∑︁
+
+𝑓 (𝑛 − 1) =
+
+𝑛∈ N\0
+
+= ⟦𝑒 2 ⟧(⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑣 3 )⟧)
+
+By compiling
+
+= ⟦𝑒 2 ⟧(⟦𝑣 n ⟧)
+
+By induction
+
+∑︁
+
+𝑓 (𝑛)
+
+𝑛∈ N
+
+= ⟦{𝑦 ↦→ 𝑣 n }(𝑒 2 )⟧
+
+Compiling commutes with substitution
+
+= ⟦𝑣⟧
+
+By induction
+
+□
+
+B.6
+
+Lemma (Compiler preserves what programs won’t do)
+∅ ⊢ 𝑒 : base(𝜏) and 𝑒 ⇓ 𝑣 =⇒ ⟦𝑒⟧ ≠ ⟦𝑣⟧
+
+Proof.
+Closed programs produce values, thus 𝑒 ⇓ 𝑣 1 where 𝑣 1 ≠ 𝑣. Now consider the boolean case. Because
+of canonical forms 𝑣 and 𝑣 1 are either tt or ff, but cannot be equal. Without loss of generality,
+suppose 𝑣 = ff and 𝑣 1 = tt. By negation ⟦𝑒⟧ = ⟦𝑣⟧, but the compiler preserves what programs do.
+Therefore we have a contradiction.
+ 
+ 
+⟦𝑒⟧ = ⟦tt⟧ = 1 0 = ⟦ff⟧ = 0 1
+A similar argument holds for the natural numbers case.
+
+B.7
+
+□
+
+Lemma (Compiler maps programs to multilinear maps)
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 =⇒ ⟦𝑒⟧( ®
+𝜎, 𝛼 1 · 𝑥®1 + 𝛼 2 · 𝑥®2 ) = 𝛼 1 · ⟦𝑒⟧( ®
+𝜎, 𝑥®1 ) + 𝛼 2 · ⟦𝑒⟧( ®
+𝜎, 𝑥®2 )
+
+Proof.
+Immediate from compiler mapping programs to additive and homogeneous maps.
+
+□
+
+30
+
+B.8
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Lemma (Compiler maps programs to additive maps)
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 =⇒ ⟦𝑒⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 ) = ⟦𝑒⟧( ®
+𝜎, 𝑥®1 ) + ⟦𝑒⟧( ®
+𝜎, 𝑥®2 )
+
+Proof.
+By induction on 𝑒,
+⊲ Case 𝑦
+Consider whether 𝑥 = 𝑦,
+⊲ Case 𝑥 = 𝑦
+By inversion Δ = ∅
+⟦𝑥⟧(𝑥® + ®
+𝑦)
+= 𝑥® + 𝑦®
+
+By compiling
+
+= ⟦𝑥⟧( ®
+𝑥) + ⟦𝑦⟧( ®
+𝑦)
+
+By compiling
+
+⊲ Case 𝑥 ≠ 𝑦
+Vacuous because we assume a contradiction Δ, 𝑥 :𝜏1 ⊢ 𝑦 : 𝜏2
+⊲ Case tt
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ tt : 𝜏2
+⊲ Case ff
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ ff : 𝜏2
+⊲ Case 0
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ 0 : 𝜏2
+⊲ Case succ(𝑒)
+By inversion Δ, 𝑥 :𝜏 ⊢ 𝑒 : N
+⟦succ(𝑒)⟧(𝜎®1 + 𝜎®2 )
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦𝑒⟧( ®
+𝜎, 𝑥®1 + 𝜎®2 )(𝑛 − 1) otherwise
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦𝑒⟧( ®
+𝜎, 𝑥®1 ) (𝑛 − 1) + ⟦𝑒⟧( ®
+𝜎, 𝑥®2 ) (𝑛 − 1) otherwise
+(
+!
+(
+0
+if 𝑛 = 0
+0
+= 𝑛 ↦→
++ 𝑛 ↦→
+⟦𝑒⟧(𝜎®1 ) (𝑛 − 1) otherwise
+⟦𝑒⟧(𝜎®2 ) (𝑛 − 1)
+= ⟦succ(𝑒)⟧(𝜎®1 ) + ⟦succ(𝑒)⟧(𝜎®2 )
+
+By compiling
+By induction
+if 𝑛 = 0
+otherwise
+
+!
+By addition of functions
+By compiling
+
+⊲ Case 𝜆𝑦.𝑒
+Consider whether 𝑥 = 𝑦,
+⊲ Case 𝑥 = 𝑦
+Vacuous by Barendregt’s convention: free and bound variables must be unique.
+⊲ Case 𝑥 ≠ 𝑦
+By inversion on typing Δ, 𝑥 :𝜏, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2
+
+Compiling to recurrent neurons
+
+31
+
+⟦𝜆𝑦.𝑒⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, 𝑥®1 + 𝑥®2, ®
+𝑦)
+
+By compiling
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, 𝑥®1 + 𝑥®2, ®
+𝑦)Δ,𝑦:𝜏1,𝑥:𝜏
+
+Compiling invariant to exchange
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, 𝑥®1 + 𝑥®2 )
+
+By restricting environments
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, 𝑥®1 ) + ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, 𝑥®2 )
+
+By induction
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, 𝑥®1 )Δ,𝑥:𝜏,𝑦:𝜏1 + ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, 𝑥®2 )Δ,𝑥:𝜏,𝑦:𝜏1
+
+Compiling invariant to exchange
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, 𝑥®1, ®
+𝑦) + ⟦𝑒⟧( ®
+𝜎, 𝑥®2, ®
+𝑦)
+
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, 𝑥®1, ®
+𝑦) + 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, 𝑥®2, ®
+𝑦)
+
+By restricting environments
+By addition of functions
+
+= ⟦𝜆𝑦.𝑒⟧( ®
+𝜎, 𝑥®1 ) + ⟦𝜆𝑦.𝑒⟧( ®
+𝜎, 𝑥®2 )
+
+By compiling
+
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3
+By inversion on typing Δ, 𝑥 :𝜏1 = Δ1 ◦ Δ2 and Δ1 ⊢ 𝑒 1 : 2 and Δ2 ⊢ 𝑒 2 : 𝜏 and Δ2 ⊢ 𝑒 3 : 𝜏
+Consider whether 𝑥 ∈ fv(𝑒 1 ) or (𝑥 ∈ fv(𝑒 2 ) ∧ 𝑥 ∈ fv(𝑒 3 )),
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+Because contexts permit exchange Δ11, 𝑥 :𝜏1 ⊢ 𝑒 1 : 2
+⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )
+= 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋 2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+By compiling
+
+= 𝜋1 (⟦𝑒 1 ⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )Δ11,𝑥:𝜏1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋 2 (⟦𝑒 1 ⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )Δ11,𝑥:𝜏1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Compiling invariant to exchange
+
+= 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ11,𝑥:𝜏1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋 2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ11,𝑥:𝜏1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Because (( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )Δ11,𝑥:𝜏1 = ( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ11,𝑥:𝜏1
+
+= 𝜋 1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 + 𝑥®2 )) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 + 𝑥®2 )) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+By restricting environments
+
+= 𝜋 1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 ) + ⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 )) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 ) + ⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 )) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+By induction
+
+= (𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 )) + 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 ))) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ (𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 )) + 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 ))) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Because 𝜋𝑖 is linear
+
+= (𝜋 1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 )Δ1 ) + 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 )Δ1 )) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ (𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 )Δ1 ) + 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 )Δ1 )) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Compiling invariant to exchange
+
+= (𝜋 1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) + 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ (𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) + 𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Because (𝜎® Δ11 , 𝑥®𝑖 )Δ1 = ( ®
+𝜎, 𝑥®𝑖 )Δ1
+
+= 𝜋 1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+Because · distributes over +
+
+= 𝜋 1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 )Δ2
++ 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 ) · ⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®2 )Δ2
++ 𝜋2 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 ) · ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®2 )Δ2
+
+Because ( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 = ( ®
+𝜎, 𝑥®1 )Δ2 = ( ®
+𝜎, 𝑥®2 )Δ2
+
+= ⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎, 𝑥®1 ) + ⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎, 𝑥®2 )
+
+By compiling
+
+32
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Case 𝑥 ∈ fv(𝑒 2 ) ∧ 𝑥 ∈ fv(𝑒 3 )
+Similar to previous case
+⊲ Case iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )
+By inversion on typing Δ, 𝑥 :𝜏1 = Δ1 ◦ Δ2 ◦ Δ3 and Δ1 ⊢ 𝑒 1 : 𝜏 and Δ2, 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏 and
+Δ3 ⊢ 𝑒 3 : N
+Consider whether 𝑥 ∈ fv(𝑒 1 ) or 𝑥 ∈ fv(𝑒 2 ) or 𝑥 ∈ fv(𝑒 3 ),
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+Because contexts permit exchange Δ11, 𝑥 :𝜏1 ⊢ 𝑒 1 : 𝜏
+By induction ⟦𝑒 2 ⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 , 𝑦®1 + 𝑦®2 ) = ⟦𝑒⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 , 𝑦®1 )+⟦𝑒⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 , 𝑦®2 )
+Because function composition preserves additivity (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛
+
+=
+
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )
+∑︁
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )
+
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧(( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )Δ11,𝑥:𝜏1 )
+
+Compiling invariant to exchange
+
+𝑛∈ N
+
+=
+
+∑︁
+
+𝑛
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 ) (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ11,𝑥:𝜏1 )
+
+Because (( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ1 )Δ11,𝑥:𝜏1 = ( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ11,𝑥:𝜏1
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 + 𝑥®2 ))
+
+By restricting environments
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 ) + ⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 ))
+
+By induction
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®1 )Δ1 + ⟦𝑒 1 ⟧(𝜎® Δ11 , 𝑥®2 )Δ1 )
+
+Compiling invariant to exchange
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 + ⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )
+
+Because (𝜎® Δ11 , 𝑥®1 )Δ1 = ( ®
+𝜎, 𝑥®1 )Δ1 and (𝜎® Δ11 , 𝑥®2 )Δ1 = ( ®
+𝜎, 𝑥®2 )Δ1
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 )
+
+If 𝑓 additive,
+
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+𝑛
+
++ ⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 ) (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )
+=
+
+∑︁
+
+𝑎 · 𝑓 𝑛 (𝑣 + 𝑤) = 𝑎 · (𝑓 𝑛 (𝑣) + 𝑓 𝑛 (𝑤)) = 𝑎 · 𝑓 𝑛 (𝑣) + 𝑎 · 𝑓 𝑛 (𝑤)
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 )
+
+𝑛∈ N
+
++
+
+∑︁
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )
+
+𝑛∈ N
+
+Because
+
+∑︁
+
+𝑓 (𝑛) + 𝑔(𝑛) =
+
+𝑛∈ N
+
+∑︁
+𝑛∈ N
+
+𝑓 (𝑛) +
+
+∑︁
+
+𝑔(𝑛)
+
+𝑛∈ N
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 )
+
+𝑛∈ N
+
++
+
+∑︁
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )
+
+Because ( ®
+𝜎, 𝑥®1 )Δ3 = ( ®
+𝜎, 𝑥®2 )Δ3 = ( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ3
+
+𝑛∈ N
+
+=
+
+∑︁
+
+𝑛
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®1 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®1 )Δ2 ) (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®1 )Δ1 )
+
+𝑛∈ N
+
++
+
+∑︁
+
+⟦𝑒 3 ⟧( ®
+𝜎, 𝑥®2 )Δ3 (𝑛) · (⟦𝑒 2 ⟧( ®
+𝜎, 𝑥®2 )Δ2 )𝑛 (⟦𝑒 1 ⟧( ®
+𝜎, 𝑥®2 )Δ1 )
+
+Because ( ®
+𝜎, 𝑥®1 )Δ2 = ( ®
+𝜎, 𝑥®2 )Δ2 = ( ®
+𝜎, 𝑥®1 + 𝑥®2 )Δ2
+
+𝑛∈ N
+
+= ⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧( ®
+𝜎, 𝑥®1 ) + ⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧( ®
+𝜎, 𝑥®2 )
+
+By compiling
+
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+Similar to previous case
+⊲ Case 𝑥 ∈ fv(𝑒 3 )
+Similar to previous case
+□
+
+Compiling to recurrent neurons
+
+B.9
+
+33
+
+Lemma (Compiler maps programs to homogeneous maps)
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 =⇒ 𝛼 · ⟦𝑒⟧( ®
+𝜎, ®
+𝑥)
+
+Proof.
+By induction on 𝑒, similar to showing the compiler maps programs to additive maps.
+
+B.10
+
+Lemma (Compiler commutes with substitution)
+Δ, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2 =⇒ ⟦{𝑥 ↦→ 𝑣 }(𝑒)⟧( ®
+𝜎) = ⟦𝑒⟧( ®
+𝜎, ⟦𝑣⟧)
+
+Proof.
+By induction on 𝑒,
+⊲ Case 𝑦
+Consider whether 𝑥 = 𝑦
+⊲ Case 𝑥 = 𝑦
+By inversion on typing Δ = ∅
+⟦{𝑥 ↦→ 𝑣 }(𝑥)⟧
+= ⟦𝑣⟧
+
+By substitution
+
+= ⟦𝑥⟧(⟦𝑣⟧)
+
+By compiling
+
+⊲ Case 𝑥 ≠ 𝑦
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ 𝑦 : 𝜏2
+⊲ Case tt
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ tt : 𝜏2
+⊲ Case ff
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ ff : 𝜏2
+⊲ Case 0
+Vacuous because we assume Δ, 𝑥 :𝜏1 ⊢ 0 : 𝜏2
+⊲ Case succ(𝑒)
+By inversion on typing Δ, 𝑥 :𝜏 ⊢ 𝑒 : N
+⟦{𝑥 ↦→ 𝑣 }(succ(𝑒))⟧( ®
+𝜎)
+= ⟦succ({𝑥 ↦→ 𝑣 }(𝑒))⟧( ®
+𝜎)
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦{𝑥 ↦→ 𝑣 }(𝑒)⟧( ®
+𝜎) (𝑛 − 1) otherwise
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦𝑒⟧( ®
+𝜎, ⟦𝑣⟧) (𝑛 − 1) otherwise
+
+By substitution
+
+= ⟦succ(𝑒)⟧( ®
+𝜎, ⟦𝑣⟧)
+
+By compiling
+
+By compiling
+By induction
+
+□
+
+34
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Case 𝜆𝑦.𝑒
+Consider whether 𝑥 ≠ 𝑦,
+⊲ Case 𝑥 ≠ 𝑦
+By inversion on typing Δ, 𝑥 :𝜏, 𝑦 :𝜏1 ⊢ 𝑒 : 𝜏2
+Because contexts permit exchange Δ, 𝑦 :𝜏1, 𝑥 :𝜏 ⊢ 𝑒 : 𝜏2
+Because substitution preserves typing Δ, 𝑦 :𝜏1 ⊢ {𝑥 ↦→ 𝑣 }(𝑒) : 𝜏2
+⟦{𝑥 ↦→ 𝑣 }(𝜆𝑦.𝑒)⟧( ®
+𝜎)
+= ⟦𝜆𝑦.{𝑥 ↦→ 𝑣 }(𝑒)⟧( ®
+𝜎)
+
+By substitution
+
+= 𝑦® ↦→ ⟦{𝑥 ↦→ 𝑣 }(𝑒)⟧( ®
+𝜎, ®
+𝑦)
+
+By compiling
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, ⟦𝑣⟧)
+
+By induction
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ®
+𝑦, ⟦𝑣⟧)Δ,𝑥:𝜏,𝑦:𝜏1
+
+Compiling is exchange invariant
+
+= 𝑦® ↦→ ⟦𝑒⟧( ®
+𝜎, ⟦𝑣⟧, ®
+𝑦)
+
+By restricting environments
+
+= ⟦𝜆𝑦.𝑒⟧( ®
+𝜎, ⟦𝑣⟧)
+
+By compiling
+
+⊲ Case 𝑥 = 𝑦
+Vacuous by Barendregt’s convention: free and bound variables must be distinct.
+⊲ Case 𝑒 1𝑒 2
+By typing 𝑥 ∈ fv(𝑒 1𝑒 2 )
+Consider whether 𝑥 ∈ fv(𝑒 1 ) or 𝑥 ∈ fv(𝑒 2 ),
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+By assumption ( ®
+𝜎, ⟦𝑣⟧) ∈ ⟦Δ, 𝑥 :𝜏⟧
+By inversion Δ = Δ11 ◦ Δ12 and Δ11 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 ) : 𝜏1 ⊸ 𝜏2 and Δ12 ⊢ 𝑒 2 : 𝜏1
+By inversion Δ, 𝑥 :𝜏 = Δ21 ◦ Δ22 and Δ21 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 and Δ22 ⊢ 𝑒 2 : 𝜏1
+Because contexts permit exchange Δ11, 𝑥 :𝜏 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2
+⟦{𝑥 ↦→ 𝑣 }(𝑒 1𝑒 2 )⟧( ®
+𝜎)
+= ⟦{𝑥 ↦→ 𝑣 }(𝑒 1 )𝑒 2 ⟧( ®
+𝜎)
+
+By substitution and 𝑥 ∈ fv(𝑒 1 )
+
+= ⟦{𝑥 ↦→ 𝑣 }(𝑒 1 )⟧(𝜎® Δ11 ) (⟦𝑒 2 ⟧(𝜎® Δ12 ))
+
+By compiling
+
+= ⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧) (⟦𝑒 2 ⟧(𝜎® Δ12 ))
+
+By induction
+
+= ⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)Δ21 (⟦𝑒 2 ⟧(𝜎® Δ12 )Δ22 )
+
+Compiling invariant to exchange
+
+= ⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 (⟦𝑒 2 ⟧(𝜎® Δ12 )Δ22 )
+
+Because (𝜎® Δ11 , ⟦𝑣⟧)Δ21 = ( ®
+𝜎, ⟦𝑣⟧)Δ21
+
+= ⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 (⟦𝑒 2 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ22 )
+
+Because (𝜎® Δ12 )Δ22 = ( ®
+𝜎, ⟦𝑣⟧)Δ22
+
+= ⟦𝑒 1𝑒 2 ⟧( ®
+𝜎, ⟦𝑣⟧)
+
+By compiling
+
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+Similar to previous case
+⊲ Case if 𝑒 1 then 𝑒 2 else 𝑒 3
+
+Compiling to recurrent neurons
+
+35
+
+By inversion on typing Δ = Δ11 ◦ Δ12 and Δ11 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 ) : 2 and Δ12 ⊢ 𝑒 2 : 𝜏 and
+Δ12 ⊢ 𝑒 3 : 𝜏
+By inversion on typing Δ, 𝑥 :𝜏1 = Δ21 ◦ Δ22 and Δ21 ⊢ 𝑒 1 : 2 and Δ22 ⊢ 𝑒 2 : 𝜏 and Δ22 ⊢ 𝑒 3 : 𝜏
+Consider whether 𝑥 ∈ fv(𝑒 1 ) or (𝑥 ∈ fv(𝑒 2 ) ∧ 𝑥 ∈ fv(𝑒 3 )),
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+Because contexts permit exchange Δ11, 𝑥 :𝜏1 ⊢ 𝑒 1 : 2
+⟦{𝑥 ↦→ 𝑣 }(if 𝑒 1 then 𝑒 2 else 𝑒 3 )⟧( ®
+𝜎)
+= ⟦if {𝑥 ↦→ 𝑣 }(𝑒 1 ) then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎)
+
+By substitution and 𝑥 ∈ fv(𝑒 1 )
+
+= 𝜋1 (⟦{𝑥 ↦→ 𝑣 }(𝑒 1 )⟧(𝜎® Δ11 )) · ⟦𝑒 2 ⟧( ®
+𝜎)Δ12
++ 𝜋 2 (⟦{𝑥 ↦→ 𝑣 }(𝑒 1 )⟧(𝜎® Δ11 )) · ⟦𝑒 3 ⟧( ®
+𝜎)Δ12
+
+By compiling
+
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)) · ⟦𝑒 2 ⟧( ®
+𝜎)Δ12
++ 𝜋 2 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)) · ⟦𝑒 3 ⟧( ®
+𝜎)Δ12
+
+By induction
+
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)Δ21 ) · ⟦𝑒 2 ⟧(( ®
+𝜎)Δ12 )Δ22
++ 𝜋 2 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)Δ21 ) · ⟦𝑒 3 ⟧(( ®
+𝜎)Δ12 )Δ22
+
+Compiling invariant to exchange
+
+= 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 ) · ⟦𝑒 2 ⟧(( ®
+𝜎)Δ12 )Δ22
++ 𝜋 2 (⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 ) · ⟦𝑒 3 ⟧(( ®
+𝜎)Δ12 )Δ22
+
+Because (𝜎® Δ11 , ⟦𝑣⟧)Δ21 = ( ®
+𝜎, ⟦𝑣⟧)Δ21
+
+= 𝜋1 (⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 ) · ⟦𝑒 2 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ22
++ 𝜋 2 (⟦𝑒 1 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ21 ) · ⟦𝑒 3 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ22
+
+Because (( ®
+𝜎)Δ12 )Δ22 = ( ®
+𝜎, ⟦𝑣⟧)Δ22
+
+= ⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎, ⟦𝑣⟧)
+
+By compiling
+
+⊲ Case 𝑥 ∈ fv(𝑒 2 ) ∧ 𝑥 ∈ fv(𝑒 3 )
+Similar to previous case
+⊲ Case iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )
+By typing 𝑥 ∈ fv(iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ))
+Consider whether 𝑥 ∈ fv(𝑒 1 ) or 𝑥 ∈ fv(𝑒 2 ) or 𝑥 ∈ fv(𝑒 3 ),
+⊲ Case 𝑥 ∈ fv(𝑒 1 )
+By inversion on typing Δ = Δ11 ◦ Δ12 ◦ Δ13 and Δ11 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 ) : 𝜏 and Δ12, 𝑦 :𝜏 ⊢
+𝑒 2 : 𝜏 and Δ13 ⊢ 𝑒 3 : N
+By inversion on typing Δ, 𝑥 :𝜏 = Δ21 ◦ Δ22 ◦ Δ23 and Δ21 ⊢ 𝑒 1 : 𝜏 and Δ22, 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏
+and Δ23 ⊢ 𝑒 3 : 𝜏
+Because contexts permit exchange Δ11, 𝑥 :𝜏 ⊢ 𝑒 1 : 𝜏
+⟦{𝑥 ↦→ 𝑣 }(iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ))⟧( ®
+𝜎)
+= ⟦iter{{𝑥 ↦→ 𝑣 }(𝑒 1 ) | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧( ®
+𝜎)
+∑︁
+=
+⟦𝑒 3 ⟧(𝜎® Δ13 ) (𝑛) · ⟦𝑒 2 ⟧(𝜎® Δ12 )𝑛 (⟦{𝑥 ↦→ 𝑣 }(𝑒 1 )⟧(𝜎® Δ11 ))
+
+By substitution and 𝑥 ∈ fv(𝑒 1 )
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧(𝜎® Δ13 ) (𝑛) · ⟦𝑒 2 ⟧(𝜎® Δ12 )𝑛 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧))
+
+By induction
+
+⟦𝑒 3 ⟧(𝜎® Δ13 )Δ23 (𝑛) · ⟦𝑒 2 ⟧((𝜎® Δ12 )Δ22 )𝑛 (⟦𝑒 1 ⟧(𝜎® Δ11 , ⟦𝑣⟧)Δ21 )
+
+Compiling invariant to exchange
+
+⟦𝑒 3 ⟧(𝜎® Δ13 )Δ23 (𝑛) · ⟦𝑒 2 ⟧((𝜎® Δ12 )Δ22 )𝑛 (⟦𝑒 1 ⟧(( ®
+𝜎, ⟦𝑣⟧)Δ21 )
+
+Because (𝜎® Δ11 , ⟦𝑣⟧)Δ21 = ( ®
+𝜎, ⟦𝑣⟧)Δ21
+
+⟦𝑒 3 ⟧(𝜎® Δ13 )Δ23 (𝑛) · ⟦𝑒 2 ⟧(( ®
+𝜎, ⟦𝑣⟧)Δ22 )𝑛 (⟦𝑒 1 ⟧(( ®
+𝜎, ⟦𝑣⟧)Δ21 )
+
+Because (𝜎® Δ12 )Δ22 = ( ®
+𝜎, ⟦𝑣⟧)Δ22
+
+⟦𝑒 3 ⟧( ®
+𝜎, ⟦𝑣⟧)Δ23 (𝑛) · ⟦𝑒 2 ⟧(( ®
+𝜎, ⟦𝑣⟧)Δ22 )𝑛 (⟦𝑒 1 ⟧(( ®
+𝜎, ⟦𝑣⟧)Δ21 )
+
+Because (𝜎® Δ13 )Δ23 = ( ®
+𝜎, ⟦𝑣⟧)Δ23
+
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+= ⟦𝑒 1𝑒 2 ⟧( ®
+𝜎, ⟦𝑣⟧)
+
+By compiling
+
+36
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⊲ Case 𝑥 ∈ fv(𝑒 2 )
+Similar to previous case
+⊲ Case 𝑥 ∈ fv(𝑒 3 )
+Similar to previous case
+□
+
+B.11
+
+Lemma (Compiler is invariant to exchange)
+Δ1 ⊢ 𝑒 : 𝜏 and Δ2 ⊢ 𝑒 : 𝜏 =⇒ ⟦𝑒⟧(𝜎®1 ) = ⟦𝑒⟧(𝜎®1 )Δ2
+
+Proof.
+By induction on 𝑒,
+⊲ Case 𝑥 :𝜏 ⊢ 𝑥 : 𝜏
+By assumption Δ1 = Δ2 = 𝑥 :𝜏
+By assumption 𝑥® ∈ ⟦𝑥 :𝜏⟧
+⟦𝑥⟧( ®
+𝑥)
+= ⟦𝑥⟧(𝑥®𝑥:𝜏 )
+
+By restricting environments
+
+⊲ Case ∅ ⊢ tt : 2
+By inversion on typing Δ1 = Δ2 = ∅
+⟦tt⟧(0)
+= ⟦tt⟧(0)
+
+By reflexivity
+
+⊲ Case ∅ ⊢ ff : 2
+Similar to previous case
+⊲ Case ∅ ⊢ 0 : 𝜏
+By assumption Δ1 = Δ2 = ∅
+⟦0⟧(0)
+= ⟦0⟧(0∅ )
+⊲ Case Δ1 ⊢ succ(𝑒) : N
+By assumption Δ2 ⊢ 𝑒 : N
+By assumption 𝜎®1 ∈ ⟦Δ1 ⟧
+
+By restricting environments
+
+Compiling to recurrent neurons
+
+37
+
+⟦succ(𝑒)⟧(𝜎®1 )
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦𝑒⟧(𝜎®1 ) (𝑛 − 1) otherwise
+(
+0
+if 𝑛 = 0
+= 𝑛 ↦→
+⟦𝑒⟧(𝜎®1 )Δ2 (𝑛 − 1) otherwise
+= ⟦succ(𝑒)⟧(𝜎®1 )Δ2
+
+By compiling
+By induction
+By compiling
+
+⊲ Case Δ1 ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2
+By assumption Δ2 ⊢ 𝜆𝑥 .𝑒 : 𝜏1 ⊸ 𝜏2 and Δ2, 𝑥 :𝜏1 ⊢ 𝑒 : 𝜏2
+By assumption and compiling environments (𝜎®1, ®
+𝑥) ∈ ⟦Δ1, 𝑥 :𝜏⟧
+
+⟦𝜆𝑥 .𝑒⟧(𝜎®1 )
+= 𝑥® ↦→ ⟦𝑒⟧(𝜎®1, ®
+𝑥)
+
+By compiling
+
+= 𝑥® ↦→ ⟦𝑒⟧(𝜎®1, ®
+𝑥)Δ2,𝑥:𝜏1
+
+By induction
+
+= 𝑥® ↦→ ⟦𝑒⟧((𝜎®1 )Δ2 , ®
+𝑥)
+
+By restricting environments
+
+= ⟦𝜆𝑥 .𝑒⟧(𝜎®1 )Δ2
+
+By compiling
+
+⊲ Case Δ1 ⊢ 𝑒 1𝑒 2 : 𝜏2
+By assumption Δ1 = Δ11 ◦ Δ12 and Δ11 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 and Δ12 ⊢ 𝑒 2 : 𝜏1
+By assumption Δ2 ⊢ 𝑒 1𝑒 2 : 𝜏2 and Δ2 = Δ21 ◦ Δ22 and Δ21 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 and Δ22 ⊢ 𝑒 2 : 𝜏1
+Because typing only admits exchange of contexts Δ1 = Δ11 ◦ Δ12 = Δ21 ◦ Δ22
+
+⟦𝑒 1𝑒 2 ⟧(𝜎®1 )
+= ⟦𝑒 1 ⟧(𝜎®1 )Δ11 (⟦𝑒 2 ⟧(𝜎®1 )Δ12 )
+
+By compiling
+
+= ⟦𝑒 1 ⟧((𝜎®1 )Δ11 )Δ21 (⟦𝑒 2 ⟧((𝜎®1 )Δ12 )Δ22 )
+
+By induction
+
+= ⟦𝑒 1 ⟧(𝜎®1 )Δ21 (⟦𝑒 2 ⟧((𝜎®1 )Δ12 )Δ22 )
+
+Because ((𝜎®1 )Δ11 )Δ21 = (𝜎®1 )Δ21
+
+= ⟦𝑒 1 ⟧(𝜎®1 )Δ21 (⟦𝑒 2 ⟧(𝜎®1 )Δ22 )
+
+Because ((𝜎®1 )Δ12 )Δ22 = (𝜎®1 )Δ22
+
+= ⟦𝑒 1𝑒 2 ⟧(𝜎®1 )Δ2
+
+By compiling
+
+⊲ Case Δ1 ⊢ if 𝑒 1 then 𝑒 2 else 𝑒 3 : 𝜏
+By inversion Δ = Δ11 ◦ Δ12 and Δ11 ⊢ {𝑥 ↦→ 𝑣 }(𝑒 1 ) : 2 and Δ12 ⊢ 𝑒 2 : 𝜏 and Δ12 ⊢ 𝑒 3 : 𝜏
+By inversion Δ, 𝑥 :𝜏1 = Δ21 ◦ Δ22 and Δ21 ⊢ 𝑒 1 : 2 and Δ22 ⊢ 𝑒 2 : 𝜏 and Δ22 ⊢ 𝑒 3 : 𝜏
+
+38
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎)
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 )) · ⟦𝑒 2 ⟧( ®
+𝜎)Δ12
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 )) · ⟦𝑒 3 ⟧( ®
+𝜎)Δ12
+
+By compiling
+
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ11 )Δ21 ) · ⟦𝑒 2 ⟧(( ®
+𝜎)Δ12 )Δ22
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ11 )Δ21 ) · ⟦𝑒 3 ⟧(( ®
+𝜎)Δ12 )Δ22
+
+By induction
+
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ21 )) · ⟦𝑒 2 ⟧(( ®
+𝜎)Δ12 )Δ22
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ21 )) · ⟦𝑒 3 ⟧(( ®
+𝜎)Δ12 )Δ22
+
+Because (𝜎® Δ11 )Δ21 = (𝜎® Δ21 )
+
+= 𝜋1 (⟦𝑒 1 ⟧(𝜎® Δ21 )) · ⟦𝑒 2 ⟧( ®
+𝜎)Δ22
++ 𝜋2 (⟦𝑒 1 ⟧(𝜎® Δ21 )) · ⟦𝑒 3 ⟧( ®
+𝜎)Δ22
+
+Because (( ®
+𝜎)Δ12 )Δ22 = ( ®
+𝜎)Δ22
+
+= ⟦if 𝑒 1 then 𝑒 2 else 𝑒 3 ⟧( ®
+𝜎)Δ2
+
+By compiling
+
+⊲ Case Δ1 ◦ Δ2 ◦ Δ3 ⊢ iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏
+By assumption Δ1 = Δ11 ◦ Δ12 ◦ Δ13 and Δ11 ⊢ 𝑒 1 : 𝜏 and Δ12, 𝑦 :𝜏 ⊢ 𝑒 2 : 𝜏 andΔ13 ⊢ 𝑒 3 : N
+By assumption Δ2 ⊢ iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 ) : 𝜏2
+By assumption Δ2 = Δ21 ◦ Δ22 ◦ Δ23 and Δ21 ⊢ 𝑒 1 : 𝜏1 ⊸ 𝜏2 and Δ22 ⊢ 𝑒 2 : 𝜏1 and Δ23 ⊢ 𝑒 3 : 𝜏
+Because typing only admits exchange of contexts Δ3 = Δ31 ◦ Δ32 ◦ Δ33
+⟦iter{𝑒 1 | 𝑦 ↩→ 𝑒 2 }(𝑒 3 )⟧( ®
+𝜎)
+∑︁
+=
+⟦𝑒 3 ⟧((𝜎®1 )Δ13 ) (𝑛) · ⟦𝑒 2 ⟧((𝜎®1 )Δ12 )𝑛 (⟦𝑒 1 ⟧((𝜎®1 )Δ11 ))
+
+By compiling
+
+𝑛∈ N
+
+=
+
+∑︁
+
+⟦𝑒 3 ⟧(((𝜎®1 )Δ13 )Δ23 ) (𝑛) · ⟦𝑒 2 ⟧(((𝜎®1 )Δ12 )Δ22 )𝑛 (⟦𝑒 1 ⟧(((𝜎®1 )Δ11 )Δ31 ))
+
+By induction
+
+⟦𝑒 3 ⟧((𝜎®1 )Δ23 ) (𝑛) · ⟦𝑒 2 ⟧((𝜎® Δ12 )Δ22 )𝑛 (⟦𝑒 1 ⟧(((𝜎®1 )Δ11 )Δ31 ))
+
+Because ((𝜎®1 )Δ13 )Δ23 = (𝜎®1 )Δ23
+
+⟦𝑒 3 ⟧((𝜎®1 )Δ23 ) (𝑛) · ⟦𝑒 2 ⟧((𝜎®1 )Δ22 )𝑛 (⟦𝑒 1 ⟧(((𝜎®1 )Δ11 )Δ21 ))
+
+Because ((𝜎®1 )Δ12 )Δ22 = (𝜎®1 )Δ22
+
+⟦𝑒 3 ⟧((𝜎®1 )Δ23 ) (𝑛) · ⟦𝑒 2 ⟧((𝜎®1 )Δ22 )𝑛 (⟦𝑒 1 ⟧((𝜎®1 )Δ21 ))
+
+Because ((𝜎®1 )Δ11 )Δ21 = (𝜎®1 )Δ21
+
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+=
+
+∑︁
+𝑛∈ N
+
+= ⟦𝑒 1𝑒 2 ⟧(𝜎®1 )Δ2
+
+By compiling
+□
+
+Compiling to recurrent neurons
+
+C
+
+39
+
+EXPERIMENTS
+
+The following experiments replicate data from prior work on differentiable programming with
+first-class conditionals. Since our specification and implementation differ, these data were helpful
+to establish consistency with prior work. They are binary classification tasks with explicit conditional structure. Our findings are consistent with prior work, showing that programming neural
+networks with first-class conditionals helps them solve these tasks. Detailed specifications of model
+parameters are available in the artifact; they are consistent with prior work.
+C.1
+
+Conditional classification: XOR
+
+C.1.1 Task. This experiment studies how neural networks
+learn a binary classification involving XOR logic, shown in
+Fig. 18. The input is two images 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even and 𝑥 2 is odd, return ✓
+⊲ If 𝑥 1 is odd and 𝑥 2 is even, return ✓
+⊲ Otherwise, return ✗
+C.1.2 Models. Model D is a neural network programmed
+using Cajal (⊸, 2, N ) , the XOR structure is directly programmed
+using our compiler.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 18. XOR task
+
+𝘹
+
+𝑥, ®
+𝑦)
+⟦if 𝑥 then (if 𝑦 then ff else tt) else (if 𝑦 then tt else ff)⟧( ®
+Model T replaces this 2-linear map with random matrix𝑊 , similar to our iterative image transform
+experiments. Model I is a simple 3-layer feedforward neural network.
+
+XOR Dynamics
+1.0
+
+(bs: 64, lr: 1e-05)
+
+(bs: 128, lr: 1e-05)
+
+(bs: 256, lr: 1e-05)
+
+0.8
+0.6
+
+Accuracy
+
+1.0
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+(bs: 256, lr: 0.0001)
+
+0.8
+0.6
+
+1.0
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+(bs: 256, lr: 0.001)
+
+0.8
+0.6
+
+0
+
+1000
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+2000
+
+0
+
+500
+
+1000
+
+I
+
+0
+
+200
+
+Steps
+Fig. 19. Summary of dynamics across configurations
+
+400
+
+40
+
+C.2
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Conditional classification: EQ
+
+C.2.1 Task. This experiment studies how neural networks
+learn a binary classification involving EQ logic, shown in Fig.
+20. The input is two images 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 and 𝑥 2 are even, return ✓
+⊲ If 𝑥 1 and 𝑥 2 are odd, return ✓
+⊲ Otherwise, return ✗
+C.2.2 Models. Model D is a neural network programmed
+using Cajal (⊸, 2, N ) , the EQ structure is directly programmed
+using our compiler.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 20. EQ task
+
+𝘹
+
+⟦if 𝑥 then (if 𝑦 then tt else ff) else (if 𝑦 then ff else tt)⟧( ®
+𝑥, ®
+𝑦)
+Model T replaces this 2-linear map with random matrix𝑊 , similar to our iterative image transform
+experiments. Model I is a simple 3-layer feedforward neural network.
+
+EQ Dynamics
+1.0
+
+(bs: 64, lr: 1e-05)
+
+(bs: 128, lr: 1e-05)
+
+(bs: 256, lr: 1e-05)
+
+0.8
+0.6
+
+Accuracy
+
+1.0
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+(bs: 256, lr: 0.0001)
+
+0.8
+0.6
+
+1.0
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+(bs: 256, lr: 0.001)
+
+0.8
+0.6
+
+0
+
+1000
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+2000
+
+0
+
+500
+
+1000
+
+0
+
+Steps
+Fig. 21. Summary of dynamics across configurations
+
+200
+
+400
+
+Compiling to recurrent neurons
+
+C.3
+
+41
+
+Conditional classification: AND
+
+C.3.1 Task. This experiment studies how neural networks
+learn a binary classification involving AND logic, shown in
+Fig. 22. The input is two images 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even and 𝑥 2 is even, return ✓
+⊲ Otherwise, return ✗
+C.3.2 Models. Model D is a neural network programmed
+using Cajal (⊸, 2, N ) , the AND structure is directly programmed
+using our compiler.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 22. AND task
+
+𝘹
+
+⟦if 𝑥 then (if 𝑦 then tt else ff) else (if 𝑦 then ff else ff)⟧( ®
+𝑥, ®
+𝑦)
+Model T replaces this 2-linear map with random matrix𝑊 , similar to our iterative image transform
+experiments. Model I is a simple 3-layer feedforward neural network.
+
+AND Dynamics
+1.0
+
+(bs: 64, lr: 1e-05)
+
+(bs: 128, lr: 1e-05)
+
+(bs: 256, lr: 1e-05)
+
+0.9
+0.8
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+0.7
+
+Accuracy
+
+1.0
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+(bs: 256, lr: 0.0001)
+
+0.9
+0.8
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+0.7
+1.0
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+(bs: 256, lr: 0.001)
+
+0.9
+0.8
+0.7
+
+0
+
+1000
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+2000
+
+0
+
+500
+
+1000
+
+0
+
+Steps
+Fig. 23. Summary of dynamics across configurations
+
+200
+
+400
+
+42
+
+C.4
+
+Joey Velez-Ginorio, Nada Amin, Konrad Paul Kording, and Steve Zdancewic
+
+Conditional classification: OR
+
+C.4.1 Task. This experiment studies how neural networks
+learn a binary classification involving OR logic, shown in Fig.
+24. The input is two images 𝑥 1 and 𝑥 2 :
+⊲ If 𝑥 1 is even or 𝑥 2 is odd, return ✓
+⊲ Otherwise, return ✗
+C.4.2 Models. Model D is a neural network programmed
+using Cajal (⊸, 2, N ) , the AND structure is directly programmed
+using our compiler.
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+f(
+
+,
+
+)
+
+✓
+✓
+
+Fig. 24. OR Task
+
+𝘹
+
+⟦if 𝑥 then (if 𝑦 then tt else tt) else (if 𝑦 then tt else ff)⟧( ®
+𝑥, ®
+𝑦)
+Model T replaces this 2-linear map with random matrix𝑊 , similar to our iterative image transform
+experiments. Model I is a simple 3-layer feedforward neural network.
+
+OR Dynamics
+1.0
+
+(bs: 64, lr: 1e-05)
+
+(bs: 128, lr: 1e-05)
+
+(bs: 256, lr: 1e-05)
+
+0.9
+0.8
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+0.7
+
+Accuracy
+
+1.0
+
+(bs: 64, lr: 0.0001)
+
+(bs: 128, lr: 0.0001)
+
+(bs: 256, lr: 0.0001)
+
+0.9
+0.8
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+0.7
+1.0
+
+(bs: 64, lr: 0.001)
+
+(bs: 128, lr: 0.001)
+
+(bs: 256, lr: 0.001)
+
+0.9
+0.8
+0.7
+
+0
+
+1000
+
+D
+
+D
+
+D
+
+T
+
+T
+
+T
+
+I
+
+I
+
+I
+
+2000
+
+0
+
+500
+
+1000
+
+0
+
+Steps
+Fig. 25. Summary of dynamics across configurations
+
+200
+
+400
+
