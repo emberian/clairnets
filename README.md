@@ -25,24 +25,28 @@ automata-shortcuts result (computation distributes across depth).
 
 ```mermaid
 flowchart TB
-  P["problem (text)"] --> E["OLMo layers 1 … k"]
-  E -->|"hidden state at layer k"| G(("residual add"))
-  E -. read .-> A["α — COMPILE a typed factor-graph program<br/>(variables · domains · factors; NOT the answer)"]
-  A --> O["organ — narrow / chain / energy<br/>recurrent · checked · differentiable"]
-  O -. "γ — structured dense readback (zero-init gate)" .-> G
-  G --> L["OLMo layers k+1 … N"]
-  L --> H["LM head → answer token(s)"]
+  P["problem (text)"] --> E["host LLM layers 1 … k · FROZEN<br/>(OLMo / Gemma / Qwen / Nemotron-H / SmolLM / Pythia — any residual stream)"]
+  E -->|"hidden at k"| A["α · LATENT compile<br/>dense projection: hidden → organ state<br/>(no symbolic extraction)"]
+  A --> O["ORGAN BANK · FROZEN (pretrained)<br/>narrow · chain · energy · GF&#40;2&#41; · modular · graph · perm · type · Ising<br/>verifier-gated composition · certified-op + neural-guidance"]
+  O --> Y["γ · RICH-STATE readback<br/>partial lattice + confidence · zero-init gate"]
+  E -->|"hidden at k"| G(("residual add"))
+  Y -. "no-op @ init" .-> G
+  G --> L["host LLM layers k+1 … N · FROZEN"]
+  L --> H["LM head → answer"]
   H --> V{"exact verifier"}
-  V -->|"verifiable reward"| T["train: LoRA + organ"]
+  V -->|"verifiable reward"| T["train: LoRA + α + γ only"]
   T -. grad .-> A
-  T -. grad .-> O
+  T -. grad .-> Y
 ```
 
-One forward pass up the stack: at layer *k*, **α compiles** the hidden state into a typed factor-graph program
-(not a pre-solved answer); the **organ narrows** it recurrently *between* layers (no backprop through repeated
-host passes); **γ writes** the narrowed lattice densely back into the residual stream through a zero-init gate;
-the **LM head generates** the answer from a hidden state now saturated with the deduction; an **exact verifier**
-supplies the reward. The same α/γ pattern hosts the whole organ bank.
+One forward pass up a **frozen** host LLM: at layer *k*, **α latently compiles** the hidden state into the
+organ's input — a *dense projection*, **no symbolic extraction**; the **frozen, pretrained organ *bank*** narrows /
+derives / optimizes by **verifier-gated composition** — the right faculty for the problem (narrow for CSPs, energy/
+Ising for optimization, chain for derivation, GF(2)/modular for affine, …); **γ writes the rich narrowed state**
+(the *partial* lattice + confidence, not a cleaned answer — the LM mines what's useful) back through a zero-init
+gate; the **LM head generates** from a hidden state saturated with the deduction; an **exact verifier** supplies
+the reward. Only **LoRA + α + γ** train — base and organ stay frozen. The coupling is **residual-stream-agnostic**:
+proven on 7 bases across Transformer, Mamba-hybrid, and linear-attention architectures.
 
 ### Why it's shaped this way
 
