@@ -205,8 +205,11 @@ class OracleGamma(nn.Module):
 
 
 def _decoder_layers(peft_model):
-    base = peft_model.base_model.model if hasattr(peft_model, "base_model") else peft_model
-    return base.model.layers
+    """The residual-stream decoder-block ModuleList. Model-agnostic: delegates to the consolidated
+    clair.organ.graft.find_decoder_layers, which unwraps PEFT and resolves Llama / GPT-NeoX /
+    Gemma-multimodal / Nemotron-H-hybrid layer paths (original OLMo `model.layers` is its first probe)."""
+    from .organ.graft import find_decoder_layers       # lazy: avoid import cycle
+    return find_decoder_layers(peft_model)[0]
 
 
 class OracleReadout(nn.Module):

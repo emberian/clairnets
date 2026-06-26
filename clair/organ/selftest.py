@@ -202,7 +202,7 @@ def test_woven(full=False):
 
     if full:
         print("    running the FULL staged woven smoke (OLMo-2-1B)...", flush=True)
-        T.weave(["--smoke"])
+        T.weave("allenai/OLMo-2-0425-1B", regime="small", smoke=True)
         print("    full staged woven smoke completed")
     else:
         print("    (skip full OLMo staged smoke; pass --woven to run it)")
