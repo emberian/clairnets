@@ -43,8 +43,9 @@ from .. import csp as C
 from .. import curriculum as CU
 from .. import hard_tasks as HT
 from . import qc, render, trace
+from . import extra as EX
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 
 # --------------------------------------------------------------------------- skin partition
 # TRAIN skins dress train / val / ood_n / ood_relation. HELD-OUT skins dress ONLY ood_phrasing,
@@ -84,6 +85,33 @@ DENSITY = {
     "arithmetic": dict(pin_frac=0.9),
     "alldiff": dict(pin_frac=0.6),
 }
+
+# --------------------------------------------------------------- broadened (non-CSP) domain config
+# Each broadened domain ships TWO configs: a `train` distribution and a harder/wider `ood_domain`
+# distribution held out for per-domain size/difficulty generalization.
+EXTRA_DOMAINS = EX.DOMAINS                  # xor, graph, perm, typeinfer, fol, optimize
+EXTRA_TRAIN_CFG = {
+    "xor":       {"n": (5, 9)},
+    "graph":     {"n": (6, 14)},
+    "perm":      {"n": (4, 7)},
+    "typeinfer": {"budget": 3, "max_nodes": 14},
+    "fol":       {"depth": (1, 5)},
+    "optimize":  {},
+}
+EXTRA_OOD_CFG = {                            # per-domain held-out: wider N / deeper / harder
+    "xor":       {"n": (10, 14), "bands": (3, 4, 6, 12)},
+    "graph":     {"n": (18, 28), "p": (0.10, 0.20)},
+    "perm":      {"n": (8, 9)},
+    "typeinfer": {"budget": 4, "max_nodes": 20},
+    "fol":       {"depth": (4, 7)},
+    "optimize":  {"cut_n": (9, 13)},
+}
+# COMPOSITION pairs. Train teaches a subset of (head-domain + arith) pairings; the OOD-composition
+# split holds out ENTIRELY-UNSEEN domain pairings (xor/ordering heads + a 3-domain graph+perm chain),
+# so co-occurrence of domains is a clean generalization axis.
+COMPOSE_TRAIN_HEADS = ("graph", "fol", "perm", "typeinfer")
+COMPOSE_OOD_HEADS = ("xor", "ordering")
+COMPOSE_OOD_TRIPLE = ("graph", "perm")      # head=graph, triple=perm -> graph+perm+arith (3 domains)
 
 
 # --------------------------------------------------------------------------- problem factories
@@ -168,6 +196,7 @@ def _record(p, rendering, tr, split, family, seed, idx, csp):
     return _clean({
         "id": f"{split}-{rid}",
         "split": split,
+        "domain": "csp",
         "family": family,
         "domain_kind": p.kind,
         "skin": rendering.skin,
@@ -185,8 +214,11 @@ def _record(p, rendering, tr, split, family, seed, idx, csp):
         "values": list(rendering.values),
         "facts": _ser_facts(p.facts),
         "cons": cons,
+        "payload": {},
         "naming_scheme": rendering.scheme,
         "structure": rendering.structure,
+        "n_domains": 1,
+        "compose": "",
         "seed": int(seed),
     })
 
@@ -207,10 +239,46 @@ def verify_record(rec) -> bool:
     return rec["answer_index"] == CU.ABSTAIN
 
 
+def verify_any(rec) -> bool:
+    """Domain-dispatched exact re-verification: CSP records re-check via clair.csp (`cons`); every
+    other domain re-runs its own oracle from `payload` (clair.datagen.extra.verify_record)."""
+    if rec.get("domain", "csp") == "csp":
+        return verify_record(rec)
+    return EX.verify_record(rec)
+
+
 # --------------------------------------------------------------------------- one record
+def _finalize_extra(rec, split, seed, idx):
+    """Stamp an extra-domain core record with id/split/seed (the keys the driver owns)."""
+    rid = hashlib.blake2b(f"{split}-{seed}-{idx}".encode(), digest_size=8).hexdigest()
+    rec["id"] = f"{split}-{rid}"
+    rec["split"] = split
+    rec["seed"] = int(seed)
+    return _clean(rec)
+
+
 def _gen_one(spec, rng, idx):
     """Generate -> render -> trace -> QC one record for split `spec`. Returns (rec, status)."""
     split, family = spec["split"], None
+
+    # ---- broadened (non-CSP) domains: their own generator + EXACT oracle gate ----
+    if spec["kind"] == "extra":
+        rec = EX.generate(spec["domain"], rng, spec.get("cfg", {}))
+        if rec is None:
+            return None, "gen_fail"
+        rec = _finalize_extra(rec, split, spec["seed"], idx)
+        if not EX.verify_record(rec):                      # exactness gate (re-run the domain oracle)
+            return None, "label_mismatch"
+        return rec, "ok"
+    if spec["kind"] == "compose":
+        rec = EX.gen_composition(rng, spec["head"], spec.get("cfg", {}), triple=spec.get("triple"))
+        if rec is None:
+            return None, "gen_fail"
+        rec = _finalize_extra(rec, split, spec["seed"], idx)
+        if not EX.verify_record(rec):
+            return None, "label_mismatch"
+        return rec, "ok"
+
     det_target = bool(rng.random() < 0.6)
     if spec["kind"] == "curriculum":
         family = spec["families"][idx % len(spec["families"])]
@@ -243,7 +311,8 @@ def _gen_shard(args):
     spec, quota = args
     rng = np.random.default_rng(spec["seed"])
     out = []
-    stats = {"trivial": 0, "ambiguous": 0, "skin_fallback": 0, "label_mismatch": 0, "attempts": 0}
+    stats = {"trivial": 0, "ambiguous": 0, "skin_fallback": 0, "label_mismatch": 0,
+             "gen_fail": 0, "attempts": 0}
     idx = 0
     while len(out) < quota:
         rec, status = _gen_one(spec, rng, idx)
@@ -257,7 +326,8 @@ def _gen_shard(args):
 
 
 # --------------------------------------------------------------------------- split driver
-def _shard_specs(split, kind, count, base_seed, skins, families=None, n=None, nshards=16):
+def _shard_specs(split, kind, count, base_seed, skins, families=None, n=None, nshards=16,
+                 domain=None, cfg=None, head=None, triple=None):
     """Split `count` kept records across `nshards` deterministic shards."""
     per = [count // nshards] * nshards
     for i in range(count % nshards):
@@ -267,17 +337,19 @@ def _shard_specs(split, kind, count, base_seed, skins, families=None, n=None, ns
         if per[sh] == 0:
             continue
         spec = {"split": split, "kind": kind, "seed": base_seed + sh,
-                "skins": skins, "families": families, "n": n}
+                "skins": skins, "families": families, "n": n,
+                "domain": domain, "cfg": cfg, "head": head, "triple": triple}
         specs.append((spec, per[sh]))
     return specs
 
 
 def build_split(split, kind, count, base_seed, skins, families=None, n=None,
-                nshards=16, pool=None):
-    specs = _shard_specs(split, kind, count, base_seed, skins, families, n, nshards)
+                nshards=16, pool=None, domain=None, cfg=None, head=None, triple=None):
+    specs = _shard_specs(split, kind, count, base_seed, skins, families, n, nshards,
+                         domain=domain, cfg=cfg, head=head, triple=triple)
     results = list(pool.map(_gen_shard, specs)) if pool else [_gen_shard(s) for s in specs]
     records, agg = [], {"trivial": 0, "ambiguous": 0, "skin_fallback": 0,
-                        "label_mismatch": 0, "attempts": 0}
+                        "label_mismatch": 0, "gen_fail": 0, "attempts": 0}
     for recs, st in results:
         records.extend(recs)
         for k in agg:
@@ -289,7 +361,8 @@ def build_split(split, kind, count, base_seed, skins, families=None, n=None,
 def dedup_in_order(by_split, rng):
     """Global MinHash/LSH near-dup removal across ALL splits in a fixed order, so later (eval)
     splits never keep a near-duplicate of an earlier (train) record — no train->eval leakage."""
-    order = ["train", "val", "ood_n", "ood_phrasing", "ood_relation"]
+    order = ["train", "val", "ood_n", "ood_phrasing", "ood_relation",
+             "ood_domain", "ood_composition"]
     flat, owners = [], []
     for sp in order:
         for rec in by_split.get(sp, []):
@@ -318,7 +391,7 @@ def write_split(out_dir, split, records):
     for r in records:
         for k, v in r.items():
             cols.setdefault(k, []).append(
-                json.dumps(v) if k in ("facts", "cons", "entities", "values") else v)
+                json.dumps(v) if k in ("facts", "cons", "entities", "values", "payload") else v)
     pq.write_table(pa.table(cols), os.path.join(out_dir, f"{split}.parquet"))
     return jsonl
 
@@ -328,8 +401,9 @@ def schema_dict():
         "schema_version": SCHEMA_VERSION,
         "fields": {
             "id": "str — unique record id (split-prefixed content hash)",
-            "split": "str — train|val|ood_n|ood_phrasing|ood_relation",
-            "family": "str — generator family (coloring/equality/ordering/arithmetic/alldiff/parity_k/eqchain/forcedcolor)",
+            "split": "str — train|val|ood_n|ood_phrasing|ood_relation|ood_domain|ood_composition",
+            "domain": "str — reasoning domain: csp|xor|graph|perm|typeinfer|fol|optimize|compose",
+            "family": "str — generator family/sub-task within the domain",
             "domain_kind": "str — color|ordinal|number",
             "skin": "str — story-world skin key used to render the problem",
             "n": "int — number of CSP cells (entities)",
@@ -344,14 +418,27 @@ def schema_dict():
             "query": "int — queried cell index",
             "entities": "list[str] — surface per entity index (JSON in parquet)",
             "values": "list[str] — surface per value index (JSON in parquet)",
-            "facts": "list — structured ground-truth facts (JSON in parquet)",
-            "cons": "list — extensional CSP (scope, allowed-tuples) for re-verification (JSON in parquet)",
+            "facts": "list — structured ground-truth facts, CSP domain only (JSON in parquet)",
+            "cons": "list — extensional CSP (scope, allowed-tuples), CSP domain only (JSON in parquet)",
+            "payload": "dict — structured problem for the NON-CSP domains, sufficient to re-run the "
+                       "domain oracle (JSON in parquet); empty for the CSP domain",
             "naming_scheme": "str — entity naming scheme used",
             "structure": "str — layout structure (prose/semicolon/bullets/numbered)",
+            "n_domains": "int — how many distinct reasoning domains the record composes (1 = single)",
+            "compose": "str — composition signature (e.g. 'graph+arith'); '' for single-domain records",
             "seed": "int — shard seed that produced the record",
         },
-        "exact_verification": "rebuild clair.csp.CSP from `cons`, run clair.hard_tasks.fast_dedP, "
-                              "confirm cell[query] == answer_index (singleton) or ABSTAIN.",
+        "exact_verification": {
+            "csp": "rebuild clair.csp.CSP from `cons`, run clair.hard_tasks.fast_dedP, confirm "
+                   "cell[query] == answer_index (singleton) or ABSTAIN.",
+            "xor": "rebuild the GF(2) system from payload.rows, run clair.xor_wall.gf2_forced/gf2_rref.",
+            "graph": "rebuild the networkx graph from payload.edges, recompute Dijkstra/reachability.",
+            "perm": "rebuild clair.permgroup.PermProblem, run exact_dedP (Régin/Hall GAC + brute).",
+            "typeinfer": "rebuild the AST, run clair.typeinfer.algorithm_w (Algorithm W) + ground.",
+            "fol": "rebuild rules/facts, run clair.fol.forward_chain (least Herbrand model) + label.",
+            "optimize": "min-cost via clair.energy_organ.brute_opt; max-cut via exact 2^n brute force.",
+            "compose": "recompute each head's exact result, re-apply the modular-arithmetic tail.",
+        },
     }
 
 
@@ -378,6 +465,14 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
         "ood_relation": dict(kind="hard", families=None, n=None, skins=TRAIN_SKINS,
                              base_seed=seed + 5_000_000),
     }
+    # broadened-domain volumes (scaled): per-domain train share + train compositions, plus the two new
+    # eval splits (per-domain held-out + OOD-composition).
+    n_extra_each = int(2500 * scale)         # each broadened single-domain in TRAIN
+    n_compose_each = int(1500 * scale)       # each train composition pairing in TRAIN
+    n_ood_domain_each = int(1000 * scale)    # each broadened single-domain in ood_domain
+    n_ood_comp_each = int(1500 * scale)      # each held-out composition pairing in ood_composition
+    n_ood_comp_triple = int(1000 * scale)
+
     workers = workers or os.cpu_count() or 1
     by_split, attempts = {}, {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -402,6 +497,44 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
                   f"(attempts {attempts[split]['attempts']}, ambiguous {attempts[split]['ambiguous']}, "
                   f"trivial {attempts[split]['trivial']})  {time.time()-t0:.0f}s", flush=True)
 
+        # ---- BROADENED single domains: appended to TRAIN + a per-domain held-out (ood_domain) ----
+        bs = seed + 10_000_000
+        for di, dom in enumerate(EXTRA_DOMAINS):
+            recs, ap = build_split("train", "extra", n_extra_each, bs + di * 100_000, None,
+                                   nshards=nshards, pool=pool, domain=dom,
+                                   cfg=EXTRA_TRAIN_CFG[dom])
+            by_split["train"].extend(recs)
+            recs_o, _ = build_split("ood_domain", "extra", n_ood_domain_each,
+                                    bs + di * 100_000 + 50_000, None, nshards=nshards, pool=pool,
+                                    domain=dom, cfg=EXTRA_OOD_CFG[dom])
+            by_split.setdefault("ood_domain", []).extend(recs_o)
+            print(f"  [extra:{dom:9s}] train {len(recs):5d}  ood_domain {len(recs_o):5d}  "
+                  f"(attempts {ap['attempts']}, gen_fail {ap['gen_fail']})  {time.time()-t0:.0f}s",
+                  flush=True)
+
+        # ---- COMPOSITIONS: train pairings -> TRAIN; held-out pairings -> ood_composition ----
+        cs = seed + 20_000_000
+        for hi, head in enumerate(COMPOSE_TRAIN_HEADS):
+            recs, ap = build_split("train", "compose", n_compose_each, cs + hi * 100_000, None,
+                                   nshards=nshards, pool=pool, head=head, cfg={})
+            by_split["train"].extend(recs)
+            print(f"  [compose:{head:9s}->train] {len(recs):5d} (gen_fail {ap['gen_fail']})  "
+                  f"{time.time()-t0:.0f}s", flush=True)
+        cs2 = seed + 30_000_000
+        for hi, head in enumerate(COMPOSE_OOD_HEADS):
+            recs, ap = build_split("ood_composition", "compose", n_ood_comp_each,
+                                   cs2 + hi * 100_000, None, nshards=nshards, pool=pool,
+                                   head=head, cfg={})
+            by_split.setdefault("ood_composition", []).extend(recs)
+            print(f"  [compose:{head:9s}->ood ] {len(recs):5d} (gen_fail {ap['gen_fail']})  "
+                  f"{time.time()-t0:.0f}s", flush=True)
+        recs, ap = build_split("ood_composition", "compose", n_ood_comp_triple,
+                               cs2 + 900_000, None, nshards=nshards, pool=pool,
+                               head=COMPOSE_OOD_TRIPLE[0], triple=COMPOSE_OOD_TRIPLE[1], cfg={})
+        by_split["ood_composition"].extend(recs)
+        print(f"  [compose:triple ->ood ] {len(recs):5d} (gen_fail {ap['gen_fail']})  "
+              f"{time.time()-t0:.0f}s", flush=True)
+
     # global near-dup removal in split order (no train->eval leakage)
     rng = np.random.default_rng(seed)
     by_split, dropped = dedup_in_order(by_split, rng)
@@ -419,10 +552,10 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
             idxs = vrng.choice(len(recs), size=max(1, int(len(recs) * verify_frac)), replace=False)
         to_check.extend(recs[i] for i in idxs)
     with ProcessPoolExecutor(max_workers=workers) as vpool:
-        results = list(vpool.map(verify_record, to_check, chunksize=64))
+        results = list(vpool.map(verify_any, to_check, chunksize=64))
     nver, nbad = len(results), results.count(False)
-    print(f"  re-verification: {nver} records checked from serialized cons, {nbad} mismatches  "
-          f"{time.time()-t0:.0f}s", flush=True)
+    print(f"  re-verification: {nver} records checked from serialized payload/cons (domain-dispatched), "
+          f"{nbad} mismatches  {time.time()-t0:.0f}s", flush=True)
     assert nbad == 0, "a serialized record failed exact re-verification"
 
     # write splits + schema + stats + sample
@@ -434,23 +567,46 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
     with open(os.path.join(out_dir, "schema.json"), "w") as fh:
         json.dump(schema_dict(), fh, indent=2)
 
+    # corpus-wide per-domain + per-composition tallies (the headline broadened-coverage numbers)
+    all_recs = [r for recs in by_split.values() for r in recs]
+    by_domain = _count(all_recs, "domain")
+    by_compose = _count([r for r in all_recs if r["n_domains"] > 1], "compose")
+    by_ndomains = _count(all_recs, "n_domains")
+
     # per-split diversity + sample
     stats = {"schema_version": SCHEMA_VERSION, "seed": seed, "scale": scale,
              "sizes": sizes, "total": sum(sizes.values()),
              "verified": nver, "verify_mismatches": nbad, "dedup_dropped": dropped,
+             "by_domain": by_domain, "by_composition": by_compose,
+             "by_n_domains": {str(k): v for k, v in sorted(by_ndomains.items())},
              "splits": {}}
     drng = np.random.default_rng(seed + 7)
     sample = []
     for sp, recs in by_split.items():
+        # diversity is measured per-domain WITHIN the split (mixed-domain self-BLEU is meaningless).
         rends = [render.Rendering(r["text"], r["skin"], r["domain_kind"], r["entities"],
                                   r["values"], r["naming_scheme"], r["structure"], r["question"])
                  for r in recs]
         stats["splits"][sp] = qc.diversity_report(rends, drng) if rends else {}
         stats["splits"][sp]["families"] = _count(recs, "family")
+        stats["splits"][sp]["domains"] = _count(recs, "domain")
         stats["splits"][sp]["determined_frac"] = round(
             sum(r["determined"] for r in recs) / max(1, len(recs)), 3)
-        for r in recs[:4]:
-            sample.append(r)
+        # per-domain diversity inside this split (non-stilted check per domain, not across domains)
+        perdom = {}
+        for dom in set(r["domain"] for r in recs):
+            drecs = [r for r in recs if r["domain"] == dom]
+            drends = [render.Rendering(r["text"], r["skin"], r["domain_kind"], r["entities"],
+                                       r["values"], r["naming_scheme"], r["structure"], r["question"])
+                      for r in drecs]
+            rep = qc.diversity_report(drends, drng)
+            perdom[dom] = {"n": rep["n"], "self_bleu": rep["self_bleu"],
+                           "distinct_3": rep["distinct_3"], "top_skeleton_share": rep["collapse"]["top_share"]}
+        stats["splits"][sp]["per_domain_diversity"] = perdom
+        # a sample drawn across domains (first 2 of each domain present)
+        for dom in sorted(set(r["domain"] for r in recs)):
+            for r in [x for x in recs if x["domain"] == dom][:2]:
+                sample.append(r)
     with open(os.path.join(out_dir, "stats.json"), "w") as fh:
         json.dump(stats, fh, indent=2)
     with open(os.path.join(out_dir, "sample.jsonl"), "w") as fh:
