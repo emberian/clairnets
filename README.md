@@ -47,9 +47,19 @@ reward. The same α/γ pattern hosts the whole organ bank.
   structured γ and its **LM head generates the right answer, causally** — shuffle/permute/**corrupt→0** even
   with the full problem in the prompt (it ignores the text, reads the lattice), 100% OOD. *The latch gap was a
   bandwidth problem, and structured dense-γ solves it.*
-- **But cold co-training FAILS** (woven model): a *learned* organ co-trained from scratch is *ignored* — the LM
-  shortcuts via prompt-text + an abstain prior; causal controls flat. **Diagnosis:** two alien substrates
-  (token-distribution LM ↔ candidate-set deductor), both bad at the start, can't bootstrap each other.
+- **Cold co-training FAILS — but STAGING fixes it, and the assembled model WORKS.** A *learned* organ
+  co-trained from scratch is *ignored* (LM shortcuts via prompt-text + abstain prior). The fix isn't denying
+  the text — it's **bootstrap → FREEZE the organ → train the readout**. ⭐ **The staged generative GLaDOS: a
+  learned *general* organ causally woven into OLMo's generation across 7 reasoning types — woven 98.8% vs base
+  48% vs text-LoRA 25% in-dist; OOD-phrasing 96.3%; corrupt→2.7% *with the full problem text present* (the LM
+  ignores the text and wields the organ), including hard propagation chains base/text-LoRA cannot shortcut.**
+  OOD-N is limited by the *organ's own* recall, not the readout. *The staged recipe is demonstrated, not hoped.*
+- **Novelty is narrow + integrative; the real edge is *discipline*.** No system holds all of {woven · dense
+  differentiable readback · output-checked/sound · per-problem compiled program · verifier-trained} — GLaDOS is
+  the first to weave a *checked* per-problem deductor into an LLM and verifier-train it. But the **SATNet
+  cautionary tale** (its "learned logic" was label-leakage; "reasoning shortcuts are loss optima," Marconato
+  2023) means the organ being *sound* doesn't prevent the LM *bypassing* it — **only the causal controls
+  (shuffle/permute/corrupt) prove genuine deduction.** That discipline, run on every result, is the edge.
 - **The 3-organ bank exists** and each is validated with honest limits: **narrow** (rule-out, sound, abstains),
   **chain** (derive facts; sound *or* deep, a sharp phase transition), **energy** (solves + uniquely does
   *optimization*, 85.5% exact min-cost; ~6% infeasible at the affine wall). A recurring signal: **the affine
@@ -67,7 +77,18 @@ The central lesson: **don't cold-co-train the LM and the organ.** Decouple.
    training where the LM learns to *route its reasoning through the organ* — closer to re-running real
    training (Dolma-recipe-with-the-organ) so organ-use becomes *native*, not bolted-on.
 The organ becomes load-bearing only when it is both **good** (pretrained) and **necessary** (the task can't be
-shortcut). Live experiments are probing exactly these joints.
+shortcut) — *demonstrated* by the staged generative GLaDOS above.
+
+## Where it's going — real RLVR at scale
+The toy is built; it's profoundly *undertrained* (1B, synthetic CSPs). Next is **RLVR on standardized verifiable
+reasoning** (reasoning-gym / ZebraLogic / SAT / math) with the organ as a *tested* component. The base TRL-GRPO
+loop already runs+learns on one L40S (`clair/rlvr_pipeline.py`); the organ slots in by swapping the policy model.
+Two literature-locked design requirements (`notes/`): **(1)** test the organ with a **process reward**, because
+outcome-GRPO can't credit an organ's internal steps (Ouro/RLTT) — *and the organ itself is the exact per-step
+grader* (candidate-set cardinality drop) that LSRL's hackable judge wanted; **(2)** report **pass@k not just
+pass@1** with a ProRL-style long-RL + random-reward control, on **OLMo** (the honest base). The single most
+decisive open experiment: does **ordinary next-token continued-pretraining** exploit the organ (architecture) or
+only targeted RL (trick) — measured by whether next-token loss on reasoning-dense text rises when the organ is zeroed.
 
 ## Layout
 - `clair/csp.py` — exact CSP harness (ground truth): solutions, exact `dedₚ`, per-cell AC, **general factor
@@ -75,14 +96,20 @@ shortcut). Live experiments are probing exactly these joints.
 - **Verifier ladder**: `curriculum.py` (+ Bedrock diverse NL), `fol.py` (forward-chainer, entail/contradict/unknown),
   `smt.py` (z3 oracle), `schedule.py` (multi-task scheduler).
 - **Organ bank**: `proposer.py` (narrow) · `chain_organ.py` (derive) · `energy_organ.py` (optimize) · `run_general.py` (multitask narrow).
-- **Woven LLM**: `augmented.py` + `rlvr_augmented.py` (terminal-readout + RLVR) · `oracle_readout.py` (the proven
-  dense-γ readout + causal controls) · `glados_woven.py` (the corrected-D woven model) · `gen_augmented.py` (generative).
-- `notes/` — `papers.md`, `prior_art.md`, `future_directions.md` (organ-bank roadmap), `codex_arch_review.md`, `codex_review_handoff.md`.
-- parked/superseded: `glados.py`, `ldt.py`, `cliffordnet.py`, `rope_lm.py`, `geom_lm.py`, `model.py`.
+- **Woven LLM**: `oracle_readout.py` (the proven dense-γ readout + causal controls) · `frozen_readout.py`
+  (frozen-organ readout) · ⭐`run_glados_staged.py` (**the working staged generative model**) · `latent_organ.py`
+  (latent "B" compile) · `blade_deductor.py`/`macro_deduct.py` (geometric/log-depth organs) · `glados_woven.py`,
+  `augmented.py`, `rlvr_augmented.py`, `gen_augmented.py` (earlier woven variants).
+- **Real RLVR**: `rlvr_pipeline.py` (TRL-GRPO + reasoning-gym + exact-verifier reward, runs on one L40S).
+- `notes/` — `reading_list.md`, `rlvr_landscape.md`, `prior_art_extract.md` (TransNAR/RLTT/LSRL lifts),
+  `rl_design_lessons.md`, `exploitation_question.md`, `nesy_lessons.md`, `future_directions.md`, `codex_arch_review.md`.
+- `CURSELOG.md` — the running lab notebook (the *journey*). parked: `glados.py`, `ldt.py`, `cliffordnet.py`, `rope_lm.py`, `geom_lm.py`.
 
 ## Discipline (learned the hard way)
 - Test a method in the regime it targets; don't conclude from underpowered/mis-aimed runs.
 - The soundness proof is a *permission* (be loose, check the output), not a prescription.
 - A classification-readout head is *not* the LM reasoning — the capability test is generative + retrained.
-- Don't cold-co-train alien substrates; stage the training. Make the organ good *and* necessary.
+- Don't cold-co-train alien substrates; **stage** it (organ→excellence → freeze → readout). Make the organ good *and* necessary.
+- **A *sound* organ can still be *bypassed*** — only the causal controls (shuffle/permute/corrupt) prove genuine
+  deduction (the SATNet lesson). Run them on every result; report pass@k not just pass@1.
 - Run a portfolio across boxes; let the data, not the enthusiasm, pick the next bet. Report honest nulls.
