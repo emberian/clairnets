@@ -7,6 +7,18 @@ terse, newest-first. Append new entries at the top. Negatives are results.
 
 ## 2026-06-26 — toward real training
 
+- **RLVR base pipeline DE-RISKED** (`clair/rlvr_pipeline.py`). TRL-GRPO + reasoning-gym + our exact-verifier
+  reward + OLMo-2-1B **runs and learns** on one L40S: reward EMA 0.20→0.72 over 250 steps (chain_sum), no OOM.
+  Stack: trl 1.7.0, `use_vllm=False` (organ-compatible rollout), Dr.GRPO, beta=0 (no ref-model), LoRA all-linear.
+  **Organ socket = swap `build_model()`'s policy** for the augmented OLMo; reward/dataset/config unchanged. The
+  real-training substrate works. Next: wire the organ in + the matched 2×2 + a **process-reward arm** (RLTT/LSRL,
+  PDFs in `pdfs/`) so a GRPO null is interpretable.
+- **Prior art gathered + positioned** (`notes/reading_list.md`, `nesy_landscape.md`, `prior_art_extract.md`):
+  the pieces exist separately — SATNet/DeepProbLog/NLM (neural+logic, pre-LLM), **TransNAR** (LLM↔reasoner
+  coupling), **RLTT/LSRL** (process-reward for latent/looped reasoning), reasoning-gym (verifiable fuel) — but
+  nobody's assembled our combination: a *checked sound* lattice/factor deductor + the organ bank woven into a
+  pretrained LLM, verifier-trained. Novelty is narrow + integrative → lift recipes, don't reinvent.
+
 - **RLVR landscape mapped → the real-training pivot** (`notes/rlvr_landscape.md`). Two findings that reshape
   *how we test the organ*: (1) **outcome-GRPO falsely nulls an organ** — Ouro/RLTT showed terminal-only reward
   never credit-assigns to an organ's internal steps; a process/trajectory-reward arm is *mandatory* for a fair
