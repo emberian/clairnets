@@ -61,10 +61,22 @@ The LLM learns to **generate through** the frozen organ.
   certified row-space organ; neither is beaten by depth alone.
 
 ## Base matrix (the bolt-on datapoints — weights-only, so each is cheap)
-The pretrained organ is base-agnostic; the woven readout (Stage 2/3) is run on MULTIPLE bases, each a paper datapoint:
-- **OLMo-3-7B (PRIMARY)** — interp anchor, full causal controls, the honest mechanism (fully-open recipe). Run #1.
-- **OLMo-3-32B** — scale datapoint (does the uplift hold / grow with base size).
+The pretrained organ is base-agnostic; the woven readout (Stage 2/3) is run on MULTIPLE bases, each a paper
+datapoint. The set now spans **~100M → 32B across SIX families** (including an SSM-hybrid):
+- **Pythia-160M / SmolLM2-135M (~100M tier)** — ships ALL training checkpoints = interp-gold; the
+  "organ-carries-the-reasoning" extreme (the host is too small to reason on its own, so any uplift is the organ).
+- **OLMo-2-1B (small)** — cheap full-recipe datapoint, fully-open base; the low end of the scale curve.
+- **SmolLM3-3B** — fully-open small-modern model; a clean small datapoint between 1B and 7B.
+- **OLMo-3-7B (PRIMARY / interp)** — interp anchor, full causal controls, the honest mechanism (fully-open
+  recipe). **Run #1, never skipped.**
+- **OLMo-3-32B (scale)** — scale datapoint (does the uplift hold / grow with base size); QLoRA @ 4-bit.
 - **Gemma-4** — portability + uplift on an already-strong, code-trained model.
-- **Qwen-3.6** — portability, a second architecture family.
-Goal: show the technique uplifts across TWO scales and THREE model families. 7B is never skipped.
-Compute: woven = frozen base + LoRA + α + γ (QLoRA for 32B) → 7B/12B fit one L40S; 32B fits one A100-80 or L40S@4-bit.
+- **Qwen-3.6** — portability, a second strong family.
+- **Nemotron-H-8B (hybrid Mamba-2 + self-attention + MLP)** — the key architecture-diversity datapoint:
+  does the residual-stream organ coupling survive a non-pure-Transformer / Mamba-hybrid (splice point is an
+  SSM block, not attention)? And it is **fully open** (weights + datasets + recipes), so like OLMo it is
+  interp-friendly. (Family also has 47/56B and Nemotron-3 Nano/Super/Ultra MoE-hybrids for later scale.)
+Goal: show the technique uplifts across ~2.5 orders of magnitude (~100M→32B) and SIX model families
+(OLMo · Gemma · Qwen · Nemotron-H · SmolLM · Pythia), including an SSM-hybrid. OLMo-3-7B is run #1, never skipped.
+Compute: woven = frozen base + LoRA + α + γ (QLoRA for 32B) → 7B/8B fit one L40S; 32B fits one A100-80 or
+L40S@4-bit; the ≤3B tier runs anywhere.

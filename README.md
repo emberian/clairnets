@@ -54,8 +54,8 @@ ever forms, then never recruits the organ. The fix is to **stage** it:
 ```mermaid
 flowchart LR
   S1["① bootstrap the organ ALONE<br/>(dominate exact dedₚ → near-oracle, sound)"] --> S2["② FREEZE it"]
-  S2 --> S3["③ train the readout (LoRA + γ)<br/>LM learns to GENERATE through the organ<br/>(readout-forcing curriculum first)"]
-  S3 --> S4["④ RLVR<br/>(the organ is its OWN exact process-reward)"]
+  S2 --> S3["③ weave the readout (LoRA + latent-α + γ)<br/>LM learns to GENERATE through the organ<br/>(latent-α compiles from the hidden state; readout-forcing curriculum first)"]
+  S3 --> S4["④ RLVR + consolidate (Dolma ⊕ reasoning)<br/>(the organ is its OWN exact process-reward)"]
 ```
 
 Make the organ **good** (pretrained) *and* **necessary** (a task the LLM can't shortcut), freeze it, and the LLM
@@ -65,12 +65,15 @@ deducing**, not pattern-matching. (SATNet learned this the hard way; its "learne
 
 ## What we've found (honest — negatives included)
 
-- ⭐ **The staged generative model WORKS.** A learned *general* organ, causally woven into OLMo's generation
+- ⭐ **The staged generative READOUT works.** A learned *general* organ, causally woven into OLMo's generation
   across 7 reasoning types: **woven 98.8% vs base 48% vs text-LoRA 25%** in-distribution; OOD-phrasing 96.3%;
   and **corrupt the organ → generation collapses to 2.7% *with the full problem text still in the prompt*** (the
   LM ignores the text and wields the organ), including hard propagation chains the base model can't shortcut.
   *The staged recipe is demonstrated, not hoped.* OOD-by-size is limited by the *organ's own* recall — not the
-  coupling.
+  coupling. **Honest scope:** these numbers are **readout-isolation** (the organ is handed the *true* lattice).
+  The **real woven model uses LIVE LATENT α** — α compiles the organ's input *from OLMo's hidden state*, no
+  symbolic extraction, no ground-truth CSP — and is being wired now (post-codex-preflight). **Readout is proven;
+  live-latent-α is the critical path and the honest open piece** (a wrong compile → a confidently wrong organ).
 - **The readout coupling is real.** Feed OLMo the *true* lattice through structured γ and its LM head generates
   the right answer, causally (corrupt→0, 100% OOD, ignores redundant text). The earlier "latch gap" was a
   *bandwidth* problem; dense structured γ dissolves it. A *frozen good learned* organ reads as well as the oracle.
