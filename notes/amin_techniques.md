@@ -270,3 +270,23 @@ node = (problem, partial reduction chain)
   → certified reducer runs; certificate gates: sound-reduction → child; unsound/over-narrow → prune
   → search to a checkable answer or honest abstain;  report pass@T
 ```
+
+---
+## CORRECTION (parent, after a closer read of "Compiling to recurrent neurons" 2511.14953)
+The first verdict ("compile-to-neurons not viable for us") was too flat. The RECURRENT paper (Cajal(⊸,2,N))
+compiles ITERATION as first-class — and our organs ARE iterative fixpoints, so the *structure* matches. The real
+limit: linear recurrent neurons = ℝ-LINEAR dynamical systems (iterated body must be a fixed linear map over ℝ).
+KEY NUANCE the first read missed: some of our certified ops are linear, just over a DIFFERENT algebra —
+  • GF(2) Gaussian elimination = linear over GF(2)
+  • min-plus graph relaxation  = linear over the tropical (min,+) semiring
+So a SEMIRING-generalized compile-to-recurrent-neurons would compile THOSE exactly (differentiable-by-construction,
+no learned-soundness risk). The paper's own future work points there ("richer recurrence over lists/trees/algebraic").
+
+### Verdict on implementing it: NOT NOW (not super-super-worth-it).
+- Only the SEMIRING-LINEAR organs (GF(2), min-plus) could compile — a MINORITY (2 of ~8); the nonlinear ones
+  (AC, interval, HM, alldiff-GAC) don't compile regardless of field.
+- Even those 2 already work as exact classical certified ops — nothing broken.
+- The only payoff is differentiability THROUGH the deduction (end-to-end gradients), but exploitation + split-brain
+  proved the LM learns to USE the organ via the OUTPUT-READOUT with no backprop-through-the-op. So it solves a
+  problem we don't have.
+- TRIGGER to revisit: a downstream task that provably can't learn to use an organ via readout alone (so far: never).
