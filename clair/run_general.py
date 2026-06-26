@@ -193,7 +193,11 @@ def relation_table(scope, al, d_max, a_max):
     return t.reshape(-1)
 
 
-def featurize(items, dev):
+def featurize_np(items):
+    """Build the factor-graph feature arrays (host numpy) for a batch of (csp, dom). Pure +
+    deterministic — depends only on `items`, so it is safe to compute off the main thread / in a
+    worker. `featurize` wraps this and moves the arrays to a device; clair.datagen.fast reuses it
+    directly so the parallel/overlapped data path is BITWISE-IDENTICAL to the serial one."""
     B = len(items)
     rel_dim = D_MAX ** A_MAX
     var_mask = np.zeros((B, N_MAX, D_MAX), np.float32)
@@ -220,10 +224,18 @@ def featurize(items, dev):
             for p, cell in enumerate(sc):
                 edge_var[bi, fi, p] = cell
                 edge_valid[bi, fi, p] = 1.0
-    t = lambda a: torch.as_tensor(a, device=dev)
-    return dict(var_mask=t(var_mask), given=t(given), var_valid=t(var_valid),
-                fac_rel=t(fac_rel), fac_arity=t(fac_arity), fac_valid=t(fac_valid),
-                edge_var=t(edge_var), edge_valid=t(edge_valid))
+    return dict(var_mask=var_mask, given=given, var_valid=var_valid,
+                fac_rel=fac_rel, fac_arity=fac_arity, fac_valid=fac_valid,
+                edge_var=edge_var, edge_valid=edge_valid)
+
+
+def to_device(np_feat, dev):
+    """Move a featurize_np() dict to `dev` (used by the overlapped fast path)."""
+    return {k: torch.as_tensor(v, device=dev) for k, v in np_feat.items()}
+
+
+def featurize(items, dev):
+    return to_device(featurize_np(items), dev)
 
 
 def fwd(m, feat, var_mask):
@@ -235,17 +247,26 @@ def dom_from_mask(row, csp):
     return tuple(frozenset(v for v in range(csp.d) if row[i, v] > 0.5) for i in range(csp.n))
 
 
-def build_targets(items, ex, dev):
-    B = len(items)
+def targets_np_from_ded(deds):
+    """Build the (tgt, conflict) target arrays from precomputed exact-dedP results (a list of
+    per-cell frozenset tuples). Factored out so clair.datagen.fast can compute the (expensive) dedP
+    in a process pool and assemble the (cheap) arrays on the main thread — bitwise-identical to the
+    serial build_targets, since ex.dedP and the worker dedP are the same pure function."""
+    B = len(deds)
     tgt = np.zeros((B, N_MAX, D_MAX), np.float32)
     conflict = np.zeros((B,), np.float32)
-    for bi, (csp, dom) in enumerate(items):
-        ded = ex.dedP(csp, dom)
+    for bi, ded in enumerate(deds):
         if all(len(c) == 0 for c in ded):
             conflict[bi] = 1.0
-        for i in range(csp.n):
-            for v in ded[i]:
+        for i, cell in enumerate(ded):
+            for v in cell:
                 tgt[bi, i, v] = 1.0
+    return tgt, conflict
+
+
+def build_targets(items, ex, dev):
+    deds = [ex.dedP(csp, dom) for csp, dom in items]
+    tgt, conflict = targets_np_from_ded(deds)
     return torch.as_tensor(tgt, device=dev), torch.as_tensor(conflict, device=dev)
 
 
@@ -284,7 +305,16 @@ def false_elim(vm_before, vm_after, var_valid, tgt):
 # =====================================================================================
 # training (on-policy; the model's own monotone meet rolls the lattice state forward)
 # =====================================================================================
-def train(rungs, dev, target, steps, pool=96, R=8, lr=3e-4, theta=0.5, seed=0, ex=SHARED, log=None):
+def train(rungs, dev, target, steps, pool=96, R=8, lr=3e-4, theta=0.5, seed=0, ex=SHARED, log=None,
+          fast=False, gen=None):
+    """Train the general organ on `rungs`. The data path (exact-dedP targets + featurize + resample)
+    is single-threaded; pass fast=True (or a clair.datagen.fast.FastGen via `gen`) to run the
+    targets across all cores AND overlap the data prep with the GPU backward. Bitwise-identical math,
+    same rng stream -> reproducible; opt-in so existing callers are unchanged."""
+    if fast or gen is not None:
+        from .datagen import fast as _fast
+        return _fast.train(rungs, dev, target, steps, pool=pool, R=R, lr=lr, theta=theta,
+                           seed=seed, ex=ex, log=log, gen=gen)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     d, npar = size_for("full", N_MAX, D_MAX, M_MAX, A_MAX, target, R=R, ds=min(4, R))
@@ -439,15 +469,25 @@ def make_eval_sets(rungs, neval, seed=12345):
     return {rg: [sample_rung_csp(rng, rg) for _ in range(neval)] for rg in rungs}
 
 
+def _maybe_gen(args):
+    """One shared FastGen (persistent process pool) reused across every train() call when --fast."""
+    if getattr(args, "fast", False):
+        from .datagen import fast as _fast
+        return _fast.FastGen(workers=getattr(args, "workers", None) or None,
+                             cache_path=getattr(args, "cache", None) or None)
+    return None
+
+
 def run_full(args, dev):
     rungs = RUNGS
     eval_sets = make_eval_sets(rungs, args.neval)
     out = {"budget": [N_MAX, D_MAX, M_MAX, A_MAX], "rungs": rungs, "args": vars(args)}
+    gen = _maybe_gen(args)
 
     # ---- MULTITASK: one organ, all rungs ----
     print("\n===== MULTITASK (train all rungs, eval per rung) =====", flush=True)
     m, d, npar, log = train(rungs, dev, args.target, args.steps, pool=args.pool, R=args.R,
-                            lr=args.lr, theta=args.theta, seed=args.seed)
+                            lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
     mt = eval_all(m, eval_sets, dev, args.theta, args.rmax)
     out["multitask"] = {"d_model": d, "params": npar, "log": log, "eval": mt}
     for rg in rungs:
@@ -458,7 +498,7 @@ def run_full(args, dev):
     out["single"] = {}
     for rg in rungs:
         ms, _, _, _ = train([rg], dev, args.target, args.steps_single, pool=args.pool, R=args.R,
-                            lr=args.lr, theta=args.theta, seed=args.seed)
+                            lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
         es = evaluate_rung(ms, eval_sets[rg], dev, args.theta, args.rmax)
         out["single"][rg] = es
         print(_row(rg, es), flush=True)
@@ -469,7 +509,7 @@ def run_full(args, dev):
     for rg in rungs:
         others = [x for x in rungs if x != rg]
         mh, _, _, _ = train(others, dev, args.target, args.steps, pool=args.pool, R=args.R,
-                            lr=args.lr, theta=args.theta, seed=args.seed)
+                            lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
         eh = evaluate_rung(mh, eval_sets[rg], dev, args.theta, args.rmax)
         out["heldout"][rg] = eh
         print(_row(rg, eh), flush=True)
@@ -481,6 +521,8 @@ def run_full(args, dev):
         s, mu, h = out["single"][rg], mt[rg], out["heldout"][rg]
         print(f"  {rg:11s} {s['narrowing_recall']*100:7.1f}% {mu['narrowing_recall']*100:7.1f}% "
               f"{h['narrowing_recall']*100:8.1f}%   {mu['false_elim']:9.4f} {h['false_elim']:9.4f}", flush=True)
+    if gen is not None:
+        gen.close()
     return out
 
 
@@ -488,8 +530,11 @@ def run_smoke(args, dev):
     print("\n===== SMOKE (general deductor trains; false-elim drops on a few rungs) =====", flush=True)
     rungs = ["coloring", "arithmetic", "smt"]
     eval_sets = make_eval_sets(rungs, 80)
+    gen = _maybe_gen(args)
     m, d, npar, log = train(rungs, dev, target=1.2e5, steps=args.steps or 250,
-                            pool=64, R=args.R, lr=args.lr, theta=args.theta, seed=0)
+                            pool=64, R=args.R, lr=args.lr, theta=args.theta, seed=0, gen=gen)
+    if gen is not None:
+        gen.close()
     ev = eval_all(m, eval_sets, dev, args.theta, args.rmax)
     print(f"  false_elim trajectory: {[round(x['false_elim'], 4) for x in log]}", flush=True)
     for rg in rungs:
@@ -510,6 +555,10 @@ def main():
     ap.add_argument("--neval", type=int, default=200)
     ap.add_argument("--rmax", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--fast", action="store_true",
+                    help="parallel (all-core) dedP targets + GPU-overlapped data path (clair.datagen.fast)")
+    ap.add_argument("--workers", type=int, default=0, help="pool workers for --fast (0=os.cpu_count)")
+    ap.add_argument("--cache", default=None, help="on-disk dedP target cache (sqlite path), reused across runs")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     dev = device()
