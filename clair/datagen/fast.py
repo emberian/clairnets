@@ -114,7 +114,17 @@ class FastGen:
         return self._pool
 
     def _compute(self, items):
-        """Parallel (or serial for small batches) dedP over a list of items, in order."""
+        """Parallel (or serial for small batches) dedP over a list of items, in order.
+
+        When clair_fast is built we use its in-process rayon batch (`dedp_batch`): it releases the
+        GIL and fans out across all cores WITHOUT a process pool, so we avoid pickling each CSP
+        (frozensets of tuples) over the IPC boundary — which, with the now-tiny Rust compute, was the
+        dominant cost. Bitwise-identical to the pure-Python dedP. Falls back to the ProcessPool when
+        the extension is absent or an instance is out of the Rust bounds (d>64 / arity>8)."""
+        if C.FAST and all(it[0].d <= 64 and all(len(sc) <= 8 for sc, _ in it[0].cons) for it in items):
+            marsh = [(csp.n, csp.d, *C._marshal_cons(csp.cons), [sorted(x) for x in dom])
+                     for csp, dom in items]
+            return [tuple(frozenset(cell) for cell in r) for r in C._CF.dedp_batch(marsh)]
         if len(items) < self.threshold or self.workers <= 1:
             return [_dedP_one(it) for it in items]
         return list(self._ensure().map(_dedP_one, items, chunksize=self.chunksize))

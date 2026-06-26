@@ -5,3 +5,5 @@ runs/
 .DS_Store
 venv/
 data/glados_corpus/
+clair_fast/target/
+*.so

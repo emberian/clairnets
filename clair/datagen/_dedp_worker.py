@@ -20,9 +20,8 @@ def canonical_key(item):
 def dedP_one(item):
     """Exact per-cell dedP for one (csp, dom): the set of values used by SOME full solution
     consistent with `dom`. Identical to run_general.Exact.dedP (union over C.solutions), so targets
-    are bitwise-identical to the serial path. Top-level + torch-free => cheap to pickle/spawn."""
+    are bitwise-identical to the serial path. Routes through C.exact_dedP, which uses the Rust fast
+    path (with the witness early-stop) when clair_fast is built and the pure-Python union otherwise —
+    same set either way. Top-level + torch-free => cheap to pickle/spawn."""
     csp, dom = item
-    sols = C.solutions(csp, dom)
-    if not sols:
-        return tuple(frozenset() for _ in range(csp.n))
-    return tuple(frozenset(s[i] for s in sols) for i in range(csp.n))
+    return C.exact_dedP(csp, dom)
