@@ -28,11 +28,20 @@ def main():
     ap.add_argument("--theta", type=float, default=0.5)
     ap.add_argument("--rmax", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--fast", action="store_true",
+                    help="parallel (all-core) dedP targets + GPU-overlapped data path")
+    ap.add_argument("--workers", type=int, default=0, help="pool workers for --fast (0=os.cpu_count)")
+    ap.add_argument("--cache", default=None, help="on-disk dedP target cache (sqlite path), reused across runs")
     ap.add_argument("--out", default="runs/sweep.json")
     args = ap.parse_args()
     dev = RG.device()
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
+    gen = None
+    if args.fast:
+        from .datagen import fast as _fast
+        gen = _fast.FastGen(workers=args.workers or None,    # one pool reused across all sweep cells
+                            cache_path=args.cache or None)
     targets = [float(x) for x in args.targets.split(",")]
     rounds = [int(x) for x in args.rounds.split(",")]
     rungs = RG.RUNGS
@@ -44,7 +53,7 @@ def main():
         for R in rounds:
             t0 = time.time()
             m, d, npar, log = RG.train(rungs, dev, tg, args.steps, pool=args.pool, R=R,
-                                       lr=args.lr, theta=args.theta, seed=args.seed)
+                                       lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
             ev = RG.eval_all(m, eval_sets, dev, args.theta, args.rmax)
             # aggregate (micro over rungs already per-rung; report per-rung + a mean)
             mean_rec = float(np.mean([ev[rg]["narrowing_recall"] for rg in rungs]))
@@ -64,6 +73,8 @@ def main():
                       f"  FE {e['false_elim']:.4f}", flush=True)
             os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
             json.dump(out, open(args.out, "w"), indent=1)        # checkpoint after every cell
+    if gen is not None:
+        gen.close()
     print("\nwrote", args.out, flush=True)
 
 

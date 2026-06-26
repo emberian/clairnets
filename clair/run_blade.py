@@ -87,7 +87,7 @@ def matched_sizes(target, R, ds):
 
 # ===================================================================== training (mirrors RG.train, blade model)
 def train(msg, rungs, dev, d, steps, pool=128, R=8, lr=3e-4, theta=0.5, seed=0,
-          ex=RG.SHARED, log=None):
+          ex=RG.SHARED, log=None, gen=None):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     m = BladeFactorDeductor(msg, N_MAX, D_MAX, M_MAX, A_MAX, d=d, R=R, ds=min(4, R)).to(dev)
@@ -97,6 +97,13 @@ def train(msg, rungs, dev, d, steps, pool=128, R=8, lr=3e-4, theta=0.5, seed=0,
     tagged = sample_corpus(rng, pool, rungs)
     items = [(c, c.full()) for _, c in tagged]
     rtags = [rg for rg, _ in tagged]
+    if gen is not None:                                          # parallel + GPU-overlapped data path
+        from .datagen import fast as _fast
+        print(f"  [{msg:5s}] [fast] train rungs={rungs} d={d} params={npar:,} pool={pool} R={R} "
+              f"steps={steps} workers={gen.workers}", flush=True)
+        log = _fast.overlap_loop(m, opt, dev, steps, rng, items, rtags, sample_csp,
+                                 theta=theta, gen=gen, ex=ex, log=log, label=msg)
+        return m, d, npar, log
     print(f"  [{msg:5s}] train rungs={rungs} d={d} params={npar:,} pool={pool} R={R} steps={steps}",
           flush=True)
     fe_k = fe_n = 0
@@ -149,8 +156,18 @@ def _ptable(title, blade, table, rungs):
               f"{b['false_elim']:7.4f} {t['false_elim']:7.4f}", flush=True)
 
 
+def _maybe_gen(args):
+    """One shared FastGen reused across every train() call when --fast (parallel + overlapped data)."""
+    if getattr(args, "fast", False):
+        from .datagen import fast as _fast
+        return _fast.FastGen(workers=getattr(args, "workers", 0) or None,
+                             cache_path=getattr(args, "cache", None) or None)
+    return None
+
+
 def run_full(args, dev):
     out = {"budget": [N_MAX, D_MAX, M_MAX, A_MAX], "all_rungs": ALL_RUNGS, "args": vars(args)}
+    gen = _maybe_gen(args)
     eval_all = make_eval_sets(ALL_RUNGS, args.neval)
     eval_3 = {rg: eval_all[rg] for rg in ARITY3}
     modes = ("blade", "table")
@@ -164,7 +181,7 @@ def run_full(args, dev):
     A = {}
     for msg in modes:
         m, d, npar, log = train(msg, ALL_RUNGS, dev, sz[msg][0], args.steps,
-                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed)
+                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
         A[msg] = {"d_model": d, "params": npar, "log": log, "eval": _eval(m, eval_all, dev, args)}
     _ptable("A. MULTITASK per-rung completeness", A["blade"]["eval"], A["table"]["eval"], ALL_RUNGS)
     out["multitask"] = A
@@ -174,7 +191,7 @@ def run_full(args, dev):
     Bx = {}
     for msg in modes:
         m, d, npar, log = train(msg, ARITY2, dev, sz[msg][0], args.steps,
-                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed)
+                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
         Bx[msg] = {"d_model": d, "params": npar, "log": log, "eval": _eval(m, eval_3, dev, args)}
     _ptable("B. ZERO-SHOT arity-3 (NEVER saw an arity-3 factor in training)",
             Bx["blade"]["eval"], Bx["table"]["eval"], ARITY3)
@@ -188,7 +205,7 @@ def run_full(args, dev):
     eval_C = {"arithmetic": eval_all["arithmetic"]}
     for msg in modes:
         m, d, npar, log = train(msg, train_C, dev, sz[msg][0], args.steps,
-                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed)
+                                 pool=args.pool, R=args.R, lr=args.lr, theta=args.theta, seed=args.seed, gen=gen)
         Cx[msg] = {"d_model": d, "params": npar, "log": log, "eval": _eval(m, eval_C, dev, args)}
     _ptable("C. CROSS-AFFINE (saw xor=arity-3 affine; tested on arithmetic=different arity-3 affine)",
             Cx["blade"]["eval"], Cx["table"]["eval"], ["arithmetic"])
@@ -204,6 +221,8 @@ def run_full(args, dev):
               f"table {Bx['table']['eval'][rg]['narrowing_recall']*100:5.1f}%", flush=True)
     print(f"  cross-aff  arithmetic : blade {Cx['blade']['eval']['arithmetic']['narrowing_recall']*100:5.1f}%  "
           f"table {Cx['table']['eval']['arithmetic']['narrowing_recall']*100:5.1f}%", flush=True)
+    if gen is not None:
+        gen.close()
     return out
 
 
@@ -212,17 +231,20 @@ def run_smoke(args, dev):
     rungs = ["coloring", "arithmetic", "xor"]
     eval_sets = make_eval_sets(rungs, 60)
     sz = matched_sizes(1.2e5, args.R, min(4, args.R))
+    gen = _maybe_gen(args)
     print(f"iso-param: table d={sz['table'][0]} p={sz['table'][1]:,} >= "
           f"blade d={sz['blade'][0]} p={sz['blade'][1]:,}", flush=True)
     out = {}
     for msg in ("blade", "table"):
         m, d, npar, log = train(msg, rungs, dev, sz[msg][0], steps=args.steps or 200,
-                                pool=64, R=args.R, lr=args.lr, theta=args.theta, seed=0)
+                                pool=64, R=args.R, lr=args.lr, theta=args.theta, seed=0, gen=gen)
         ev = _eval(m, eval_sets, dev, args)
         out[msg] = {"d": d, "params": npar, "log": log, "eval": ev}
         print(f"  [{msg}] false_elim traj: {[round(x['false_elim'],4) for x in log]}", flush=True)
         for rg in rungs:
             print("   " + RG._row(rg, ev[rg]), flush=True)
+    if gen is not None:
+        gen.close()
     return {"smoke": out}
 
 
@@ -238,6 +260,10 @@ def main():
     ap.add_argument("--neval", type=int, default=200)
     ap.add_argument("--rmax", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--fast", action="store_true",
+                    help="parallel (all-core) dedP targets + GPU-overlapped data path")
+    ap.add_argument("--workers", type=int, default=0, help="pool workers for --fast (0=os.cpu_count)")
+    ap.add_argument("--cache", default=None, help="on-disk dedP target cache (sqlite path), reused across runs")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     dev = RG.device()
