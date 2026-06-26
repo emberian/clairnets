@@ -220,6 +220,32 @@ def strong_step(prob: PermProblem, dom):
     return dom
 
 
+_CERT_OPS = [("unary", unary_ac), ("group_orbit", group_orbit), ("ordering", ordering_ac),
+             ("alldiff_gac", alldiff_gac)]
+
+
+def certified_trace(prob: PermProblem, dom=None, with_pair=True):
+    """The ORGAN-GROUNDED TRACE: apply each certified reduction in turn to fixpoint, logging the
+    SEQUENCE of (operator, #values removed) — the chain of sound reductions that solves the instance.
+    This is the exact-verifiable trace the multi-organ router would imitate."""
+    dom = dom or prob.full()
+    ops = list(_CERT_OPS)
+    if with_pair:
+        ops.append(("group_pair", group_pair_ac))
+    trace = []
+    changed = True
+    guard = 0
+    while changed and guard < prob.n * prob.n + 4:
+        changed = False; guard += 1
+        for name, op in ops:
+            nxt = op(prob, dom)
+            removed = sum(len(dom[i] - nxt[i]) for i in range(prob.n))
+            if removed:
+                trace.append({"op": name, "removed": removed, "alive_after": sum(len(c) for c in nxt)})
+                dom = nxt; changed = True
+    return dom, trace
+
+
 def to_fixpoint(step, prob, dom=None, max_iters=None):
     dom = dom or prob.full()
     max_iters = max_iters or prob.n * prob.n + 2
