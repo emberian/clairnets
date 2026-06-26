@@ -6,7 +6,7 @@ GLaDOS welds a sound, abstain-capable reasoning module *inside* a pretrained LLM
 problem into the organ, the organ narrows it, and the model reads the result back and answers. The whole thing
 is judged by an exact verifier, so the organ is free to be learned and loose while the answer stays honest.
 
-> *New here?* → [`report/glados.pdf`](report/glados.pdf) is the paper · [`GLOSSARY.md`](GLOSSARY.md) the vocabulary ·
+> *New here?* → [`report/glados.pdf`](report/glados.pdf) is the "paper" (stale) · [`GLOSSARY.md`](GLOSSARY.md) the vocabulary ·
 > [`CONTRIBUTING.md`](CONTRIBUTING.md) to run it · [`CURSELOG.md`](CURSELOG.md) the honest journey.
 
 ## The bet
