@@ -1,0 +1,397 @@
+{
+ "args": {
+  "base": "allenai/OLMo-2-0425-1B",
+  "regime": "small",
+  "steps": 1500,
+  "warm_steps": 300,
+  "two_stream": 1,
+  "eval_per_rung": 60,
+  "core_ckpt": "runs/general_organ_full.pt",
+  "bs": 8,
+  "seed": 0,
+  "smoke": false,
+  "out": "runs/interp_bank.json"
+ },
+ "base": "allenai/OLMo-2-0425-1B",
+ "regime": "small",
+ "rungs": [
+  "alldiff",
+  "arithmetic",
+  "coloring",
+  "equality",
+  "ordering"
+ ],
+ "split": "id",
+ "n_eval": 300,
+ "controls": {
+  "true": 1.0,
+  "det_acc": 1.0,
+  "by_rung": {
+   "alldiff": 1.0,
+   "coloring": 1.0,
+   "ordering": 1.0,
+   "equality": 1.0,
+   "arithmetic": 1.0
+  },
+  "shuffle": 0.235,
+  "permute": 0.0,
+  "corrupt": 0.0025,
+  "zero": 0.235,
+  "oracle": 1.0,
+  "base": 0.0,
+  "gate": 0.2539023458957672,
+  "drop": 1.0,
+  "lift": 0.765,
+  "wired": 1.0,
+  "necessary": 1.0,
+  "engages": 1.0,
+  "n": 400.0,
+  "faculties": [
+   "arc_consistency",
+   "factor_consistency",
+   "modular_snf",
+   "gf2_rowspace",
+   "macro_reach",
+   "core_narrow_organ"
+  ]
+ },
+ "faithfulness": {
+  "overall": {
+   "precision": 0.824572514249525,
+   "recall": 0.9819004524886877,
+   "f1": 0.8963855421686746,
+   "cellvalue_TP": 2604,
+   "cellvalue_FP": 554,
+   "cellvalue_FN": 48,
+   "cell_exact_set_acc": 0.7155893536121672,
+   "cell_cardinality_acc": 0.7231939163498099,
+   "determined_cells": 728,
+   "pin_detect_acc": 0.7815934065934066,
+   "n_cells": 1315,
+   "n_instances": 300
+  },
+  "by_rung": {
+   "alldiff": {
+    "precision": 0.9623824451410659,
+    "recall": 0.985553772070626,
+    "f1": 0.9738302934179223,
+    "cellvalue_TP": 614,
+    "cellvalue_FP": 24,
+    "cellvalue_FN": 9,
+    "cell_exact_set_acc": 0.894927536231884,
+    "cell_cardinality_acc": 0.894927536231884,
+    "determined_cells": 130,
+    "pin_detect_acc": 0.9461538461538461,
+    "n_cells": 276,
+    "n_instances": 60
+   },
+   "arithmetic": {
+    "precision": 0.8178571428571428,
+    "recall": 0.9786324786324786,
+    "f1": 0.8910505836575876,
+    "cellvalue_TP": 458,
+    "cellvalue_FP": 102,
+    "cellvalue_FN": 10,
+    "cell_exact_set_acc": 0.7971698113207547,
+    "cell_cardinality_acc": 0.8018867924528302,
+    "determined_cells": 154,
+    "pin_detect_acc": 0.7402597402597403,
+    "n_cells": 212,
+    "n_instances": 60
+   },
+   "coloring": {
+    "precision": 0.8242612752721618,
+    "recall": 0.9981167608286252,
+    "f1": 0.9028960817717206,
+    "cellvalue_TP": 530,
+    "cellvalue_FP": 113,
+    "cellvalue_FN": 1,
+    "cell_exact_set_acc": 0.6915254237288135,
+    "cell_cardinality_acc": 0.6949152542372882,
+    "determined_cells": 142,
+    "pin_detect_acc": 0.823943661971831,
+    "n_cells": 295,
+    "n_instances": 60
+   },
+   "equality": {
+    "precision": 0.7552674230145867,
+    "recall": 0.9893842887473461,
+    "f1": 0.8566176470588236,
+    "cellvalue_TP": 466,
+    "cellvalue_FP": 151,
+    "cellvalue_FN": 5,
+    "cell_exact_set_acc": 0.6564625850340136,
+    "cell_cardinality_acc": 0.6632653061224489,
+    "determined_cells": 184,
+    "pin_detect_acc": 0.6793478260869565,
+    "n_cells": 294,
+    "n_instances": 60
+   },
+   "ordering": {
+    "precision": 0.7657142857142857,
+    "recall": 0.9588550983899821,
+    "f1": 0.8514694201747418,
+    "cellvalue_TP": 536,
+    "cellvalue_FP": 164,
+    "cellvalue_FN": 23,
+    "cell_exact_set_acc": 0.5378151260504201,
+    "cell_cardinality_acc": 0.5630252100840336,
+    "determined_cells": 118,
+    "pin_detect_acc": 0.7627118644067796,
+    "n_cells": 238,
+    "n_instances": 60
+   }
+  },
+  "by_true_cardinality": {
+   "1": {
+    "n_cells": 728,
+    "exact_set_acc": 0.7815934065934066,
+    "recall": 0.9739010989010989
+   },
+   "2": {
+    "n_cells": 165,
+    "exact_set_acc": 0.1696969696969697,
+    "recall": 1.0
+   },
+   "3": {
+    "n_cells": 244,
+    "exact_set_acc": 0.8688524590163934,
+    "recall": 0.994535519125683
+   },
+   "4": {
+    "n_cells": 88,
+    "exact_set_acc": 0.7727272727272727,
+    "recall": 0.9659090909090909
+   },
+   "5": {
+    "n_cells": 49,
+    "exact_set_acc": 0.7142857142857143,
+    "recall": 0.9836734693877551
+   },
+   "6": {
+    "n_cells": 22,
+    "exact_set_acc": 0.45454545454545453,
+    "recall": 0.9318181818181818
+   },
+   "7": {
+    "n_cells": 19,
+    "exact_set_acc": 1.0,
+    "recall": 1.0
+   }
+  }
+ },
+ "routing": {
+  "faculties": [
+   "arc_consistency",
+   "factor_consistency",
+   "modular_snf",
+   "gf2_rowspace",
+   "macro_reach",
+   "core_narrow_organ"
+  ],
+  "fired_fraction": {
+   "arc_consistency": 1.0,
+   "factor_consistency": 0.01
+  },
+  "fired_count": {
+   "arc_consistency": 300,
+   "factor_consistency": 3
+  },
+  "gated_count": {
+   "alpha_compile": 62,
+   "core_narrow_organ": 14
+  },
+  "mean_rounds": 2.0,
+  "by_rung_fired_fraction": {
+   "equality": {
+    "arc_consistency": 1.0
+   },
+   "ordering": {
+    "arc_consistency": 1.0
+   },
+   "coloring": {
+    "arc_consistency": 1.0,
+    "factor_consistency": 0.016666666666666666
+   },
+   "arithmetic": {
+    "arc_consistency": 1.0,
+    "factor_consistency": 0.03333333333333333
+   },
+   "alldiff": {
+    "arc_consistency": 1.0
+   }
+  },
+  "by_rung_n": {
+   "equality": 60,
+   "ordering": 60,
+   "coloring": 60,
+   "arithmetic": 60,
+   "alldiff": 60
+  }
+ },
+ "conclusion": {
+  "query_cell_matches_dedp": 1.0,
+  "all_cells_match_dedp": 1.0,
+  "composed_sound_frac": 1.0,
+  "query_singleton_frac": 1.0,
+  "determined_query_solved": 1.0,
+  "n": 300
+ },
+ "bottleneck": {
+  "n": 300,
+  "answer_acc_true": 1.0,
+  "answer_acc_oracle_override": 1.0,
+  "mean_query_faithful": 0.7333333333333333,
+  "mean_instance_compileF1": 0.8799419030732539,
+  "corr_queryfaithful_correct": 0.0,
+  "corr_compileF1_correct": 0.0,
+  "answer_acc_when_query_faithful": 1.0,
+  "answer_acc_when_query_unfaithful": 1.0,
+  "mean_compileF1_when_correct": 0.8799419030732539,
+  "mean_compileF1_when_wrong": null,
+  "oracle_minus_true": 0.0
+ },
+ "trajectories": [
+  {
+   "rung": "equality",
+   "n": 4,
+   "query": "D",
+   "true_problem": "A=B, A=D, B\u2260C, B=D, C\u2260D, B=red",
+   "alpha_posed": "A\u2208{red,green,blue}, B=red, C\u2208{red,green,blue}, D=red",
+   "init_alive": 12,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 5,
+     "dropped": 7
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "open",
+   "gated": [],
+   "composed_conclusion": "A=red, B=red, C\u2208{green,blue}, D=red",
+   "answer_at_query": "red",
+   "dedp_answer": "red",
+   "model_answer_correct": true
+  },
+  {
+   "rung": "ordering",
+   "n": 5,
+   "query": "A",
+   "true_problem": "f(A,B), A<E, C<E, D<B, D<C, A=3",
+   "alpha_posed": "A=3, B\u2208{2,3,4,5,6,7}, C\u2208{1,2,3,4,5,6,7}, D\u2208{1,2,3}, E\u2208{2,3,4,5,6,7}",
+   "init_alive": 35,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 20,
+     "dropped": 15
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "open",
+   "gated": [
+    "alpha_compile",
+    "alpha_compile"
+   ],
+   "composed_conclusion": "A=3, B\u2208{3,4,5,6,7}, C\u2208{2,3,4,5,6}, D\u2208{1,2,3,4,5}, E\u2208{4,5,6,7}",
+   "answer_at_query": "3",
+   "dedp_answer": "3",
+   "model_answer_correct": true
+  },
+  {
+   "rung": "coloring",
+   "n": 5,
+   "query": "A",
+   "true_problem": "B\u2260E, C\u2260D, D\u2260E, A=red, E=blue",
+   "alpha_posed": "A=red, B\u2208{red,green,blue}, C\u2208{red,green,blue}, D\u2208{red,green,blue}, E=blue",
+   "init_alive": 15,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 9,
+     "dropped": 6
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "open",
+   "gated": [],
+   "composed_conclusion": "A=red, B\u2208{red,green}, C\u2208{red,green,blue}, D\u2208{red,green}, E=blue",
+   "answer_at_query": "red",
+   "dedp_answer": "red",
+   "model_answer_correct": true
+  },
+  {
+   "rung": "arithmetic",
+   "n": 3,
+   "query": "C",
+   "true_problem": "f(B,A,C), A=4, B=2",
+   "alpha_posed": "A=4, B=2, C\u2208{0,1,5}",
+   "init_alive": 18,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 3,
+     "dropped": 15
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "solved",
+   "gated": [],
+   "composed_conclusion": "A=4, B=2, C=0",
+   "answer_at_query": "0",
+   "dedp_answer": "0",
+   "model_answer_correct": true
+  },
+  {
+   "rung": "alldiff",
+   "n": 5,
+   "query": "C",
+   "true_problem": "A\u2260B, A\u2260C, A\u2260D, A\u2260E, B\u2260C, B\u2260D, B\u2260E, C\u2260D, C\u2260E, D\u2260E, A=2, C=0, D=3",
+   "alpha_posed": "A=2, B\u2208{1,4,5}, C=0, D=3, E\u2208{1,4,5}",
+   "init_alive": 30,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 9,
+     "dropped": 21
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "open",
+   "gated": [],
+   "composed_conclusion": "A=2, B\u2208{1,4,5}, C=0, D=3, E\u2208{1,4,5}",
+   "answer_at_query": "0",
+   "dedp_answer": "0",
+   "model_answer_correct": true
+  },
+  {
+   "rung": "ordering",
+   "n": 5,
+   "query": "B",
+   "true_problem": "f(C,A), f(D,A), D<C, E<A, E<D, B=5, E=1",
+   "alpha_posed": "A\u2208{2,3,4,5}, B=5, C\u2208{1,2,3,4,5}, D\u2208{1,2,3,4,5}, E=1",
+   "init_alive": 25,
+   "narrowing": [
+    {
+     "round": 1,
+     "faculty": "arc_consistency",
+     "alive": 11,
+     "dropped": 14
+    }
+   ],
+   "final_rounds": 2,
+   "final_status": "open",
+   "gated": [],
+   "composed_conclusion": "A\u2208{3,4,5}, B=5, C\u2208{3,4,5}, D\u2208{2,3,4}, E=1",
+   "answer_at_query": "5",
+   "dedp_answer": "5",
+   "model_answer_correct": true
+  }
+ ]
+}
