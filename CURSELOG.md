@@ -13,6 +13,19 @@ terse, newest-first. Append new entries at the top. Negatives are results.
   **Organ socket = swap `build_model()`'s policy** for the augmented OLMo; reward/dataset/config unchanged. The
   real-training substrate works. Next: wire the organ in + the matched 2×2 + a **process-reward arm** (RLTT/LSRL,
   PDFs in `pdfs/`) so a GRPO null is interpretable.
+- **Prior-art recipes EXTRACTED** (`notes/prior_art_extract.md`) — they crystallize the organ-RL design:
+  - **TransNAR validates our recipe**: gated cross-attn readback, gate init *closed*, node+edge by *concat+linear*
+    (= our structured dense-γ); reasoner *frozen* during coupling (= bootstrap→freeze); **>20% OOD gain with pure
+    supervised next-token, NO RL** → lead with a **supervised γ-warmup**, RL only for calibration. Fix it handed us:
+    **randomized PE is load-bearing** (without it the hybrid is thresholded by the base LM's OOD score — a candidate
+    cause of our cold-weave shortcut). Their gap = the LLM never *compiles* the graph; our α is the unprecedented half.
+  - **THE elegant lift: the organ IS the process-reward.** LSRL gets 75% of its lift from per-step process supervision
+    via a *hackable* GPT-nano judge, and explicitly asks for "a symbol-aware PRM verifying each step" — *that is the
+    GLaDOS organ.* Process-reward = candidate-set cardinality drop; step-quality = soundness of narrowing. Exact,
+    un-hackable, free. Mix 0.7·outcome+0.3·process (LSRL); RLTT does it parameter-free (broadcast outcome across steps,
+    weight by the abstain/exit head). Real novelty: TransNAR soft / RLTT no-verifier / LSRL hackable — *ours is exact.*
+  - Flags: process-supervision is NULL below ~r=8 depth (shallow-organ process-RL null is EXPECTED); keep outcome
+    reward primary; γ must be readable MID-narrowing.
 - **Prior art gathered + positioned** (`notes/reading_list.md`, `nesy_landscape.md`, `prior_art_extract.md`):
   the pieces exist separately — SATNet/DeepProbLog/NLM (neural+logic, pre-LLM), **TransNAR** (LLM↔reasoner
   coupling), **RLTT/LSRL** (process-reward for latent/looped reasoning), reasoning-gym (verifiable fuel) — but
