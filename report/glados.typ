@@ -59,6 +59,7 @@ architecture) or only targeted RL (a trick)?
 #include "sections/01-intro.typ"
 #include "sections/02-harness.typ"
 #include "sections/03-architecture.typ"
+#include "sections/07-training.typ"
 #include "sections/04-findings.typ"
 #include "sections/05-related.typ"
 #include "sections/06-realtraining.typ"

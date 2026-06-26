@@ -56,6 +56,13 @@ propagation chains the base and text-LoRA cannot shortcut* (woven 100% there). O
 *organ's own recall*, not the readout. The staged recipe is *demonstrated, not hoped.*
 ]
 
+*Scope, stated plainly.* These woven numbers are *readout-isolation*: the organ is handed the *true*
+narrowed lattice and what is proven is that the LM reads back and generates *through* a certified state it
+cannot get from the prompt. The *real* woven model replaces that hand-in with *live latent-$alpha$* —
+$alpha$ compiling the organ's input from the OLMo hidden state, no symbolic extraction, no ground-truth CSP
+— which is being wired now (§7). Readout is proven; live latent-$alpha$ is the critical path and the honest
+open piece.
+
 #figure(
   table(columns: (auto, auto, auto, auto, 1fr), inset: 5pt, align: (left, center, center, center, left),
     stroke: 0.4pt + luma(180),
