@@ -1,0 +1,22 @@
+{
+  "tag": "olmo2-1b",
+  "model_id": "allenai/OLMo-2-0425-1B",
+  "arch": "Olmo2ForCausalLM",
+  "decoder_layer_path": "model.layers",
+  "n_layers": 16,
+  "hidden_dim": 2048,
+  "vocab_size": 100352,
+  "K_candidate_dim": 8,
+  "organ_ckpt": "runs/general_organ_full.pt",
+  "mid_layer": 5,
+  "inject_layer": 10,
+  "n_cells": 6,
+  "dtype": "bfloat16",
+  "noop_at_init_max_abs_delta": 0.0,
+  "noop_at_init_bitwise": true,
+  "gate_open_tanh": 0.9950547814369202,
+  "gate_open_max_abs_delta": 8.375,
+  "gate_open_moves_logits": true,
+  "forward_runs": true,
+  "verdict": "PASS"
+}
