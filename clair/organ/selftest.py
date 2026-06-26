@@ -208,6 +208,92 @@ def test_woven(full=False):
         print("    (skip full OLMo staged smoke; pass --woven to run it)")
 
 
+# ============================================================ [5] readout-bridges (energy / FOL)
+def test_readout_bridge():
+    print("\n[5] readout-bridges for the non-CSP-lattice beasts (energy/ising assignment + FOL label)")
+    import torch
+    import numpy as np
+    from . import readout_bridge as RB
+    from .. import oracle_readout as O
+    K = 4
+
+    # Energy.survival = soft marginals that SOLVE the determined chain; energy_readout = rich [n,K+2]
+    ch = C.chain_eq(4)
+    sv = B.Energy().survival(ch, K)
+    assert tuple(int(sv[i].argmax()) for i in range(ch.n)) == C.solutions(ch)[0], "energy survival must solve"
+    feat, assign, info = RB.energy_readout(ch, K, steps=140)
+    assert feat.shape == (ch.n, K + 2) and tuple(assign) == C.solutions(ch)[0]
+    print(f"    energy_optimise   survival solves chain_eq(4); rich feat {feat.shape} "
+          f"(assignment + conf {feat[0,K]:.2f} + quality {feat[0,K+1]:.2f})")
+
+    # Ising readout: a max-cut maps -> Ising -> organ -> rich spin readout that recovers the optimum
+    try:
+        import networkx as nx
+        from .. import ising_organ as IS
+        G = nx.gnp_random_graph(10, 0.5, seed=2)
+        J, h, _, meta = IS.encode_maxcut(G, device="cpu")
+        ifeat, spins, E = RB.ising_readout(J, h, K=2, restarts=64, steps=160, seed=3)
+        cut = IS.decode_maxcut(G, meta, torch.as_tensor(spins, dtype=torch.float32))
+        opt = IS.exact_maxcut(G, device="cpu")
+        assert ifeat.shape == (G.number_of_nodes(), 2 + 2) and abs(cut - opt) < 1e-6
+        print(f"    ising readout     max-cut n=10 organ cut={cut:.0f} == exact {opt:.0f}; rich feat {ifeat.shape}")
+    except ImportError:
+        print("    ising readout     (networkx unavailable; skipped)")
+
+    # α→couplings compile head + DIRECT coupling-supervision (the annealer is non-diff): loss must drop
+    from .. import ising_organ as IS
+    a_part = [3, 1, 4, 1, 5, 9, 2, 6]
+    Jt, ht, _, _ = IS.encode_partition(a_part, device="cpu")
+    n, D = len(a_part), 32
+    torch.manual_seed(0)
+    v = torch.randn(1, n, D)
+    proj = RB.CouplingProjector(D, dp=64)
+    opt = torch.optim.Adam(proj.parameters(), lr=1e-2)
+    Jtt = torch.as_tensor(Jt).unsqueeze(0); htt = torch.as_tensor(ht).unsqueeze(0)
+    l0 = None
+    for step in range(120):
+        Jp, hp = proj(v)
+        loss = RB.coupling_loss(Jp, hp, Jtt, htt)
+        if l0 is None:
+            l0 = float(loss)
+        opt.zero_grad(); loss.backward(); opt.step()
+    assert float(loss) < 0.5 * l0, f"coupling supervision did not reduce loss ({l0:.3f} -> {float(loss):.3f})"
+    print(f"    α→couplings       CouplingProjector fits (J,h) under direct supervision: "
+          f"loss {l0:.3f} -> {float(loss):.3f}")
+
+    # Unification (FOL): rich label readout matches the exact closure label, and survival one-hots it
+    from .. import fol as FOL
+    rng = np.random.default_rng(1)
+    ok = 0
+    for lab in ("entail", "contradict", "unknown"):
+        p = FOL.gen_problem(rng, label=lab)
+        ufeat, label, closure = RB.unification_readout(p.facts, p.rules, p.query, K)
+        usv = B.Unification().survival((p.facts, p.rules, p.query), K)
+        ok += int(label == lab and int(ufeat[0, ("entail", "contradict", "unknown").index(lab)]) == 1
+                  and int(usv[0].argmax()) == ("entail", "contradict", "unknown").index(lab))
+    assert ok == 3, "unification readout/label must match the exact closure for all 3 labels"
+    print(f"    unification_chain rich label readout matches exact closure on entail/contradict/unknown (3/3)")
+
+    # the rich feature scatters through the SAME zero-init γ channel (bitwise no-op at init)
+    Fin = K + 2
+    gamma = O.OracleGamma(32, Fin).float()
+    ft = torch.from_numpy(feat).unsqueeze(0)
+    mention = torch.zeros(1, ch.n, 5); mention[:, :, 1] = 1.0
+    inj0 = float((torch.tanh(gamma.alpha) * gamma.delta(ft, mention)).abs().max())
+    with torch.no_grad():
+        gamma.alpha.fill_(2.0)
+    inj1 = float((torch.tanh(gamma.alpha) * gamma.delta(ft, mention)).abs().max())
+    assert inj0 == 0.0 and inj1 > 0.0, "rich readout must be a γ no-op at init and move when opened"
+    print(f"    γ-bridge          rich readout no-op@init (0.0); gate-open moves residual ({inj1:.3e})")
+
+
+# ============================================================ [6] organ-as-process-reward
+def test_process_reward():
+    print("\n[6] organ-as-process-reward (dense where outcome is 0)")
+    from . import process_reward as PR
+    PR.smoke()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--woven", action="store_true", help="also run the full OLMo staged woven smoke")
@@ -218,6 +304,8 @@ def main():
     test_certified_reductions()
     test_composer()
     test_readout_noop()
+    test_readout_bridge()
+    test_process_reward()
     test_woven(full=a.woven)
     print("\nALL CHECKS PASS — clair/organ is the assembled GLaDOS organ: certified bank sound on "
           "domain, composer sound across >=2 domains, readout no-op at init, woven entry runs.")

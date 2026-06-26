@@ -147,7 +147,10 @@ def lora_cfg():
 
 
 # --------------------------------------------------------------------------- main
-def main():
+def main(reward_builder=None):
+    """reward_builder: optional zero-arg callable returning a TRL reward_func. When provided (e.g. the
+    organ-as-process-reward mix from clair.organ.train.rlvr), it REPLACES the default exact-verifier
+    reward — this is the wired ORGAN-AS-PROCESS-REWARD path (was only an insertion-point comment)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="chain_sum")
     ap.add_argument("--steps", type=int, default=300)
@@ -217,9 +220,11 @@ def main():
         num_completions_to_print=2,
     )
 
+    reward_funcs = reward_builder() if reward_builder is not None else make_reward(strict=True)
+    print(f"[rlvr] reward = {getattr(reward_funcs, '__name__', reward_funcs)}")
     trainer = GRPOTrainer(
         model=build_model(),
-        reward_funcs=make_reward(strict=True),
+        reward_funcs=reward_funcs,
         args=cfg,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
