@@ -18,6 +18,34 @@ from __future__ import annotations
 
 import itertools as it
 from dataclasses import dataclass
+from functools import lru_cache
+
+# --------------------------------------------------------------------- optional Rust fast path
+# clair_fast (PyO3) ports exact_dedP / solutions / ac_step with IDENTICAL semantics. If the
+# extension isn't built the repo still runs on the pure-Python implementations below.
+import os as _os
+if _os.environ.get("CLAIR_NO_FAST"):                              # explicit pure-Python override
+    _CF = None
+else:
+    try:
+        import clair_fast as _CF
+    except Exception:                                             # not built -> pure Python
+        _CF = None
+
+FAST = _CF is not None
+
+
+@lru_cache(maxsize=8192)
+def _marshal_cons(cons):
+    """Constraints -> (scopes, alloweds) primitives for the Rust boundary. Memoised because the
+    constraint set is constant across the on-policy domain rolls (only `dom` changes)."""
+    scopes = [list(sc) for sc, al in cons]
+    alloweds = [[list(t) for t in al] for sc, al in cons]
+    return scopes, alloweds
+
+
+def _fast_ok(csp):
+    return _CF is not None and csp.d <= 64 and all(len(sc) <= 8 for sc, _ in csp.cons)
 
 
 @dataclass(frozen=True)
@@ -64,10 +92,7 @@ def _backtrack(csp: CSP, dom, on_solution):
         pass
 
 
-def solutions(csp: CSP, dom=None, limit=None):
-    """All assignments with s[i] in dom[i] satisfying every constraint, via backtracking. Pass limit=k
-    to stop after k solutions (limit=1 = a satisfiability check). Exact ground truth."""
-    dom = dom or csp.full()
+def _solutions_py(csp: CSP, dom, limit=None):
     out = []
     def collect(s):
         out.append(s)
@@ -77,18 +102,22 @@ def solutions(csp: CSP, dom=None, limit=None):
     return out
 
 
+def solutions(csp: CSP, dom=None, limit=None):
+    """All assignments with s[i] in dom[i] satisfying every constraint, via backtracking. Pass limit=k
+    to stop after k solutions (limit=1 = a satisfiability check). Exact ground truth. Uses the Rust
+    fast path when available (identical enumeration order); else pure Python."""
+    dom = dom or csp.full()
+    if _fast_ok(csp):
+        scopes, alloweds = _marshal_cons(csp.cons)
+        doml = [sorted(dom[i]) for i in range(csp.n)]
+        return [tuple(s) for s in _CF.solutions(csp.n, csp.d, scopes, alloweds, doml, limit)]
+    return _solutions_py(csp, dom, limit)
+
+
 _DEDP_CACHE = {}
 
 
-def exact_dedP(csp: CSP, dom):
-    """The EXACT best per-cell transformer dedₚ(a) = α(γ(a) ∩ solutions): for each cell, the values used
-    by SOME full solution consistent with `dom`. Strongest SOUND per-cell narrowing; a_next ⊆ a always.
-    Backtracking with witness accumulation + early-stop (once every alive value is witnessed, dedₚ==dom so
-    we halt); memoized by (cons, dom)."""
-    key = (csp.cons, dom)
-    hit = _DEDP_CACHE.get(key)
-    if hit is not None:
-        return hit
+def _exact_dedP_py(csp: CSP, dom):
     surv = [set() for _ in range(csp.n)]
     need = sum(len(d) for d in dom)
     seen = [0]
@@ -99,8 +128,26 @@ def exact_dedP(csp: CSP, dom):
         if seen[0] >= need:                                       # every alive value reachable -> dedₚ == dom
             raise _Stop
     _backtrack(csp, dom, witness)
-    res = (tuple(frozenset() for _ in range(csp.n)) if seen[0] == 0       # unsat -> ⊥
-           else tuple(frozenset(surv[i]) for i in range(csp.n)))
+    return (tuple(frozenset() for _ in range(csp.n)) if seen[0] == 0       # unsat -> ⊥
+            else tuple(frozenset(surv[i]) for i in range(csp.n)))
+
+
+def exact_dedP(csp: CSP, dom):
+    """The EXACT best per-cell transformer dedₚ(a) = α(γ(a) ∩ solutions): for each cell, the values used
+    by SOME full solution consistent with `dom`. Strongest SOUND per-cell narrowing; a_next ⊆ a always.
+    Backtracking with witness accumulation + early-stop (once every alive value is witnessed, dedₚ==dom so
+    we halt); memoized by (cons, dom). Uses the Rust fast path when available (bitwise-identical set)."""
+    key = (csp.cons, dom)
+    hit = _DEDP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    if _fast_ok(csp):
+        scopes, alloweds = _marshal_cons(csp.cons)
+        doml = [sorted(dom[i]) for i in range(csp.n)]
+        cells = _CF.exact_dedp(csp.n, csp.d, scopes, alloweds, doml)
+        res = tuple(frozenset(c) for c in cells)
+    else:
+        res = _exact_dedP_py(csp, dom)
     if len(_DEDP_CACHE) > 300_000:                                 # bound memory on long runs
         _DEDP_CACHE.clear()
     _DEDP_CACHE[key] = res
@@ -108,10 +155,7 @@ def exact_dedP(csp: CSP, dom):
 
 
 # --------------------------------------------------------------------- arc consistency (level 0, cheap)
-def ac_step(csp: CSP, dom):
-    """One generalized-arc-consistency pass (the cheap local operator). Keep value v at cell i iff
-    every constraint whose scope contains i has a satisfying tuple, consistent with the current
-    domains, that places v at i. Sound but LOCAL — weaker than dedₚ."""
+def _ac_step_py(csp: CSP, dom):
     new = list(dom)
     for i in range(csp.n):
         keep = set()
@@ -128,6 +172,19 @@ def ac_step(csp: CSP, dom):
                 keep.add(v)
         new[i] = frozenset(keep)
     return tuple(new)
+
+
+def ac_step(csp: CSP, dom):
+    """One generalized-arc-consistency pass (the cheap local operator). Keep value v at cell i iff
+    every constraint whose scope contains i has a satisfying tuple, consistent with the current
+    domains, that places v at i. Sound but LOCAL — weaker than dedₚ. Uses the Rust fast path when
+    available (bitwise-identical per-cell survival sets)."""
+    if _fast_ok(csp):
+        scopes, alloweds = _marshal_cons(csp.cons)
+        doml = [sorted(dom[i]) for i in range(csp.n)]
+        cells = _CF.ac_step(csp.n, csp.d, scopes, alloweds, doml)
+        return tuple(frozenset(c) for c in cells)
+    return _ac_step_py(csp, dom)
 
 
 def to_fixpoint(step, csp, dom, max_iters=None):
