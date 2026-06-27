@@ -1,0 +1,154 @@
+{
+  "curriculum": {
+    "sizes": {
+      "train": 480,
+      "route_required": 120,
+      "heldout_reduction_path": 240
+    },
+    "reverify_mismatches": 0,
+    "train_records": 480,
+    "train_canonical_unique": 240,
+    "train_surface_unique": 480,
+    "canonical_keys_with_multiple_reps": 240
+  },
+  "sweep": {
+    "k1": {
+      "views": [
+        "ext"
+      ],
+      "train_time_s": 835.5,
+      "in_dist_DIRECT": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 1.0,
+        "n": 72,
+        "zero": 0.6527777777777778,
+        "shuffle": 0.5972222222222222,
+        "corrupt": 0.0,
+        "base": 0.0,
+        "gate": 0.0638689398765564,
+        "lift": 0.3472222222222222,
+        "drop": 1.0
+      },
+      "route_required": {
+        "true": 0.95,
+        "det_acc": 0.95,
+        "mean_views": 1.0,
+        "n": 120,
+        "zero": 0.5,
+        "shuffle": 0.525,
+        "corrupt": 0.05,
+        "base": 0.0,
+        "gate": 0.0638689398765564,
+        "lift": 0.44999999999999996,
+        "drop": 0.8999999999999999
+      },
+      "heldout_reduction_path": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 1.0,
+        "n": 240,
+        "zero": 0.65,
+        "shuffle": 0.5958333333333333,
+        "corrupt": 0.0,
+        "base": 0.0,
+        "gate": 0.0638689398765564,
+        "lift": 0.35,
+        "drop": 1.0
+      }
+    },
+    "kfew": {
+      "views": [
+        "ext",
+        "alg"
+      ],
+      "train_time_s": 1254.7,
+      "in_dist_DIRECT": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.0,
+        "n": 72,
+        "zero": 0.6527777777777778,
+        "shuffle": 0.5972222222222222,
+        "corrupt": 0.1111111111111111,
+        "base": 0.0,
+        "gate": 0.05419066548347473,
+        "lift": 0.3472222222222222,
+        "drop": 0.8888888888888888
+      },
+      "route_required": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.0,
+        "n": 120,
+        "zero": 0.5,
+        "shuffle": 0.5166666666666667,
+        "corrupt": 0.16666666666666666,
+        "base": 0.0,
+        "gate": 0.05419066548347473,
+        "lift": 0.5,
+        "drop": 0.8333333333333334
+      },
+      "heldout_reduction_path": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.0,
+        "n": 240,
+        "zero": 0.65,
+        "shuffle": 0.5958333333333333,
+        "corrupt": 0.16666666666666666,
+        "base": 0.0,
+        "gate": 0.05419066548347473,
+        "lift": 0.35,
+        "drop": 0.8333333333333334
+      }
+    },
+    "kall": {
+      "views": [
+        "ext",
+        "alg",
+        "ising"
+      ],
+      "train_time_s": 1299.9,
+      "in_dist_DIRECT": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.6805555555555554,
+        "n": 72,
+        "zero": 0.6527777777777778,
+        "shuffle": 0.5972222222222222,
+        "corrupt": 0.3472222222222222,
+        "base": 0.0,
+        "gate": -0.04978771507740021,
+        "lift": 0.3472222222222222,
+        "drop": 0.6527777777777778
+      },
+      "route_required": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.0,
+        "n": 120,
+        "zero": 0.5,
+        "shuffle": 0.5166666666666667,
+        "corrupt": 0.5,
+        "base": 0.0,
+        "gate": -0.04978771507740021,
+        "lift": 0.5,
+        "drop": 0.5
+      },
+      "heldout_reduction_path": {
+        "true": 1.0,
+        "det_acc": 1.0,
+        "mean_views": 2.6416666666666666,
+        "n": 240,
+        "zero": 0.65,
+        "shuffle": 0.6,
+        "corrupt": 0.35,
+        "base": 0.0,
+        "gate": -0.04978771507740021,
+        "lift": 0.35,
+        "drop": 0.65
+      }
+    }
+  }
+}
