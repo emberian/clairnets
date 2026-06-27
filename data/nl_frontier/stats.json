@@ -1,0 +1,96 @@
+{
+  "seed": 0,
+  "sizes": {
+    "train": 2344,
+    "ood": 591,
+    "train_hardneg": 1500,
+    "train_diverse": 750,
+    "train_bedrock": 94,
+    "ood_bedrock": 29,
+    "hardneg_pairs_train": 750
+  },
+  "hardneg_deltas": {
+    "add_neq": 286,
+    "le->lt": 24,
+    "drop_lt": 29,
+    "neq->eq": 116,
+    "eq->neq": 30,
+    "drop_neq": 98,
+    "swap_operands(lt)": 32,
+    "add_lt": 46,
+    "lt->le": 30,
+    "drop_eq": 26,
+    "drop_le": 17,
+    "swap_operands(le)": 16
+  },
+  "by_rung_train": {
+    "alldiff": 413,
+    "coloring": 676,
+    "ordering": 618,
+    "equality": 637
+  },
+  "by_skin_train": {
+    "sensors": 356,
+    "register_alloc": 505,
+    "scheduling": 325,
+    "map_regions": 421,
+    "graph_coloring": 387,
+    "race": 293,
+    "lockbox": 57
+  },
+  "by_skin_ood": {
+    "social_teams": 240,
+    "frequency": 149,
+    "arithmetic": 34,
+    "prereqs": 78,
+    "sensors": 42,
+    "timeline": 48
+  },
+  "diversity": {
+    "old_template_canonical": {
+      "n": 750,
+      "distinct_1": 0.0012,
+      "distinct_2": 0.0075,
+      "distinct_3": 0.0195,
+      "self_bleu": 0.668
+    },
+    "new_train_rule": {
+      "n": 2250,
+      "distinct_1": 0.0028,
+      "distinct_2": 0.0785,
+      "distinct_3": 0.2546,
+      "self_bleu": 0.1239
+    },
+    "new_ood": {
+      "n": 591,
+      "distinct_1": 0.0097,
+      "distinct_2": 0.1426,
+      "distinct_3": 0.3349,
+      "self_bleu": 0.1942
+    },
+    "new_train_bedrock": {
+      "n": 94,
+      "distinct_1": 0.0654,
+      "distinct_2": 0.3818,
+      "distinct_3": 0.6774,
+      "self_bleu": 0.1004
+    }
+  },
+  "bedrock": {
+    "available": true,
+    "attempted": 187,
+    "kept": 123,
+    "drop_rate": 0.3422,
+    "in_tokens": 54875,
+    "out_tokens": 16036,
+    "model": "us.amazon.nova-2-lite-v1:0"
+  },
+  "dropped": {
+    "hardneg_mentions": 216,
+    "hardneg_unverified": 335,
+    "diverse_mentions": 205,
+    "diverse_unverified": 392,
+    "bedrock_struct_mismatch": 63,
+    "bedrock_mentions": 1
+  }
+}

@@ -439,6 +439,46 @@ def train_eval_ising(rack, olmo, tok, dev, pool, L, log=print):
     return res
 
 
+# ============================================================ NL-frontier arm (off-template generalization)
+def nl_frontier_arm(olmo, tok, dev, D, layers, nl_train_path, nl_ood_path, steps, lr,
+                    wpos, wnone, can_train_views=None, log=print):
+    """Train the CSP StructureHead on the NL-FRONTIER train set (clair.datagen.nl_frontier:
+    hard-negative pairs + widened phrasing + optional Bedrock naturalization) and evaluate on the
+    NL-OOD split (held-out skins / held-out naturalizer style). This is the off-template
+    generalization test the α-probe's diagnosis calls for — measured, not just trained on.
+
+    Sweeps `layers`, reports per-layer NL-OOD P/R/F1 + exact-match, and the best layer by OOD F1.
+    `can_train_views` (optional) mixes canonical-template views into the NL training pool."""
+    tr = load_csp_records(nl_train_path)
+    od = load_csp_records(nl_ood_path)
+    log(f"   NL-frontier: {len(tr)} train, {len(od)} OOD records (binary+pin)")
+    tr_v = [rec_view(r, "nl") for r in tr]
+    od_v = [rec_view(r, "nl") for r in od]
+    train_v = tr_v + list(can_train_views or [])
+    pre_tr = precompute(olmo, tok, dev, [(t, m, n) for (t, m, n, _) in train_v], layers)
+    pre_od = precompute(olmo, tok, dev, [(t, m, n) for (t, m, n, _) in od_v], layers)
+    pin_t, pair_t = csp_targets(train_v, pre_tr["Nmax"], dev)
+    per_layer = {}
+    for L in layers:
+        rack = StructureRack(D, K).to(dev)
+        rack.encoder.float(); rack.heads["csp"].float()
+        train_csp(rack, pre_tr, dev, list(range(len(train_v))), pin_t, pair_t,
+                  steps=steps, lr=lr, L=L, wpos=wpos, wnone=wnone, log=log)
+        rack.eval()
+        with torch.no_grad():
+            idx = list(range(len(od_v)))
+            pin_l, pair_l = forward_csp(rack, pre_od, dev, idx, L)
+            rep = f1_report(rack, None, pin_l, pair_l, pre_od["vmask"], pre_od["n"], od_v, idx)
+        log(f"   [nl-frontier L{L}] NL-OOD micro-F1 {rep['micro']['F1']:.3f}  "
+            f"exact {rep['exact_factor_graph_match']:.3f}")
+        per_layer[L] = rep
+    best_L = max(layers, key=lambda L: per_layer[L]["micro"]["F1"])
+    return {"nl_train": nl_train_path, "nl_ood": nl_ood_path,
+            "n_nl_train": len(tr_v), "n_canonical_mixed": len(can_train_views or []),
+            "n_nl_ood": len(od_v), "per_layer": per_layer, "best_layer": best_L,
+            "best_nl_ood": per_layer[best_L]}
+
+
 # ============================================================ main
 def main():
     ap = argparse.ArgumentParser()
@@ -451,6 +491,14 @@ def main():
     ap.add_argument("--wnone", type=float, default=1.0, help="weight on none/no-pin class (precision)")
     ap.add_argument("--out", default="runs/alpha_struct_probe.json")
     ap.add_argument("--max_recs", type=int, default=1400)
+    ap.add_argument("--nl_train", default=None,
+                    help="NL-frontier train jsonl (clair.datagen.nl_frontier out/train.jsonl)")
+    ap.add_argument("--nl_ood", default=None,
+                    help="NL-OOD eval jsonl (clair.datagen.nl_frontier out/ood.jsonl)")
+    ap.add_argument("--nl_only", action="store_true",
+                    help="run ONLY the NL-frontier arm (skip the canonical/router/ising sweep)")
+    ap.add_argument("--nl_mix_canonical", action="store_true",
+                    help="mix canonical-template views into the NL-frontier train pool")
     a = ap.parse_args()
     layers = [int(x) for x in a.layers.split(",")]
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -464,6 +512,27 @@ def main():
         p.requires_grad_(False)
     D = olmo.config.hidden_size
     print(f"OLMo hidden {D}, layers {olmo.config.num_hidden_layers}", flush=True)
+
+    # ---- fast standalone NL-frontier run: train on the NL set, eval on NL-OOD, nothing else ----
+    if a.nl_only:
+        if not (a.nl_train and a.nl_ood):
+            raise SystemExit("--nl_only requires --nl_train and --nl_ood")
+        can_views = None
+        if a.nl_mix_canonical:
+            crecs = load_csp_records(a.curriculum, limit=a.max_recs)
+            can_views = [rec_view(r, "canonical") for r in crecs]
+        print("\n== NL-FRONTIER arm (off-template generalization) ==", flush=True)
+        res = nl_frontier_arm(olmo, tok, dev, D, layers, a.nl_train, a.nl_ood, a.steps, a.lr,
+                              a.wpos, a.wnone, can_train_views=can_views)
+        out = {"model": a.model, "layers": layers, "nl_frontier": res}
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        with open(a.out, "w") as fh:
+            json.dump(out, fh, indent=2)
+        b = res["best_nl_ood"]["micro"]["F1"]
+        print(f"\n==== NL-FRONTIER: best NL-OOD micro-F1 {b:.3f} (layer {res['best_layer']}) ====",
+              flush=True)
+        print(f"wrote {a.out}", flush=True)
+        return
 
     recs = load_csp_records(a.curriculum, limit=a.max_recs)
     print(f"{len(recs)} binary+pin CSP records", flush=True)
@@ -552,6 +621,14 @@ def main():
     ising_pool = gen_ising_pool(np.random.default_rng(11), n_inst=700)
     ising_res = train_eval_ising(rack_i, olmo, tok, dev, ising_pool, best_L)
     results["ising"] = ising_res
+
+    # ---- NL-frontier arm: train on the off-template NL set, eval on NL-OOD (held-out skins/style) ----
+    if a.nl_train and a.nl_ood:
+        print(f"\n== NL-FRONTIER arm (off-template generalization) ==", flush=True)
+        can_views = can_train if a.nl_mix_canonical else None
+        results["nl_frontier"] = nl_frontier_arm(olmo, tok, dev, D, layers, a.nl_train, a.nl_ood,
+                                                  a.steps, a.lr, a.wpos, a.wnone,
+                                                  can_train_views=can_views)
 
     # ---- verdict ----
     bc = csp_runs[best_L]["canonical_heldout"]["micro"]["F1"]
