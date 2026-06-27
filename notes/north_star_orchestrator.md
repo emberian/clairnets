@@ -49,5 +49,22 @@ one-shot) · RLVR over the strategy + organ-process-reward.
 - Provenance: a route/provenance channel (source_type · chosen_path · cert_strength · cost · decode_map) so the
   LM's choices are legible + the strategy is auditable (codex).
 
+## The search arm (not just RL) — a sound verifier *wants* search
+GLaDOS has a SOUND verifier (certified organ + output-check), so search prunes EXACTLY (no false-accepts, no
+reward-hacking) — arguably a cleaner fit than RL. The training mix should be **gradient (organ+α) + search
+(orchestration) + test-time-search (eval)**, with RLVR as *one* tool, not the only one (and arguably the weakest
+for us — a sound verifier wants search, not reward-hacking-prone RL).
+- **VerMCTS / search-over-orchestration** — MCTS over organ-call-sequences {compile · reduce · compose · decode},
+  gated by the certified organ → finds solving strategies → **distill the winning traces into the LM**
+  (AlphaZero / expert-iteration: search → distill → search-better → iterate). The *non-RL* way to learn the
+  orchestrator; lower variance than RLVR; the sound verifier never accepts a wrong branch.
+- **Test-time search (inference-compute)** — best-of-N / beam / MCTS over organ-calls at inference, verifier-
+  pruned. Training-free accuracy; *reliable* because the pruner is exact (the o1 move, but with a SOUND verifier).
+- **α-as-search** (pairs with the ALPHA_STRUCT crux) — propose candidate structures, verifier-filter which compile
+  to a solvable+correct problem (program/structure search, the ∂4-Forth/synthesis lineage); gradient warms α,
+  search refines the structure when α is uncertain.
+- **The organ already IS search** — the certified ops (Gaussian-elim / Schreier-Sims / backtracking dedₚ) + the
+  verifier-gated composer. What's new is search at the *orchestration · inference · α* layers.
+
 Everything we're building now — reductions, composer, organ-as-process-reward, decode-from-route, the rich-state
-readout — is a brick in THIS. The single-shot pretrain is the foundation; this is the cathedral.
+readout, the sound verifier — is a brick in THIS. The single-shot pretrain is the foundation; this is the cathedral.
