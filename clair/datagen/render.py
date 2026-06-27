@@ -151,7 +151,9 @@ def value_surfaces(style: str, d: int) -> list[str]:
     if style == "registers":
         return [f"R{i}" for i in range(d)]
     if style == "teams":
-        return [f"Team {SK.COLORS[i].capitalize()}" for i in range(d)]
+        # named teams while we have distinct colour words, then numbered (guard: d may exceed COLORS).
+        return [f"Team {SK.COLORS[i].capitalize()}" if i < len(SK.COLORS) else f"Team {i + 1}"
+                for i in range(d)]
     if style == "slots":
         return [f"slot {i + 1}" for i in range(d)]
     if style == "places":

@@ -100,7 +100,10 @@ class FactorGraphProposer(nn.Module):
         assert d % 2 == 0
         self.arm = arm
         self.n_max, self.d_max, self.m_max, self.a_max = n_max, d_max, m_max, a_max
-        self.R, self.ds = R, ds
+        # ds = #trailing rounds that emit deep-supervision. Clamp to [1, R] (like LatentNarrower):
+        # ds=0 would leave `sup` empty -> sup[-1] IndexError; ds>R would over-collect / index a
+        # non-existent round. The deep-sup must cover at least the final round.
+        self.R, self.ds = R, max(1, min(ds, R))
         rel_dim = d_max ** a_max
         self.var_in = nn.Linear(d_max + 1, d)             # alive-mask over d values + 'decided' flag
         self.fac_in = nn.Linear(rel_dim + a_max, d)       # broadcast relation table + arity one-hot

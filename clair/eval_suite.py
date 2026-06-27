@@ -229,6 +229,7 @@ def _apply_control(surv, recs, control, K, perm):
 
 def _metrics_from_scores(scored, ks=(1,)):
     """pass@1 / pass@k (closed-set top-k membership) + per-rung accuracy from cached candidate scores."""
+    assert 1 in ks, f"acc is defined as pass@1, so 1 must be in ks (got {ks})"
     tot = len(scored)
     passk = {k: 0 for k in ks}
     by_rung = {}
@@ -895,9 +896,12 @@ def _print_uplift(report, ks):
                   flush=True)
             ctl = csp["controls"].get("in-dist")
             if ctl:
-                drop = ctl["true"] - min(ctl["shuffle"], ctl["permute"], ctl["corrupt"], ctl["zero"])
-                print(f"  causal drop (true -> worst control): {drop*100:.0f} pts "
-                      f"(>0 => the LM CAUSALLY WIELDS the organ)", flush=True)
+                # CANONICAL causal-drop (matches run_glados_staged._live_controls): content-sensitivity
+                # only, so the min excludes 'zero' (no-injection = the separate LIFT/necessary axis).
+                drop = ctl["true"] - min(ctl["shuffle"], ctl["permute"], ctl["corrupt"])
+                print(f"  causal drop (true -> worst CONTENT control): {drop*100:.0f} pts "
+                      f"(>0 => the LM CAUSALLY WIELDS the organ; 'zero' is the separate lift axis)",
+                      flush=True)
 
 
 # ============================================================================== SMOKE

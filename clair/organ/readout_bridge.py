@@ -53,7 +53,11 @@ def ising_readout(J, h, K=2, restarts=64, steps=160, device="cpu", seed=0):
     """Run the Ising organ (mean-field annealing + sound local search) on couplings (J, h) and build the
     rich per-spin readout feature [n, K+2]:
         [:, 0], [:, 1]   the spin one-hot ( -1 -> col 0, +1 -> col 1 )
-        [:, K]           per-spin |magnetisation| confidence (here the rounded spin, so 1.0)
+        [:, K]           per-spin LOCAL-FIELD MARGIN confidence in [0,1]: how strongly this spin is
+                         pinned by the rest of the configuration (the flip-cost |f_i| = |h_i + Σ_j J_ij s_j|,
+                         normalised by the largest margin in the instance). 1.0 = most-pinned spin;
+                         near 0 = a marginal spin the organ is genuinely unsure about. (A relative
+                         per-instance confidence, NOT a calibrated probability.)
         [:, K+1]         the GLOBAL energy, min-max normalised to [0,1] (broadcast)
     Returns (feat[n, K+2], spins[n] in ±1, energy)."""
     from .. import ising_organ as IS
@@ -66,7 +70,11 @@ def ising_readout(J, h, K=2, restarts=64, steps=160, device="cpu", seed=0):
     feat = np.zeros((n, K + 2), dtype=np.float32)
     for i in range(n):
         feat[i, 1 if sn[i] > 0 else 0] = 1.0
-    feat[:, K] = 1.0                                           # rounded → fully confident per spin
+    # real per-spin confidence = the local-field margin |h_i + Σ_j J_ij s_j| (the energy cost of
+    # flipping spin i), normalised by the largest margin so it lands in [0,1]. Replaces the old
+    # hardcoded 1.0 (which falsely claimed every spin was maximally confident).
+    field = IS.local_field(Jt, ht, s.float()).abs().detach().cpu().numpy()
+    feat[:, K] = field / max(1e-6, float(field.max()))
     # normalise the (negative) energy against a cheap random-config band so the scalar is in [0,1]
     g = torch.Generator(device=device).manual_seed(seed)
     rs = torch.where(torch.rand(32, n, device=device, generator=g) < 0.5, -1.0, 1.0)

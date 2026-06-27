@@ -244,6 +244,21 @@ class BankWoven(nn.Module):
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
 
+    def remove_hooks(self):
+        """Detach both decoder-layer forward hooks (mid + inject) so repeated woven builds over a
+        long run don't leak handles. Safe to call more than once."""
+        for attr in ("_mid_handle", "_inj_handle"):
+            h = getattr(self, attr, None)
+            if h is not None:
+                h.remove()
+                setattr(self, attr, None)
+
+    def __del__(self):
+        try:
+            self.remove_hooks()
+        except Exception:
+            pass
+
 
 # ============================================================ record CSP threading
 @torch.no_grad()

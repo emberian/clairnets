@@ -1286,7 +1286,11 @@ def main():
     print("\n================ VERDICT ================", flush=True)
     idf = deliverable["in-dist (full)"]
     cc = controls["in-dist (full)"]
-    drop = cc["true"] - min(cc["shuffle"], cc["permute"], cc["corrupt"], cc["zero"])
+    # CANONICAL causal-drop (matches _live_controls): the WIRED signal = sensitivity to lattice
+    # CONTENT, so the min is over the content-corruptions only (shuffle/permute/corrupt). 'zero' is
+    # NO injection (= text-LoRA), which is the separate LIFT axis (true - zero), not a content drop —
+    # folding it in here would conflate "wired" with "necessary".
+    drop = cc["true"] - min(cc["shuffle"], cc["permute"], cc["corrupt"])
     print(f"  in-dist(full): WOVEN {idf['woven']['overall']*100:.0f}%  TEXT-LoRA "
           f"{idf['textlora']['overall']*100:.0f}%  BASE {idf['base']['overall']*100:.0f}%  "
           f"| causal drop true->worst-control {drop*100:.0f}pts", flush=True)
