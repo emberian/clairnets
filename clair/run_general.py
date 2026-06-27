@@ -168,11 +168,12 @@ class Exact:
         return self.sol[k]
 
     def dedP(self, csp, dom):
+        # Routes to the ONE canonical deductor (clair.csp.exact_dedP: Rust clair_fast port with the
+        # witness early-stop when built, else the pure-Python clair.csp._exact_dedP_py). This used to
+        # hold its own union-over-solutions copy; DELETED after verifying it bitwise-equal.
         k = self._k(csp, dom)
         if k not in self.ded:
-            sols = self.solutions(csp, dom)
-            self.ded[k] = (tuple(frozenset() for _ in range(csp.n)) if not sols
-                           else tuple(frozenset(s[i] for s in sols) for i in range(csp.n)))
+            self.ded[k] = C.exact_dedP(csp, dom)
         return self.ded[k]
 
 
