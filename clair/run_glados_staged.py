@@ -635,6 +635,8 @@ def build_live_pool(rng, rungs, split, per_rung, det_only=False, two_stream=Fals
             rec = make_record(p, ded, "full")          # surv := dedₚ (oracle); prompt has the facts
             rec["tgt"] = surv_from_dom(ded, p.n, K)     # dedₚ target for the dominate-dedₚ aux loss
             rec["csp"] = oc                             # the organ_csp structure for the bank+composer
+            rec["facts"] = [list(f) for f in p.facts]   # the witness's free TRUE facts: ALPHA_STRUCT
+            #                                             structure-supervision target (NOT read in fwd)
             if rg in HARD:                              # eqchain/forcedcolor are path-structured
                 rec["tags"] = ("path",)
             if two_stream:
@@ -689,6 +691,7 @@ def build_diverse_live_pool(rng, jsonl_path, rungs, per_rung, det_only=True, two
             ded = EX.dedP(oc, oc.full())
             rec = make_record(p, ded, "full")
             rec["tgt"] = surv_from_dom(ded, p.n, K); rec["csp"] = oc
+            rec["facts"] = [list(f) for f in facts]                  # TRUE facts: ALPHA_STRUCT struct-sup
             if two_stream:
                 cells = make_record(p, ded, "cells")
                 drec = make_record(p, ded, "diverse", r["text"])     # REAL NL as α's compile stream

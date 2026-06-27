@@ -405,7 +405,15 @@ def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, s
     print(f"[weave] data: {len(train_recs)} train / {len(eval_recs)} eval recs  (D={D}, nL={nL})",
           flush=True)
 
-    if organ_mode == "bank":
+    if organ_mode == "alpha_struct":
+        # STAGE-2 ALPHA_STRUCT: α EMITS the structure; the composer runs on csp_α (NOT rec['csp']). The
+        # eval arbiter is the acceptance gate (clair.organ.alpha_struct_diag) — the SHUFFLED-INVERTED
+        # test — run separately on the trained model; train returns the woven model.
+        model = BW.train_alpha_struct_woven((base_id, D, nL), tok, dev, a, train_recs, eval_recs,
+                                            two_stream=two_stream,
+                                            use_lora=bool(getattr(a, "use_lora", True)))
+        metrics = {"organ_mode": "alpha_struct", "note": "run clair.organ.alpha_struct_diag for the gate"}
+    elif organ_mode == "bank":
         model = BW.train_bank_woven((base_id, D, nL), tok, dev, a, train_recs, eval_recs,
                                     two_stream=two_stream)
         metrics = BW.bank_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr,
@@ -415,7 +423,11 @@ def weave(base_id="allenai/OLMo-2-0425-1B", *, regime="hard", two_stream=True, s
                                    two_stream=two_stream)
         metrics = G._live_controls(model, eval_recs, tok, dev, a.bs, a.engage_thr,
                                    two_stream=two_stream)
-    G._report_regime(f"{regime} | {organ_mode} | two_stream={two_stream}", metrics, a.engage_thr)
+    if organ_mode == "alpha_struct":
+        print(f"[weave] {regime} | alpha_struct | two_stream={two_stream} — trained; "
+              f"run `python -m clair.organ.alpha_struct_diag` for the acceptance gate.", flush=True)
+    else:
+        G._report_regime(f"{regime} | {organ_mode} | two_stream={two_stream}", metrics, a.engage_thr)
 
     if out:
         from .. import eval_suite as ES
@@ -516,9 +528,10 @@ def main():
     pw = sub.add_parser("weave", help="STAGE 2: graft + train the woven readout (engagement mechanism)")
     pw.add_argument("--base", default="allenai/OLMo-2-0425-1B")
     pw.add_argument("--regime", default="hard", help="small | hard | large (LIVE_REGIMES)")
-    pw.add_argument("--organ_mode", default="bank", choices=["bank", "latent"],
+    pw.add_argument("--organ_mode", default="bank", choices=["bank", "latent", "alpha_struct"],
                     help="bank=bank+composer (multi-faculty, certified-floor, pretrained organ; DEFAULT); "
-                         "latent=legacy standalone LatentNarrower (ablation)")
+                         "latent=legacy standalone LatentNarrower (ablation); "
+                         "alpha_struct=α EMITS the structure, composer runs on csp_α (the SHUFFLED fix)")
     pw.add_argument("--two_stream", type=int, default=1, help="1=two-stream (cells-gen) 0=single-stream")
     pw.add_argument("--steps", type=int, default=2500)
     pw.add_argument("--warm_steps", type=int, default=400)
