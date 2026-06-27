@@ -250,6 +250,20 @@ class OracleReadout(nn.Module):
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
 
+    def remove_hooks(self):
+        """Detach the residual-injection forward hook (call when discarding the model — over a long
+        run that builds many woven instances the un-removed handles would otherwise leak)."""
+        h = getattr(self, "_handle", None)
+        if h is not None:
+            h.remove()
+            self._handle = None
+
+    def __del__(self):
+        try:
+            self.remove_hooks()
+        except Exception:
+            pass
+
 
 def n_trainable(m):
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
@@ -346,6 +360,21 @@ class LiveLatentWoven(nn.Module):
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
+
+    def remove_hooks(self):
+        """Detach both decoder-layer forward hooks (mid capture + inject). Call when discarding the
+        model so repeated woven builds over a long run don't leak handles."""
+        for attr in ("_mid_handle", "_inj_handle"):
+            h = getattr(self, attr, None)
+            if h is not None:
+                h.remove()
+                setattr(self, attr, None)
+
+    def __del__(self):
+        try:
+            self.remove_hooks()
+        except Exception:
+            pass
 
 
 # ===================================================================== causal-control transforms

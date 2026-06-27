@@ -53,18 +53,32 @@ def fast_dedP(csp, dom=None):
 
 
 class FastExact:
-    """Drop-in for run_general.Exact / glados_woven.SHARED using fast_dedP (cached)."""
-    def __init__(self):
-        self.ded = {}
+    """Drop-in for run_general.Exact / glados_woven.SHARED using fast_dedP (BOUNDED-LRU cached).
+
+    The module-global instance (run_glados_staged.EX) lives for the whole process, including the
+    long organ-pretrain (build_targets calls EX.dedP every step over an on-policy-refreshed pool of
+    distinct CSPs + their intermediate domains). An unbounded dict would grow without limit across a
+    multi-thousand-step run, so the cache is capped with FIFO eviction (it is a pure-function memo —
+    eviction only costs a recompute, never correctness)."""
+    def __init__(self, maxsize=200_000):
+        from collections import OrderedDict
+        self.ded = OrderedDict()
+        self.maxsize = int(maxsize)
 
     def solutions(self, csp, dom):                    # only used by callers that want a count; rare
         return C.solutions(csp, dom)
 
     def dedP(self, csp, dom):
         key = (csp.cons, csp.d, dom)
-        if key not in self.ded:
-            self.ded[key] = fast_dedP(csp, dom)
-        return self.ded[key]
+        hit = self.ded.get(key)
+        if hit is not None:
+            self.ded.move_to_end(key)                 # LRU: mark recently used
+            return hit
+        val = fast_dedP(csp, dom)
+        self.ded[key] = val
+        if len(self.ded) > self.maxsize:
+            self.ded.popitem(last=False)              # evict the oldest
+        return val
 
 
 def _relabel(f, perm):
