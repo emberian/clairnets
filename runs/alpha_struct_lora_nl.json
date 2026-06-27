@@ -1,0 +1,222 @@
+{
+  "model": "allenai/OLMo-2-0425-1B",
+  "layer": 9,
+  "lever": "LoRA host-adaptation (bidirectional)",
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "targets": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "trainable_params": 12058624,
+    "grad_ckpt": false
+  },
+  "train_cfg": {
+    "steps": 500,
+    "lr_head": 0.0015,
+    "lr_lora": 0.0002,
+    "wpos": 2.0,
+    "wnone": 1.0,
+    "bs": 48,
+    "micro_bs": 24
+  },
+  "data": {
+    "nl_train": "data/nl_frontier/train.jsonl",
+    "nl_ood": "data/nl_frontier/ood.jsonl",
+    "n_train": 2344,
+    "n_ood": 591
+  },
+  "nl_ood": {
+    "pin": {
+      "P": 0.7951,
+      "R": 0.7291,
+      "F1": 0.7607,
+      "tp": 1079,
+      "fp": 278,
+      "fn": 401
+    },
+    "eq": {
+      "P": 0.765,
+      "R": 0.7198,
+      "F1": 0.7417,
+      "tp": 280,
+      "fp": 86,
+      "fn": 109
+    },
+    "neq": {
+      "P": 0.8042,
+      "R": 0.9704,
+      "F1": 0.8795,
+      "tp": 2391,
+      "fp": 582,
+      "fn": 73
+    },
+    "lt": {
+      "P": 0.7763,
+      "R": 0.8252,
+      "F1": 0.8,
+      "tp": 406,
+      "fp": 117,
+      "fn": 86
+    },
+    "le": {
+      "P": 0.7614,
+      "R": 0.5214,
+      "F1": 0.6189,
+      "tp": 134,
+      "fp": 42,
+      "fn": 123
+    },
+    "micro": {
+      "P": 0.7952,
+      "R": 0.8442,
+      "F1": 0.8189
+    },
+    "exact_factor_graph_match": 0.2437,
+    "n": 591,
+    "hardneg": {
+      "n_pairs": 187,
+      "both_exact_rate": 0.2513,
+      "anchor_exact_rate": 0.3262,
+      "neg_exact_rate": 0.2941,
+      "discriminated_rate": 0.7433,
+      "by_delta": {
+        "add_lt": {
+          "n": 11,
+          "both_exact": 0.0,
+          "discriminated": 0.9091
+        },
+        "add_neq": {
+          "n": 80,
+          "both_exact": 0.525,
+          "discriminated": 0.525
+        },
+        "drop_eq": {
+          "n": 5,
+          "both_exact": 0.2,
+          "discriminated": 1.0
+        },
+        "drop_le": {
+          "n": 1,
+          "both_exact": 0.0,
+          "discriminated": 1.0
+        },
+        "drop_lt": {
+          "n": 5,
+          "both_exact": 0.2,
+          "discriminated": 1.0
+        },
+        "drop_neq": {
+          "n": 21,
+          "both_exact": 0.0952,
+          "discriminated": 0.9524
+        },
+        "eq->neq": {
+          "n": 8,
+          "both_exact": 0.0,
+          "discriminated": 0.75
+        },
+        "le->lt": {
+          "n": 2,
+          "both_exact": 0.0,
+          "discriminated": 1.0
+        },
+        "lt->le": {
+          "n": 4,
+          "both_exact": 0.0,
+          "discriminated": 1.0
+        },
+        "neq->eq": {
+          "n": 37,
+          "both_exact": 0.027,
+          "discriminated": 0.8649
+        },
+        "swap_operands(le)": {
+          "n": 6,
+          "both_exact": 0.0,
+          "discriminated": 1.0
+        },
+        "swap_operands(lt)": {
+          "n": 7,
+          "both_exact": 0.0,
+          "discriminated": 0.8571
+        }
+      }
+    }
+  },
+  "canonical_check": {
+    "pin": {
+      "P": 0.7942,
+      "R": 0.7615,
+      "F1": 0.7775,
+      "tp": 1127,
+      "fp": 292,
+      "fn": 353
+    },
+    "eq": {
+      "P": 0.7914,
+      "R": 0.8972,
+      "F1": 0.841,
+      "tp": 349,
+      "fp": 92,
+      "fn": 40
+    },
+    "neq": {
+      "P": 0.8486,
+      "R": 0.9647,
+      "F1": 0.9029,
+      "tp": 2377,
+      "fp": 424,
+      "fn": 87
+    },
+    "lt": {
+      "P": 0.6597,
+      "R": 0.7093,
+      "F1": 0.6836,
+      "tp": 349,
+      "fp": 180,
+      "fn": 143
+    },
+    "le": {
+      "P": 0.5306,
+      "R": 0.2023,
+      "F1": 0.293,
+      "tp": 52,
+      "fp": 46,
+      "fn": 205
+    },
+    "micro": {
+      "P": 0.8045,
+      "R": 0.8371,
+      "F1": 0.8204
+    },
+    "exact_factor_graph_match": 0.3063,
+    "n": 591
+  },
+  "frozen_baseline": {
+    "nl_ood_microF1": 0.7277,
+    "nl_ood_exact": 0.1438,
+    "hardneg_both_exact": 0.1444,
+    "per_rel_F1": {
+      "pin": 0.6757,
+      "eq": 0.538,
+      "neq": 0.8115,
+      "lt": 0.677,
+      "le": 0.5399
+    },
+    "canonical_ceiling": 0.98
+  },
+  "ab_delta": {
+    "nl_ood_microF1": 0.0912,
+    "nl_ood_exact": 0.0999,
+    "hardneg_both_exact": 0.1069,
+    "gap_closed_frac": 0.3615
+  }
+}
