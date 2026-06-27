@@ -6,8 +6,12 @@ delegate to the proven implementations in clair.run_glados_staged / clair.rlvr_p
 
   (1) pretrain_organ(...)   STAGE 1 — train the deduction organ STANDALONE on the soundness-asymmetric
                             dominate-dedₚ loss vs the exact per-cell transformer (clair.csp.exact_dedP),
-                            on-policy over the 7-rung MIX. Recipe (from the sweep): ~1.5M params, R=12,
-                            ~30% composed. Saves the frozen union organ in load_core_organ's format.
+                            on-policy over the DIFFICULTY-CONTROLLED stream (datagen.stream.organ_spec,
+                            difficulty=True). A PREFLIGHT OCCUPANCY GATE refuses to run if the data is
+                            still the legacy easy distribution (required-level L>=1 < threshold, etc.)
+                            and stamps the occupancy into the checkpoint meta. Recipe (from the sweep):
+                            ~1.5M params, R=12. Saves the frozen union organ in load_core_organ's format.
+                            (--easy/--legacy selects the OLD RUNGS sampler, which the gate then blocks.)
 
   (2) weave(...)            STAGE 2 — graft the organ into a host LM (clair.organ.graft) and train the
                             woven readout: frozen base + LoRA + latent-α compile + FROZEN organ +
@@ -26,7 +30,9 @@ delegate to the proven implementations in clair.run_glados_staged / clair.rlvr_p
 Eval is the arbiter, exposed separately as clair.organ.eval.run_eval_suite.
 
 Usage:
-  python -m clair.organ.train pretrain --steps 1500 --out runs/general_organ_full.pt
+  python -m clair.organ.train pretrain --steps 1500 --out runs/general_organ_full.pt   # difficulty stream
+  python -m clair.organ.train pretrain --smoke                          # tiny gated pretrain smoke
+  python -m clair.organ.train pretrain --easy                           # legacy RUNGS -> gate BLOCKS
   python -m clair.organ.train weave    --base allenai/OLMo-2-0425-1B --regime hard --steps 2500
   python -m clair.organ.train weave    --smoke                         # tiny end-to-end woven smoke
   python -m clair.organ.train rlvr     --task chain_sum --steps 300
@@ -40,27 +46,257 @@ from types import SimpleNamespace
 
 
 # ============================================================ STAGE 1: pretrain the organ
+# ---- PREFLIGHT OCCUPANCY GATE (codex's "assert buckets in run metadata") ----------------------------
+# The pretrain must run on the DIFFICULTY-CONTROLLED mix (datagen.stream.organ_spec(difficulty=True)),
+# NOT the legacy easy RUNGS distribution the audit measured at ~99% level-0 / treewidth-median-2 / no
+# long-depth tail. These thresholds are the design targets (notes/curriculum_design.md): the headline
+# is required-level L>=1 >= ~30% (the legacy mix sits at ~9%); the rest are "the bucket is POPULATED"
+# floors. Every key gates a minimum percentage; the keys in _GATE_COMPONENT only fire when the spec
+# actually carries that mix component. Override any key by passing gate={...} to pretrain_organ.
+DEFAULT_OCCUPANCY_GATE = {
+    "level_ge1_pct_min": 30.0,        # required-lattice-level L>=1: the affine-wall axis (legacy ~9%)
+    "treewidth_ge3_pct_min": 1.0,     # treewidth spread present (tw>=3 fraction > 0)
+    "depth_long_pct_min": 1.0,        # long-depth propagation tail present (depth>=7 fraction > 0)
+    "randomrel_pct_min": 1.0,         # random-relations present  (only if 'randomrel' in the mix)
+    "reduction_pct_min": 1.0,         # reduction-curriculum share (only if 'reduction' in the mix)
+    "composition_pct_min": 1.0,       # composition share         (only if 'compose'   in the mix)
+}
+# which gate keys are conditional on a mix component being configured (vs. always-checked)
+_GATE_COMPONENT = {"randomrel_pct_min": "randomrel", "reduction_pct_min": "reduction",
+                   "composition_pct_min": "compose"}
+
+
+def _difficulty_items(spec, seed):
+    """Infinite (record, (csp, full)) stream of BUDGET-ADMITTED CSP items from the difficulty spec —
+    exactly the distribution the organ pretrain loop tensorizes (out-of-budget / non-CSP records are
+    dropped by the organ-mode item filter, so the occupancy reflects what is actually trained on)."""
+    from ..datagen import stream as S
+    for rec in S.problem_stream(seed, spec):
+        item = S._item_from_record(rec)            # (csp, full) or None
+        if item is not None:
+            yield rec, item
+
+
+def _difficulty_samples(spec, n, seed=0):
+    """The first `n` (record, csp) pairs of the budget-admitted difficulty stream (for the preflight)."""
+    cnt = 0
+    for rec, item in _difficulty_items(spec, seed):
+        yield rec, item[0]
+        cnt += 1
+        if cnt >= n:
+            return
+
+
+def _legacy_samples(n, seed=0):
+    """Yield (pseudo-record, csp) from the OLD RUNGS sampler (run_glados_staged.sample_organ_corpus) —
+    the legacy easy distribution codex flagged. The pseudo-record carries only the family tag the
+    occupancy profiler reads (RUNGS has no random-relation / reduction / composition components)."""
+    import numpy as np
+    from .. import run_glados_staged as G
+    rng = np.random.default_rng(seed)
+    for csp, rung in G.sample_organ_corpus(rng, n, G.RUNGS):
+        yield {"family": rung, "compose": "", "n_domains": 1}, csp
+
+
+def occupancy_profile(samples, label="") -> dict:
+    """Single-pass difficulty-occupancy over (record, csp) pairs: per-level / treewidth / depth-third
+    histograms (clair.datagen.difficulty) PLUS the family-share signals the gate needs (random-relation,
+    reduction, composition). JSON-safe; this dict is BOTH printed and stamped into the checkpoint meta."""
+    from collections import Counter
+    from ..datagen import difficulty as DF
+    lev, tw, dep, fam = Counter(), Counter(), Counter(), Counter()
+    n = nrr = nred = ncomp = 0
+    for rec, csp in samples:
+        d = DF.difficulty(csp)
+        n += 1
+        lev[min(d["level"], 3)] += 1
+        tw[d["treewidth"]] += 1
+        dep[DF.depth_bucket(d["depth"])] += 1
+        f = rec.get("family", "?")
+        fam[f] += 1
+        comp = rec.get("compose", "") or ""
+        if comp.startswith("reduce:"):
+            nred += 1
+        if (rec.get("n_domains", 1) or 1) > 1:
+            ncomp += 1
+        if f == "random_relation":
+            nrr += 1
+    pct = lambda c: round(100 * c / max(1, n), 1)
+    return {
+        "label": label, "n": n,
+        "level_pct": {str(k): pct(lev.get(k, 0)) for k in DF.LEVEL_BUCKETS},
+        "level_ge1_pct": pct(n - lev.get(0, 0)),
+        "treewidth_hist": {str(k): tw[k] for k in sorted(tw)},
+        "treewidth_median": (sorted(tw.elements())[n // 2] if n else 0),
+        "treewidth_ge3_pct": pct(sum(v for k, v in tw.items() if k >= 3)),
+        "treewidth_ge4_pct": pct(sum(v for k, v in tw.items() if k >= 4)),
+        "depth_thirds_pct": {k: pct(dep.get(k, 0)) for k in DF.DEPTH_THIRDS},
+        "randomrel_pct": pct(nrr), "reduction_pct": pct(nred), "composition_pct": pct(ncomp),
+        "family_hist": dict(fam),
+    }
+
+
+def print_occupancy(occ: dict):
+    print(f"\n=== PREFLIGHT difficulty occupancy: {occ['label']}  (n={occ['n']}) ===", flush=True)
+    print("  required-level %:  " + "  ".join(f"L{k}={v}%" for k, v in occ["level_pct"].items())
+          + f"   (level>=1: {occ['level_ge1_pct']}%)", flush=True)
+    print(f"  treewidth:         median={occ['treewidth_median']}  tw>=3={occ['treewidth_ge3_pct']}%  "
+          f"tw>=4={occ['treewidth_ge4_pct']}%  hist={occ['treewidth_hist']}", flush=True)
+    print("  prop-depth thirds: "
+          + "  ".join(f"{k}={v}%" for k, v in occ["depth_thirds_pct"].items()), flush=True)
+    print(f"  component shares:  random-relations={occ['randomrel_pct']}%  "
+          f"reduction={occ['reduction_pct']}%  composition={occ['composition_pct']}%", flush=True)
+
+
+def check_occupancy_gate(occ: dict, mix_kinds: set, gate: dict) -> list:
+    """Return a list of human-readable failure strings (empty == PASS). A component-conditional check
+    is skipped when its component isn't configured in the mix, so a CSP-only spec isn't failed for
+    lacking compositions it never generates."""
+    field = {"level_ge1_pct_min": ("required-level L>=1", "level_ge1_pct"),
+             "treewidth_ge3_pct_min": ("treewidth>=3 spread", "treewidth_ge3_pct"),
+             "depth_long_pct_min": ("long-depth tail (depth>=7)", None),
+             "randomrel_pct_min": ("random-relations present", "randomrel_pct"),
+             "reduction_pct_min": ("reduction share", "reduction_pct"),
+             "composition_pct_min": ("composition share", "composition_pct")}
+    fails = []
+    for key, thr in gate.items():
+        comp = _GATE_COMPONENT.get(key)
+        if comp is not None and comp not in mix_kinds:
+            continue
+        name, fld = field.get(key, (key, None))
+        val = occ["depth_thirds_pct"]["long(>=7)"] if key == "depth_long_pct_min" else occ[fld]
+        if val < thr:
+            fails.append(f"{name}: got {val}% < required {thr}%")
+    return fails
+
+
+def _train_organ_stream(dev, spec, *, target, steps, pool, R, lr, theta=0.5, seed=0, log_every=15):
+    """The VALIDATED dominate-dedₚ on-policy loop (run_glados_staged.train_organ), but fed from the
+    difficulty-controlled stream instead of the RUNGS sampler: the initial pool and every on-policy
+    replacement (terminal/stalled instance -> a fresh one) are drawn from a single deterministic
+    StreamDataset/problem_stream generator. Same proposer, same loss, same meet. Returns (m,d,npar,log)."""
+    import time
+    import torch
+    from .. import csp as C
+    from .. import run_glados_staged as G
+    torch.manual_seed(seed)
+    d, npar = G.size_for("full", G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX, target, R=R, ds=min(4, R))
+    m = G.FactorGraphProposer("full", G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX, d=d, R=R, ds=min(4, R)).to(dev)
+    opt = torch.optim.AdamW(m.parameters(), lr=lr, betas=(0.9, 0.95))
+    gen = (it for _, it in _difficulty_items(spec, seed))             # infinite (csp, full) stream
+    items = [next(gen) for _ in range(pool)]
+    print(f"  ORGAN train: difficulty-stream spec={spec['name']}  d_model={d}  params={npar:,}  "
+          f"pool={pool}  R={R} steps={steps}", flush=True)
+    log = []
+    fe_k = fe_n = 0
+    t0 = time.time()
+    for s in range(1, steps + 1):
+        feat = G.featurize(items, dev)
+        vm = feat["var_mask"]
+        tgt, conflict = G.build_targets(items, dev)
+        b, cls, sup = G.fwd(m, feat, vm)
+        loss = G.loss_fn(sup, vm, feat["var_valid"], tgt, conflict)
+        opt.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
+        with torch.no_grad():
+            new_vm = G.meet(vm, b, theta)
+            kk, nn_ = G.false_elim(vm, new_vm, feat["var_valid"], tgt); fe_k += kk; fe_n += nn_
+            nvc = new_vm.cpu().numpy()
+            nxt = []
+            for bi, (csp, dom) in enumerate(items):
+                ndom = G.dom_from_mask(nvc[bi], csp)
+                if C.status(ndom) in ("solved", "conflict") or ndom == dom:
+                    nxt.append(next(gen))                            # fresh stream item (on-policy)
+                else:
+                    nxt.append((csp, ndom))
+            items = nxt
+        if s % max(1, steps // log_every) == 0 or s == 1:
+            fer = fe_k / max(1, fe_n)
+            log.append({"step": s, "loss": float(loss.detach()), "false_elim": fer})
+            print(f"    step {s:5d}  loss {float(loss.detach()):.3f}  false_elim {fer:.4f}  "
+                  f"alive {float(vm.sum(-1).mean()):.2f}  {time.time()-t0:.0f}s", flush=True)
+            fe_k = fe_n = 0
+    return m, d, npar, log
+
+
 def pretrain_organ(out="runs/general_organ_full.pt", steps=1500, target=1.5e6, pool=128, R=12,
-                   lr=3e-4, seed=0, dev=None):
-    """STAGE 1: on-policy dominate-dedₚ training of ONE general narrow organ over the 7-rung MIX, saved
-    in the {'state','meta'} format clair.organ.bank.load_core_organ reads. Returns (organ, meta).
-    Recipe defaults follow notes/training.md (the sweep): ~1.5M params, R=12, ~30% composed. Delegates
-    verbatim to the validated clair.run_glados_staged.train_organ (the dominate-dedₚ loop)."""
+                   lr=3e-4, seed=0, dev=None, easy=False, force=False, preflight_n=600, gate=None,
+                   smoke=False):
+    """STAGE 1: on-policy dominate-dedₚ training of ONE general narrow organ, saved in the
+    {'state','meta'} format clair.organ.bank.load_core_organ reads. Returns (organ, meta).
+
+    DATA SOURCE (the codex highest-leverage fix): by DEFAULT this consumes the DIFFICULTY-CONTROLLED
+    streaming mix — datagen.stream.organ_spec(difficulty=True) via _train_organ_stream — NOT the old
+    easy RUNGS sampler. A PREFLIGHT OCCUPANCY GATE samples `preflight_n` instances from the configured
+    source, runs datagen.difficulty over them, and REFUSES TO RUN if the occupancy is still the legacy
+    easy distribution (required-level L>=1 < gate threshold, etc.); the occupancy report is printed and
+    stamped into the checkpoint meta regardless. `easy=True` selects the legacy RUNGS source (which the
+    gate then BLOCKS — that is the point); `force=True` bypasses the gate so legacy is still reachable.
+    Recipe defaults follow the sweep: ~1.5M params, R=12. Reproducible from `seed`."""
     import torch
     from .. import run_glados_staged as G
+    from ..datagen import stream as S
     dev = dev or G.device()
-    print(f"[organ] dominate-dedₚ over rungs={G.RUNGS}  steps={steps} target={target:g} R={R} dev={dev}",
+    gate = dict(DEFAULT_OCCUPANCY_GATE, **(gate or {}))
+    if smoke:
+        steps, target, pool, R, preflight_n = 12, 1.2e5, 32, 6, 200
+
+    if easy:
+        spec = None                                        # legacy RUNGS (run_glados_staged)
+        label = "LEGACY easy RUNGS sampler (run_glados_staged.sample_organ_corpus)"
+        samples = _legacy_samples(preflight_n, seed)
+        mix_kinds: set = set()                             # RUNGS has no randomrel/reduction/compose
+    else:
+        spec = S.organ_spec(difficulty=True)               # the difficulty-controlled mix (the fix)
+        label = f"difficulty stream organ_spec(difficulty=True) [{spec['name']}]"
+        samples = _difficulty_samples(spec, preflight_n, seed)
+        mix_kinds = {c["kind"] for c in spec["mix"]}
+
+    # ---- PREFLIGHT: profile the configured source + GATE the run ----
+    print(f"[organ] PREFLIGHT occupancy gate: profiling {preflight_n} instances from {label}",
           flush=True)
-    organ, d, npar, log = G.train_organ(dev, G.RUNGS, target=target, steps=steps, pool=pool,
-                                        R=R, lr=lr, seed=seed)
+    occ = occupancy_profile(samples, label)
+    print_occupancy(occ)
+    fails = check_occupancy_gate(occ, mix_kinds, gate)
+    if fails:
+        msg = ("pretrain refusing to run: difficulty occupancy is the legacy easy distribution.\n"
+               f"  source: {label}\n"
+               "  expected the difficulty-controlled mix (datagen.stream.organ_spec(difficulty=True)); "
+               "got:\n    " + "\n    ".join(fails)
+               + "\n  -> re-run WITHOUT --easy to consume the difficulty stream, "
+                 "or pass --force to override the gate.")
+        if force:
+            print("[organ] WARNING (gate overridden by force):\n  " + msg, flush=True)
+        else:
+            raise RuntimeError(msg)
+    else:
+        print(f"[organ] PREFLIGHT PASS — occupancy meets the design thresholds "
+              f"(level>=1 {occ['level_ge1_pct']}% >= {gate['level_ge1_pct_min']}%)", flush=True)
+
+    # ---- train (difficulty stream by default; legacy RUNGS only via --easy --force) ----
+    if easy:
+        print(f"[organ] dominate-dedₚ over LEGACY rungs={G.RUNGS}  steps={steps} target={target:g} "
+              f"R={R} dev={dev}", flush=True)
+        organ, d, npar, log = G.train_organ(dev, G.RUNGS, target=target, steps=steps, pool=pool,
+                                            R=R, lr=lr, seed=seed)
+        source = {"mode": "legacy_rungs", "rungs": list(G.RUNGS), "forced": bool(force)}
+    else:
+        print(f"[organ] dominate-dedₚ over DIFFICULTY stream  steps={steps} target={target:g} "
+              f"R={R} dev={dev}", flush=True)
+        organ, d, npar, log = _train_organ_stream(dev, spec, target=target, steps=steps, pool=pool,
+                                                  R=R, lr=lr, seed=seed)
+        source = {"mode": "difficulty_stream", "spec": spec["name"]}
+
     for p in organ.parameters():
         p.requires_grad_(False)
     organ.eval()
     meta = {"N_MAX": G.N_MAX, "D_MAX": G.D_MAX, "M_MAX": G.M_MAX, "A_MAX": G.A_MAX,
-            "d": d, "params": npar, "R": R}
+            "d": d, "params": npar, "R": R, "seed": seed,
+            "data_source": source, "difficulty_occupancy": occ, "occupancy_gate": gate}
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     torch.save({"state": organ.state_dict(), "meta": meta}, out)
-    print(f"[organ] saved {out}  d={d} params={npar:,} R={R}", flush=True)
+    print(f"[organ] saved {out}  d={d} params={npar:,} R={R}  source={source['mode']}  "
+          f"(occupancy recorded in meta)", flush=True)
     return organ, meta
 
 
@@ -231,6 +467,13 @@ def main():
     po.add_argument("--R", type=int, default=12)
     po.add_argument("--lr", type=float, default=3e-4)
     po.add_argument("--seed", type=int, default=0)
+    po.add_argument("--preflight_n", type=int, default=600,
+                    help="instances sampled for the preflight difficulty-occupancy gate")
+    po.add_argument("--easy", "--legacy", action="store_true", dest="easy",
+                    help="LEGACY: train on the old easy RUNGS sampler (the occupancy gate will BLOCK it)")
+    po.add_argument("--force", action="store_true",
+                    help="override the occupancy gate (required to actually run --easy/legacy)")
+    po.add_argument("--smoke", action="store_true", help="tiny end-to-end pretrain smoke (CPU-ok)")
 
     pw = sub.add_parser("weave", help="STAGE 2: graft + train the woven readout (engagement mechanism)")
     pw.add_argument("--base", default="allenai/OLMo-2-0425-1B")
@@ -252,7 +495,9 @@ def main():
 
     a = ap.parse_args()
     if a.cmd in ("pretrain", "organ"):
-        pretrain_organ(out=a.out, steps=a.steps, target=a.target, pool=a.pool, R=a.R, lr=a.lr, seed=a.seed)
+        pretrain_organ(out=a.out, steps=a.steps, target=a.target, pool=a.pool, R=a.R, lr=a.lr,
+                       seed=a.seed, easy=a.easy, force=a.force, preflight_n=a.preflight_n,
+                       smoke=a.smoke)
     elif a.cmd == "weave":
         weave(a.base, regime=a.regime, two_stream=bool(a.two_stream), organ_mode=a.organ_mode,
               smoke=a.smoke, out=a.out, steps=a.steps, warm_steps=a.warm_steps)
