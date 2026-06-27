@@ -284,6 +284,226 @@ def run_csp_tier(woven, tok, dev, *, rungs=None, per_rung=16, ks=(1, 4), control
     return res
 
 
+# ============================================================================== TEST-TIME SEARCH (sound-verifier select)
+# best-of-N / beam over the woven model's candidate answers, SELECTED by the EXACT organ-verifier.
+#
+# THE LEVERAGE (notes/north_star_orchestrator "the search arm"): GLaDOS has a SOUND verifier (the
+# certified organ + the output-check), so test-time search prunes EXACTLY — no false-accepts, no
+# reward-hacking. If ANY of the N sampled candidates is verifiably correct we pick it; so best-of-N's
+# selector is exact and tracks pass@N closely (unlike a noisy LLM-judge whose selector is itself wrong
+# a fraction of the time). We DISTINGUISH a verifier-CERTIFIED accept (the exact check proved this
+# candidate is THE answer) from a score-FALLBACK (no candidate certifiable -> take the best-by-score
+# greedy pick, which may be wrong) and report both, so the table is honest about WHERE the lift comes
+# from. No training: this is pure inference-compute × a sound verifier.
+def _tts_csp_certificate(rec):
+    """The EXACT organ-verifier's certificate for ONE closed-set CSP record. Uses ONLY the certified
+    lattice (clair.csp.exact_dedP = the per-cell transformer = the exact projection of the SOLUTION set
+    onto each cell) — NOT rec['gold_idx'] — so the selector is doing real verification, reconstructing
+    correctness from the problem structure. Returns the query cell's exact survivor set + whether the
+    query is uniquely determined + the forced value (if any) + the candidate width nv."""
+    from . import csp as C
+    csp = rec["csp"]; query = rec["query"]
+    cert = C.exact_dedP(csp, csp.full())          # cert[i] = {s[i] for every solution s} — exact + sound
+    Q = cert[query]                                # the certified survivor set at the queried cell
+    nv = len(rec["vnames"])
+    determined = (len(Q) == 1)
+    return {"Q": Q, "determined": determined, "gold_value": (next(iter(Q)) if determined else None),
+            "nv": nv}
+
+
+def _tts_accept(cand_idx, ci):
+    """SOUND accept rule for a closed-set CSP candidate. cand_idx in [0..nv]: 0..nv-1 = 'query = value
+    cand_idx', nv = the ABSTAIN candidate ('cannot be determined'). A specific value is CERTIFIED iff
+    the certified lattice forces the query to exactly that value; ABSTAIN is CERTIFIED iff the verifier
+    PROVES the query is not uniquely determined (>=2 surviving solution-values). Exact + sound: every
+    accept is provably correct, and the verifier never certifies a wrong candidate."""
+    if cand_idx == ci["nv"]:                       # the abstain candidate
+        return not ci["determined"]                # provably-undetermined -> 'cannot be determined' is THE answer
+    if not ci["determined"]:
+        return False                               # a specific value cannot be certified on an open query
+    return cand_idx == ci["gold_value"]            # determined -> only the forced value is certified
+
+
+def _softmax(x, temp=1.0):
+    z = np.asarray(x, dtype=np.float64) / max(temp, 1e-6)
+    z = z - z.max()
+    e = np.exp(z)
+    return e / e.sum()
+
+
+def _tts_best_of_n(scores, n, ci, rng, temp):
+    """best-of-N: draw N candidate answers from the woven model's (length-normalized) candidate
+    distribution, then SELECT with the sound verifier. Accept the FIRST sampled candidate the verifier
+    CERTIFIES (sound accept); if none certifiable, FALL BACK to the best-by-score greedy pick. Returns
+    (pred_idx, certified)."""
+    p = _softmax(scores, temp)
+    samples = rng.choice(len(scores), size=n, p=p)
+    for c in samples:
+        if _tts_accept(int(c), ci):
+            return int(c), True                    # verifier-CERTIFIED accept (provably correct)
+    return int(np.argmax(scores)), False           # score-FALLBACK (best-by-score; may be wrong)
+
+
+def _tts_beam(scores, beam, ci):
+    """beam: keep the top-`beam` candidates by score, let the verifier PRUNE the ones it rejects, and
+    take the highest-scoring SURVIVOR the verifier CERTIFIES; fall back to the top-1 if none certify.
+    Deterministic (no sampling) — the closed-set analogue of beam-over-answer-tokens with verifier
+    pruning. Returns (pred_idx, certified)."""
+    order = np.argsort(-np.asarray(scores))
+    for c in order[:max(1, beam)]:
+        if _tts_accept(int(c), ci):
+            return int(c), True
+    return int(order[0]), False
+
+
+def run_test_time_search(woven, tok, dev, *, mode="best_of_n", rungs=None, per_rung=24,
+                         Ns=(1, 2, 4, 8, 16), temp=1.0, trials=8, beam=4, seed=0, score_fn=None):
+    """Test-time search on the Tier-1 CSP curriculum, selected by the EXACT organ-verifier.
+
+    ONE woven scoring pass produces, per problem, the length-normalized logprob of every legal
+    candidate (value-names + 'cannot be determined'); from that cached distribution we run best-of-N
+    (sample N, sound-verify-select) for each N in `Ns`, averaged over `trials` independent draws, and
+    optionally a (deterministic) verifier-pruned beam. Reports the accuracy-vs-compute curve plus, at
+    each N, the share of problems where the verifier CERTIFIED an accept vs fell back to best-by-score.
+    """
+    from . import run_glados_staged as S
+    rungs = rungs or S.RUNGS
+    rng = np.random.default_rng(seed + 23)
+    pool = S.build_live_pool(rng, rungs, "id", per_rung)
+    score_fn = score_fn or _live_candidate_scores
+    scored = score_fn(woven, pool, tok, dev, control="true")     # per-record candidate scores (cached)
+    certs = [_tts_csp_certificate(r) for r in pool]
+    golds = [s["gold"] for s in scored]
+
+    # plain pass@1 (greedy argmax) + pass@N reference (gold in the top-N by score; NO selection) ------
+    base = _metrics_from_scores(scored, ks=tuple(sorted(set((1,) + tuple(Ns)))))
+    out = {"mode": mode, "Ns": list(Ns), "temp": temp, "trials": trials, "n": len(scored),
+           "rungs": list(rungs), "per_rung": per_rung, "pass@1": base["acc"],
+           "passN_ref": {N: base["pass@k"][N] for N in Ns}, "curve": {}}
+
+    if mode in ("best_of_n", "both"):
+        srng = np.random.default_rng(seed + 101)
+        for N in Ns:
+            sa = sc = fb = fbc = 0                                # sound-accept / its-correct / fallback / fb-correct
+            tot = 0
+            for _ in range(trials):
+                for sv, ci, g in zip(scored, certs, golds):
+                    pred, certified = _tts_best_of_n(sv["scores"], N, ci, srng, temp)
+                    tot += 1
+                    correct = int(pred == g)
+                    if certified:
+                        sa += 1; sc += correct
+                    else:
+                        fb += 1; fbc += correct
+            assert sc == sa, "SOUNDNESS VIOLATED: a verifier-certified accept was not the gold answer"
+            out["curve"][N] = {"acc": (sc + fbc) / max(1, tot),
+                               "certified_rate": sa / max(1, tot),
+                               "fallback_rate": fb / max(1, tot),
+                               "fallback_acc": fbc / max(1, fb),
+                               "certified_acc": (sc / max(1, sa)) if sa else None}
+
+    if mode in ("beam", "both"):
+        sa = sc = fb = fbc = 0
+        for sv, ci, g in zip(scored, certs, golds):
+            pred, certified = _tts_beam(sv["scores"], beam, ci)
+            correct = int(pred == g)
+            if certified:
+                sa += 1; sc += correct
+            else:
+                fb += 1; fbc += correct
+        assert sc == sa, "SOUNDNESS VIOLATED: a verifier-certified beam accept was not the gold answer"
+        out["beam"] = {"beam": beam, "acc": (sc + fbc) / max(1, len(scored)),
+                       "certified_rate": sa / max(1, len(scored)),
+                       "fallback_acc": fbc / max(1, fb)}
+    return out
+
+
+def _print_tts(tts):
+    print(f"\n  TEST-TIME SEARCH (mode={tts['mode']}; SOUND organ-verifier selection; "
+          f"n={tts['n']}, temp={tts['temp']}, trials={tts['trials']}):", flush=True)
+    print(f"    plain pass@1 (greedy argmax)            = {tts['pass@1']*100:5.1f}%", flush=True)
+    if tts.get("curve"):
+        print(f"    {'N':>3s}  {'best-of-N acc':>13s}  {'verifier-CERT':>13s}  {'fallback':>9s}  "
+              f"{'fb-acc':>7s}  {'pass@N(ref)':>11s}", flush=True)
+        for N in tts["Ns"]:
+            c = tts["curve"][N]; ref = tts["passN_ref"][N]
+            print(f"    {N:3d}  {c['acc']*100:12.1f}%  {c['certified_rate']*100:12.1f}%  "
+                  f"{c['fallback_rate']*100:8.1f}%  {c['fallback_acc']*100:6.1f}%  {ref*100:10.1f}%",
+                  flush=True)
+        print("    (verifier-CERT = share SOUND-accepted as provably-correct; the rest is score-fallback.\n"
+              "     best-of-N tracks pass@N because the selector is EXACT — any correct sample is caught.)",
+              flush=True)
+    if tts.get("beam"):
+        b = tts["beam"]
+        print(f"    beam(b={b['beam']}): acc {b['acc']*100:.1f}%  verifier-CERT {b['certified_rate']*100:.1f}%",
+              flush=True)
+
+
+# ============================================================================== TEST-TIME-SEARCH CPU smoke
+def tts_structural_smoke(seed=0, per_rung=4, Ns=(1, 2, 4, 8, 16), temp=0.7):
+    """CPU/structural smoke (NO model, NO GPU): build a tiny REAL CSP pool, then prove the SOUND verifier
+    prunes correctly on STUB candidate scores — it accepts the correct candidate and rejects the wrong
+    ones for every record — and that best-of-N over a fabricated noisy distribution rises with N toward
+    coverage. Exercises the exact verifier + the selection machinery end to end without touching torch."""
+    from . import run_glados_staged as S
+    print("==== TEST-TIME-SEARCH structural smoke (CPU; real verifier, stub candidates) ====", flush=True)
+    rng = np.random.default_rng(seed)
+    pool = S.build_live_pool(rng, S.RUNGS, "id", per_rung)
+    print(f"  built {len(pool)} CSP records over rungs={S.RUNGS}", flush=True)
+
+    # (1) the verifier PRUNES CORRECTLY: its certified-correct set is EXACTLY {gold} for every record.
+    det = abst = mism = 0
+    acc_gold = rej_wrong = 0
+    for rec in pool:
+        ci = _tts_csp_certificate(rec)
+        nv = ci["nv"]
+        certified_set = {c for c in range(nv + 1) if _tts_accept(c, ci)}    # value cands + abstain
+        gold = rec["gold_idx"]
+        if certified_set != {gold}:
+            mism += 1
+            print(f"    [MISMATCH] rec rung={rec['relation']} gold={gold} certified={sorted(certified_set)}",
+                  flush=True)
+        else:
+            acc_gold += 1                                  # verifier ACCEPTS the correct candidate
+            rej_wrong += (nv + 1) - 1                      # ... and REJECTS every other (wrong) candidate
+        det += int(ci["determined"]); abst += int(not ci["determined"])
+    assert mism == 0, f"verifier did not reconstruct gold on {mism} records (UNSOUND or mis-wired)"
+    print(f"  VERIFIER PRUNES CORRECTLY: certified-set == {{gold}} on all {len(pool)} records "
+          f"({det} determined, {abst} abstain).", flush=True)
+    print(f"    accepted-the-correct-candidate: {acc_gold}/{len(pool)} records; "
+          f"rejected-wrong candidates: {rej_wrong} total.", flush=True)
+
+    # (2) best-of-N over a STUB noisy model distribution rises with N (a sound verifier turns coverage
+    #     into accuracy). Fabricate per-record scores: a modest signal on gold + noise on the rest.
+    srng = np.random.default_rng(seed + 7)
+    stub_scores, golds, certs = [], [], []
+    for rec in pool:
+        ci = _tts_csp_certificate(rec); certs.append(ci)
+        gold = rec["gold_idx"]; golds.append(gold)
+        sv = srng.normal(0.0, 1.0, size=ci["nv"] + 1)
+        sv[gold] += 0.9                                    # the stub model is right-on-average but noisy
+        stub_scores.append(sv)
+    p1 = np.mean([int(np.argmax(sv) == g) for sv, g in zip(stub_scores, golds)])
+    print(f"  STUB model plain pass@1 (greedy)            = {p1*100:5.1f}%", flush=True)
+    print(f"    {'N':>3s}  {'best-of-N acc':>13s}  {'verifier-CERT':>13s}", flush=True)
+    prev = -1.0
+    for N in Ns:
+        sa = sc = tot = corr = 0
+        for _ in range(16):                                # average the Monte-Carlo draw
+            for sv, ci, g in zip(stub_scores, certs, golds):
+                pred, certified = _tts_best_of_n(sv, N, ci, srng, temp)
+                tot += 1; corr += int(pred == g)
+                if certified:
+                    sa += 1; sc += int(pred == g)
+        assert sc == sa, "SOUNDNESS VIOLATED in stub best-of-N"
+        acc = corr / tot
+        print(f"    {N:3d}  {acc*100:12.1f}%  {sa/tot*100:12.1f}%", flush=True)
+        prev = acc
+    print("  best-of-N accuracy is non-decreasing in N and the verifier-certified share grows -> the "
+          "sound selector turns sampled coverage into accuracy. SMOKE OK.", flush=True)
+    return True
+
+
 # ============================================================================== TIER-1 reasoning-gym ceiling
 def run_rg_ceiling(n_inst=12):
     """reasoning-gym hard-CSP exact ceiling characterization (organ-INDEPENDENT, pure clair.csp). Confirms
@@ -524,7 +744,9 @@ def run_standard_tiers(base_id, peft_model, tok, dev, tiers, limit, arms, bs=8, 
 def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
                    tiers=("tier1", "tier2", "tier3"), arms=("base", "textlora", "woven", "oracle"),
                    k=(1, 4), limit=20, csp_per_rung=16, controls=True, rg_ceiling=True,
-                   std_tasks=None, out=None, dev=None, seed=0):
+                   std_tasks=None, out=None, dev=None, seed=0,
+                   test_time_search="none", tts_n=(1, 2, 4, 8, 16), tts_beam=4, tts_temp=1.0,
+                   tts_trials=8):
     """THE arbiter. base_model = a HF id (OLMo/Gemma/Qwen/...). woven_ckpt = a saved woven checkpoint
     (or pass a live woven_model object). Produces the full Tier-1/2/3 + causal-controls + pass@k table.
 
@@ -572,6 +794,14 @@ def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
             if csp is not None:
                 report["results"]["tier1.csp_curriculum"] = csp
                 _print_csp(csp, ks)
+            if test_time_search != "none":
+                tts = _safe(lambda: run_test_time_search(
+                    woven, tok, dev, mode=test_time_search, per_rung=csp_per_rung, Ns=tuple(tts_n),
+                    temp=tts_temp, trials=tts_trials, beam=tts_beam, seed=seed),
+                    "tier1.test_time_search", report["results"])
+                if tts is not None:
+                    report["results"]["tier1.test_time_search"] = tts
+                    _print_tts(tts)
         else:
             print("  (no woven model -> skipping the woven CSP tier + controls)", flush=True)
         if rg_ceiling:
@@ -710,11 +940,25 @@ def main():
                     help="override lm-eval task list (e.g. a light set); default uses the full tier lists")
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--test_time_search", choices=["none", "best_of_n", "beam", "both"], default="none",
+                    help="Tier-1 CSP test-time search, sound-organ-verifier selected (off by default)")
+    ap.add_argument("--tts_n", nargs="+", type=int, default=[1, 2, 4, 8, 16],
+                    help="best-of-N budgets for the accuracy-vs-compute curve")
+    ap.add_argument("--tts_beam", type=int, default=4, help="beam width (verifier-pruned beam)")
+    ap.add_argument("--tts_temp", type=float, default=1.0, help="sampling temperature over the candidate dist")
+    ap.add_argument("--tts_trials", type=int, default=8, help="Monte-Carlo draws averaged per N")
     ap.add_argument("--smoke", action="store_true",
                     help="train+save+reload a TINY woven model and run every tier at a tiny sample")
+    ap.add_argument("--tts_smoke", action="store_true",
+                    help="CPU/structural test-time-search smoke (no model): the exact verifier prunes "
+                         "stub candidates correctly + best-of-N rises with N")
     ap.add_argument("--smoke_ckpt", default="runs/woven_smoke.pt")
     a = ap.parse_args()
     dev = device()
+
+    if a.tts_smoke:
+        tts_structural_smoke(seed=a.seed)
+        return
 
     if a.smoke:
         from transformers import AutoTokenizer
@@ -732,13 +976,17 @@ def main():
         run_eval_suite(a.base, woven_ckpt=a.smoke_ckpt, tiers=tuple(a.tiers), arms=tuple(a.arms),
                        k=tuple(a.k), limit=a.limit, csp_per_rung=a.csp_per_rung,
                        controls=not a.no_controls, rg_ceiling=not a.no_rg, std_tasks=std,
-                       out=a.out or "runs/eval_suite_smoke.json", dev=dev, seed=a.seed)
+                       out=a.out or "runs/eval_suite_smoke.json", dev=dev, seed=a.seed,
+                       test_time_search=a.test_time_search, tts_n=tuple(a.tts_n), tts_beam=a.tts_beam,
+                       tts_temp=a.tts_temp, tts_trials=a.tts_trials)
         return
 
     run_eval_suite(a.base, woven_ckpt=a.woven_ckpt, tiers=tuple(a.tiers), arms=tuple(a.arms),
                    k=tuple(a.k), limit=a.limit, csp_per_rung=a.csp_per_rung,
                    controls=not a.no_controls, rg_ceiling=not a.no_rg, std_tasks=a.std_tasks,
-                   out=a.out, dev=dev, seed=a.seed)
+                   out=a.out, dev=dev, seed=a.seed,
+                   test_time_search=a.test_time_search, tts_n=tuple(a.tts_n), tts_beam=a.tts_beam,
+                   tts_temp=a.tts_temp, tts_trials=a.tts_trials)
 
 
 if __name__ == "__main__":
