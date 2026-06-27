@@ -1,0 +1,58 @@
+{
+  "n_total": 600,
+  "n_shuffleable": 600,
+  "n_informative": 399,
+  "n_floor_solves": 600,
+  "TRUE_STRUCT": {
+    "acc_true": 1.0,
+    "acc_shuf": 0.0,
+    "abstain": 0.0,
+    "n": 399
+  },
+  "SHUFFLED_STRUCT": {
+    "acc_true": 0.0,
+    "acc_shuf": 1.0,
+    "abstain": 0.0,
+    "n": 399
+  },
+  "NO_STRUCT": {
+    "acc_true": 0.3308270676691729,
+    "acc_shuf": 0.3308270676691729,
+    "abstain": 0.0,
+    "n": 399
+  },
+  "SHUFFLED_by_relation": {
+    "eqchain": {
+      "acc_true": 0.0,
+      "acc_shuf": 1.0,
+      "abstain": 0.0,
+      "n": 198
+    },
+    "forcedcolor": {
+      "acc_true": 0.0,
+      "acc_shuf": 1.0,
+      "abstain": 0.0,
+      "n": 201
+    }
+  },
+  "SHUFFLED_by_n": {
+    "9": {
+      "acc_true": 0.0,
+      "acc_shuf": 1.0,
+      "abstain": 0.0,
+      "n": 97
+    },
+    "11": {
+      "acc_true": 0.0,
+      "acc_shuf": 1.0,
+      "abstain": 0.0,
+      "n": 104
+    },
+    "12": {
+      "acc_true": 0.0,
+      "acc_shuf": 1.0,
+      "abstain": 0.0,
+      "n": 198
+    }
+  }
+}
