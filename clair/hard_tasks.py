@@ -39,72 +39,16 @@ NMAX = 12          # must match glados_woven.NMAX (cells 0..11, entities A..L)
 
 # ===================================================================== fast EXACT dedP
 # The hard chains reach n=12 cells (d**n = 3**12 = 531k), far above clair.csp.solutions' brute-force
-# budget. `fast_dedP` (below) now ROUTES to clair.csp.exact_dedP — the Rust clair_fast port when the
-# extension is built, pure-Python otherwise — so every labeller that calls it (the GLaDOS datagen
-# query-picker / verifier / trace builder, the organ co-training loss) inherits that speedup. The
-# pure-Python arc-consistency + complete-backtracking version is retained as `_fast_dedP_py`; it was
-# verified cell-for-cell equal to exact_dedP over 9.6k instances (all rungs + affine/xor wall +
-# larger-budget + unsat ⊥) before the routing was switched on.
-def _ac(csp, dom):
-    """Arc-consistency to fixpoint over a list-of-sets domain. Returns None on wipeout."""
-    dom = [set(s) for s in dom]
-    changed = True
-    while changed:
-        changed = False
-        for sc, al in csp.cons:
-            for pos, i in enumerate(sc):
-                keep = {v for v in dom[i]
-                        if any(t[pos] == v and all(t[k] in dom[c] for k, c in enumerate(sc)) for t in al)}
-                if len(keep) < len(dom[i]):
-                    dom[i] = keep
-                    changed = True
-                    if not keep:
-                        return None
-    return [frozenset(s) for s in dom]
-
-
-def _sat(csp, dom):
-    """Complete satisfiability test: AC, then branch on the first multi-value cell."""
-    dom = _ac(csp, dom)
-    if dom is None:
-        return False
-    i = next((k for k in range(csp.n) if len(dom[k]) > 1), None)
-    if i is None:
-        return True                                  # all singletons + AC-consistent => a solution
-    nd = list(dom)
-    for v in dom[i]:
-        nd[i] = frozenset({v})
-        if _sat(csp, nd):
-            return True
-    return False
-
-
-def _fast_dedP_py(csp, dom=None):
-    """EXACT per-cell dedP: value v survives at cell i iff pinning i=v keeps the CSP satisfiable.
-    Pure-Python AC-then-search fallback (kept for parity / when clair.csp has no Rust path)."""
-    base = _ac(csp, dom if dom is not None else csp.full())
-    if base is None:
-        return tuple(frozenset() for _ in range(csp.n))
-    out = []
-    for i in range(csp.n):
-        surv = set()
-        for v in base[i]:
-            nd = list(base)
-            nd[i] = frozenset({v})
-            if _sat(csp, nd):
-                surv.add(v)
-        out.append(frozenset(surv))
-    return tuple(out)
-
-
+# budget. `fast_dedP` ROUTES to clair.csp.exact_dedP — the Rust clair_fast port when the extension is
+# built, the single pure-Python fallback (clair.csp._exact_dedP_py) otherwise — so every labeller that
+# calls it (the GLaDOS datagen query-picker / verifier / trace builder, the organ co-training loss)
+# inherits that speedup. This module's old pure-Python AC-then-search (`_fast_dedP_py` + `_ac`/`_sat`)
+# was DELETED after being verified cell-for-cell equal to exact_dedP — the one canonical deductor now.
 def fast_dedP(csp, dom=None):
     """EXACT per-cell dedP: value v survives at cell i iff some full solution (consistent with `dom`)
-    uses v at i. Routes to clair.csp.exact_dedP, which is the Rust clair_fast port when the extension
-    is built (and bitwise-identical pure Python otherwise) — so the GLaDOS datagen labeller inherits
-    the same speedup the on-policy training path already gets. Verified cell-for-cell equal to the
-    old pure-Python AC-then-search (`_fast_dedP_py`) over 9.6k random instances spanning every rung,
-    the affine/xor wall, larger-budget (bigger n/d), and unsat ⊥. `_fast_dedP_py` is retained as a
-    fallback. Same signature + (csp, dom) semantics; dom=None means the full grid."""
+    uses v at i. Thin alias to clair.csp.exact_dedP (the Rust clair_fast port when the extension is
+    built, the pure-Python clair.csp._exact_dedP_py fallback otherwise). Same signature + (csp, dom)
+    semantics as before; dom=None means the full grid."""
     return C.exact_dedP(csp, csp.full() if dom is None else dom)
 
 

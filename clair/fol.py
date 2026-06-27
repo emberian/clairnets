@@ -221,8 +221,11 @@ def gen_problem(rng, label=None, depth=None, max_tries=300) -> FOLProblem:
         dep = proof_depths(facts, rules, closure)
         tgt = label or str(rng.choice(["entail", "contradict", "unknown"]))
 
+        # candidate lists are built from `closure` (a set) then index-sampled, so they are sorted by
+        # the canonical literal string FIRST — set iteration order is hash-seed dependent, and without
+        # this the same (rng, seed) picks different queries across processes (breaks reproducibility).
         if tgt == "entail":
-            cand = [a for a in closure if not a.neg and a not in fset]
+            cand = sorted((a for a in closure if not a.neg and a not in fset), key=str)
             if depth is not None:
                 cand = [a for a in cand if dep.get(a, 0) == d] or cand
             if not cand:
@@ -231,7 +234,7 @@ def gen_problem(rng, label=None, depth=None, max_tries=300) -> FOLProblem:
             return FOLProblem(ents, rules, facts, q, "entail", dep.get(q, 1))
 
         if tgt == "contradict":
-            cand = [neg_of(a) for a in closure if a.neg and neg_of(a) not in closure]
+            cand = sorted((neg_of(a) for a in closure if a.neg and neg_of(a) not in closure), key=str)
             if not cand:
                 continue
             q = cand[int(rng.integers(len(cand)))]
@@ -239,7 +242,7 @@ def gen_problem(rng, label=None, depth=None, max_tries=300) -> FOLProblem:
 
         # unknown: sample a ground positive atom whose atom AND negation are both underivable
         sig = _herbrand_preds(rules, facts)
-        preds = [p for p in sig if p != "link"]      # link is fully given; skip for fairness
+        preds = sorted(p for p in sig if p != "link")  # link is fully given; skip for fairness
         for _ in range(60):
             p = preds[int(rng.integers(len(preds)))]
             args = tuple(str(x) for x in rng.choice(ents, size=sig[p], replace=True))

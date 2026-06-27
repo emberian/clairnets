@@ -43,55 +43,12 @@ REL_DIM = D_MAX ** A_MAX
 
 
 # ===================================================================== FAST exact coloring dedP
-# exact_dedP(csp, dom) = {values used by SOME solution consistent with dom}, per cell. clair.csp does
-# this by FULL enumeration (3**n -> 177k at n=11). For coloring we instead do per-(cell,value) SAT
-# with backtracking + forward-check (cap=1): v survives at cell i iff dom with i:={v} is satisfiable.
-# Exact and equivalent (asserted in smoke), but cheap even at n=11.
-def _sat(domlist, cons, n) -> bool:
-    """Is there an assignment with assign[i] in domlist[i] satisfying every (scope, allowed) factor?"""
-    if any(len(s) == 0 for s in domlist):
-        return False
-    # constraints touching each cell, for incremental checking
-    touch = [[] for _ in range(n)]
-    for ci, (sc, al) in enumerate(cons):
-        for c in sc:
-            touch[c].append(ci)
-    order = sorted(range(n), key=lambda i: len(domlist[i]))
-    assign = {}
-
-    def ok_after(i):
-        for ci in touch[i]:
-            sc, al = cons[ci]
-            if all(c in assign for c in sc) and tuple(assign[c] for c in sc) not in al:
-                return False
-        return True
-
-    def bt(k):
-        if k == n:
-            return True
-        i = order[k]
-        for v in domlist[i]:
-            assign[i] = v
-            if ok_after(i) and bt(k + 1):
-                return True
-        assign.pop(i, None)
-        return False
-
-    return bt(0)
-
-
+# exact_dedP(csp, dom) = {values used by SOME solution consistent with dom}, per cell. Routed to the
+# ONE canonical deductor (clair.csp.exact_dedP: Rust clair_fast port when built, else the pure-Python
+# clair.csp._exact_dedP_py). This module's old per-(cell,value)-SAT copy + its `_sat` helper were
+# DELETED after being verified cell-for-cell equal to exact_dedP.
 def fast_dedP(csp: C.CSP, dom) -> tuple:
-    base = [set(dom[i]) for i in range(csp.n)]
-    out = []
-    for i in range(csp.n):
-        surv = set()
-        for v in dom[i]:
-            dl = [set(s) for s in base]
-            dl[i] = {v}
-            if _sat(dl, csp.cons, csp.n):
-                surv.add(v)
-        out.append(frozenset(surv))
-    return tuple(out)
+    return C.exact_dedP(csp, dom)
 
 
 class DedPCache:
