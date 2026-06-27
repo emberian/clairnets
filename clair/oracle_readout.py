@@ -349,13 +349,17 @@ class LiveLatentWoven(nn.Module):
 
 
 # ===================================================================== causal-control transforms
-def apply_control(surv, recs, control, K, perm=(1, 2, 0)):
+def apply_control(surv, recs, control, K, perm=None):
     """Return a transformed copy of surv[B,Nmax,K] for a causal control.
        true      : identity (the real oracle lattice)
        shuffle   : inject a DIFFERENT problem's lattice (roll along batch)
        permute   : permute the candidate(color) labels of every survival vector
        corrupt   : flip ONLY the query cell's survivors to a single wrong/changed color
     """
+    if perm is None:
+        # full-width label roll (matches eval_suite's idiom); the old (1,2,0) default only spanned
+        # K==3 and silently truncated/over-indexed for the real K (=D_MAX=8) callers below.
+        perm = tuple(range(1, K)) + (0,)
     s = surv.clone()
     if control == "true":
         return s

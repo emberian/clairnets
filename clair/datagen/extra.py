@@ -301,12 +301,13 @@ def gen_graph(rng, cfg):
     # dedupe undirected duplicate edges in surface (both directions stored)
     if not directed:
         seen, dd = set(), []
-        for u, v, ww in zip(src.tolist(), dst.tolist(), w.tolist()):
+        for c, (u, v, ww) in zip(clauses, zip(src.tolist(), dst.tolist(), w.tolist())):
             key = (min(u, v), max(u, v))
             if key in seen:
                 continue
             seen.add(key)
-        clauses = clauses[:len(seen)] if seen else clauses
+            dd.append(c)                  # keep the clause for the FIRST direction of each edge
+        clauses = dd
     rng.shuffle(clauses)
 
     if mode == "dist":
@@ -825,7 +826,7 @@ def _gen_mincost(rng, cfg):
     else:
         return None
     cost = rng.integers(1, 9, size=(cn, cd)).astype(np.int64)
-    opt_cost, worst, best = EO.brute_opt(csp, cost)
+    opt_cost, _, best = EO.brute_opt(csp, cost)
     ents, scheme = _names(rng, cn)
     vnames = CU.value_names(kind, cd)
     clauses = []

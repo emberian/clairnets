@@ -356,7 +356,8 @@ class _NeuralOrgan(Reduction):
 
     def _fits(self, state: CSPState) -> bool:
         N, D, M, A = self._budget()
-        return state.csp.n <= N and state.csp.d <= D and len(state.csp.cons) <= M
+        return (state.csp.n <= N and state.csp.d <= D and len(state.csp.cons) <= M
+                and all(len(sc) <= A for sc, _ in state.csp.cons))
 
     def applies(self, state):
         return isinstance(state, CSPState) and self._fits(state)

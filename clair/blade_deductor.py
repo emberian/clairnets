@@ -254,7 +254,6 @@ def _selftest():
         B0, m = 1, m_max
         gathered = torch.randn(B0, m, a_max, d)
         for ar, name in [(1, "pin"), (2, "binary"), (3, "ternary")]:
-            oh = torch.zeros(B0, m, 1)                          # arity one-hot slices
             a1 = torch.full((B0, m, 1), 1.0 if ar == 1 else 0.0)
             a2 = torch.full((B0, m, 1), 1.0 if ar == 2 else 0.0)
             a3 = torch.full((B0, m, 1), 1.0 if ar == 3 else 0.0)

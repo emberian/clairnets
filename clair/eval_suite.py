@@ -682,8 +682,8 @@ def build_smoke_woven(base_id, dev, tok, *, seed=0):
     a = SimpleNamespace(
         lora_r=8, lora_lr=2e-4, gamma_lr=1e-3, alpha_lr=3e-4, gamma_hidden=128,
         inject_layer=min(12, nL - 1), mid_layer=min(8, nL - 2), warm_steps=40, steps=40, bs=6,
-        aux_w=1.0, alpha_dp=256, alpha_heads=4, dctx=192, organ_d=96, organ_heads=4, organ_layers=2,
-        organ_T=8, seed=seed)
+        aux_w=1.0, alpha_sup_w=1.0, alpha_dp=256, alpha_heads=4, dctx=192, organ_d=96, organ_heads=4,
+        organ_layers=2, organ_T=8, seed=seed)
     rng = np.random.default_rng(seed + 11)
     train_recs = S.build_live_pool(rng, S.RUNGS, "id", 20)
     eval_recs = S.build_live_pool(rng, S.RUNGS, "id", 8)

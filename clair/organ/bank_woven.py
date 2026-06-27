@@ -41,7 +41,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .. import csp as C
 from ..latent_organ import DenseLatentProjector, dominate_dedp_loss
 from ..oracle_readout import OracleGamma, _mention_tensor, ABSTAIN_STR
 from .bank import build_bank, certified_csp_reductions
@@ -118,14 +117,15 @@ class BankComposerOrgan:
         traces = []
         for b in range(B):
             spec = csps[b] if csps is not None else None
-            n = int(vmask[b].sum().item())
             if spec is None:
                 out[b] = alive_np[b]                      # no structure available: α-only fallback
                 traces.append(None)
                 continue
             csp, system, tags = spec
             n = csp.n
-            adom = tuple(frozenset(v for v in range(csp.d) if alive_np[b, i, v] > 0.5)
+            # alive_np is width K (α's output); a value v >= K can never be alive, so clamp the read
+            # to K to match the width-guarded write below (csp.d may exceed K).
+            adom = tuple(frozenset(v for v in range(min(csp.d, K)) if alive_np[b, i, v] > 0.5)
                          for i in range(n))
             composed = self.compose_one(csp, adom, system=system, tags=tags)
             for i in range(n):
