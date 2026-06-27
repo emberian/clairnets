@@ -55,7 +55,11 @@ def norm_logical(facts) -> frozenset:
             out.add(("sum", *sorted((f[1], f[2])), f[3]))
         elif k in ("xor", "par"):
             scope = (f[1], f[2], f[3]) if k == "xor" else tuple(f[1])
-            out.add(("par", tuple(sorted(scope))))
+            out.add(("parm", tuple(sorted(scope)), 0))        # even parity (rhs 0)
+        elif k == "parm":
+            out.add(("parm", tuple(sorted(f[1])), int(f[2])))  # parity with explicit rhs
+        elif k == "rel":
+            out.add(("rel", tuple(f[1]), tuple(sorted(tuple(int(x) for x in t) for t in f[2]))))
         elif k == "alldiff":
             for a, b in it.combinations(sorted(f[1]), 2):
                 out.add(("neq", a, b))

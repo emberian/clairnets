@@ -91,6 +91,13 @@ def fact_constraint(fact, d):
     if k == "par":                                       # variadic parity: XOR over the scope == 0
         scope = tuple(fact[1])
         return C._rel(scope, lambda t: sum(t) % 2 == 0, d)
+    if k == "parm":                                      # variadic parity with an explicit rhs: XOR == r
+        scope = tuple(fact[1])
+        r = int(fact[2])
+        return C._rel(scope, lambda t, r=r: sum(t) % 2 == r, d)
+    if k == "rel":                                       # random EXTENSIONAL relation (an allowed table)
+        scope = tuple(fact[1])
+        return (scope, frozenset(tuple(int(x) for x in t) for t in fact[2]))
     if k == "alldiff":
         scope = tuple(fact[1])
         return C._rel(scope, lambda t: len(set(t)) == len(t), d)
@@ -281,6 +288,131 @@ def gen_alldiff(rng, n_lo=4, n_hi=6, pin_frac=0.4):
     return n, d, "number", facts, s
 
 
+# --------------------------------------------------------------- difficulty-CONTROLLED generators
+# These TARGET an intrinsic-hardness bucket (required-lattice-level / treewidth) instead of letting it
+# emerge from n. They reuse shipped primitives: affine relations (parity) x the xor_wall band=width
+# knob (the affine wall: required level = treewidth+1), a bag-chain band graph (treewidth decoupled
+# from n), and the additive UNION random-relation table. All witness-first ⇒ exact labels.
+
+def gen_affine(rng, level=2, n_lo=6, n_hi=11, pin_frac=0.5, tries=16):
+    """Difficulty-controlled AFFINE (GF(2)) parity SYSTEM whose required lattice level is TARGETED via
+    the bandwidth=treewidth knob (the affine-wall law: affine + treewidth w needs lattice level w+1).
+    Crosses gen_parity_k's affine relations with xor_wall.gen_xor_system's `band` (width) parameter:
+    level<=1 -> near-tree band 3 (low width); level 2 -> band 3-4; level>=3 -> wide/global band. The
+    system is witness-first (unique solution when force_unique), so the label is exact. Emits
+    ('parm', scope, rhs) parity facts + unit pins — all renderable/parseable. For level>=1 a cheap
+    AC!=exact gate rejects the (forward-pinnable) L0 instances so the affine WALL is actually populated."""
+    from . import xor_wall as XW
+    n_lo = max(int(n_lo), 5)
+    last = None
+    for _ in range(tries):
+        n = int(rng.integers(n_lo, int(n_hi) + 1))
+        if level <= 1:
+            band = 3
+        elif level == 2:
+            band = int(rng.choice([3, 4]))
+        else:
+            band = int(rng.choice([max(4, n // 2), n]))
+        force_unique = rng.random() < 0.8           # 20% leave free cells (an abstain stratum)
+        n_par = max(2, int(round((1.1 + 0.18 * level) * n)))
+        sysd = XW.gen_xor_system(rng, n, n_par=n_par, band=band, force_unique=force_unique)
+        csp = sysd["csp"]
+        s = np.asarray(sysd["s"]).astype(int)
+        facts, bad = [], False
+        for sc, al in csp.cons:
+            if len(sc) == 1:
+                facts.append(("pin", int(sc[0]), int(s[sc[0]])))
+            elif len(sc) == 3:
+                rhs = (int(s[sc[0]]) + int(s[sc[1]]) + int(s[sc[2]])) % 2
+                facts.append(("parm", tuple(int(x) for x in sc), rhs))
+            else:
+                bad = True
+                break
+        if bad or len(facts) < 2:
+            continue
+        last = (n, 2, "number", facts, s)
+        if level <= 0:
+            return last
+        full = csp.full()                            # cheap level>=1 gate: AC cannot reach exact dedP
+        ac, _ = C.to_fixpoint(C.ac_step, csp, full)
+        if ac != C.exact_dedP(csp, full):
+            return last
+    return last if last is not None else gen_parity_k(rng, n_lo=n_lo, n_hi=n_hi)
+
+
+def gen_bagchain(rng, family=None, treewidth=None, n_lo=6, n_hi=11, pin_frac=0.4):
+    """Treewidth-as-a-TARGET via a bag-chain / banded primal graph: connect cells within a sliding
+    window of width `treewidth` (so the primal graph has bandwidth ~ treewidth ⇒ pathwidth/treewidth
+    <= treewidth, DECOUPLED from n), then drop the family's relations onto those band edges. Lets us
+    fill treewidth 1-5 in TRAIN without going wide on n (today treewidth only rises by cranking n).
+    family/treewidth default to a per-call random choice so one family key spans the tw 1-5 spread."""
+    if family is None:
+        family = str(rng.choice(["coloring", "ordering", "alldiff"]))
+    if treewidth is None:
+        treewidth = int(rng.integers(1, 6))             # spread treewidth 1..5
+    w = max(1, int(treewidth))
+    n = int(rng.integers(max(int(n_lo), w + 2), int(n_hi) + 1))
+    facts = []
+    if family in ("coloring", "equality"):
+        d = max(3, w + 1)
+        s = rng.integers(0, d, n)
+        for i in range(n):
+            for j in range(i + 1, min(n, i + w + 1)):       # band edges (window width w)
+                if s[i] != s[j] and rng.random() < 0.85:
+                    facts.append(("neq", i, j))
+                elif family == "equality" and s[i] == s[j] and rng.random() < 0.5:
+                    facts.append(("eq", i, j))
+        kind = "color"
+    elif family == "ordering":
+        d = int(rng.integers(n, n + 3))
+        s = rng.integers(0, d, n)
+        for i in range(n):
+            for j in range(i + 1, min(n, i + w + 1)):
+                if s[i] < s[j] and rng.random() < 0.7:
+                    facts.append(("lt", i, j))
+                elif s[i] <= s[j] and rng.random() < 0.4:
+                    facts.append(("le", i, j))
+        kind = "ordinal"
+    else:                                                   # alldiff bags (each window is one block)
+        d = max(n, w + 1)
+        s = np.array(rng.permutation(d)[:n])
+        for start in range(0, n, max(1, w)):
+            bag = tuple(range(start, min(n, start + w + 1)))
+            if len(bag) >= 2:
+                facts.append(("alldiff", bag))
+        kind = "number"
+    for i in range(n):
+        if rng.random() < pin_frac:
+            facts.append(("pin", i, int(s[i])))
+    return n, int(d), kind, facts, s
+
+
+def gen_random_relation(rng, n_lo=4, n_hi=7, d_lo=3, d_hi=5, pin_frac=0.4, n_rel=None):
+    """The UNION fix in the corpus: a RANDOM allowed-tuple (extensional) relation generator, ADDITIVE
+    alongside the named families. Witness-first — each random table is built to INCLUDE the witness'
+    projection (so the instance is solvable), then sprinkled with other random tuples. Emits ('rel',
+    scope, allowed) facts: a genuinely UNSEEN relation table (the OOD-novel-relation soundness lever)."""
+    n = int(rng.integers(int(n_lo), int(n_hi) + 1))
+    d = int(rng.integers(int(d_lo), int(d_hi) + 1))
+    s = rng.integers(0, d, n)
+    n_rel = n_rel if n_rel is not None else max(2, n)
+    facts = []
+    for _ in range(n_rel):
+        a = 2 if n < 3 else int(rng.choice([2, 2, 3]))
+        scope = tuple(int(x) for x in rng.choice(n, size=a, replace=False))
+        wit = tuple(int(s[i]) for i in scope)
+        keep_p = float(rng.uniform(0.25, 0.6))
+        allowed = {wit}
+        for t in it.product(range(d), repeat=a):
+            if rng.random() < keep_p:
+                allowed.add(t)
+        facts.append(("rel", scope, tuple(sorted(allowed))))
+    for i in range(n):
+        if rng.random() < pin_frac:
+            facts.append(("pin", i, int(s[i])))
+    return n, d, "number", facts, s
+
+
 GENERATORS = {
     "coloring": gen_coloring,
     "equality": gen_equality,
@@ -288,6 +420,14 @@ GENERATORS = {
     "arithmetic": gen_arithmetic,
     "xor": gen_xor,
     "alldiff": gen_alldiff,
+}
+
+# difficulty-controlled generators, kept OUT of GENERATORS (whose gen_problem/self_check contract is
+# the classic 6) but wired into the build/stream mix via build.NEW_FAMILY_GEN.
+HARD_GENERATORS = {
+    "affine": gen_affine,
+    "bagchain": gen_bagchain,
+    "random_relation": gen_random_relation,
 }
 
 
@@ -332,6 +472,14 @@ def _fact_sentence(p: Problem, f) -> str:
     if k == "par":
         names = ", ".join(E(i) for i in f[1])
         return f"{names} have even parity (XOR is 0)."
+    if k == "parm":
+        names = ", ".join(E(i) for i in f[1])
+        par = "odd" if int(f[2]) else "even"
+        return f"{names} have {par} parity (XOR is {int(f[2])})."
+    if k == "rel":
+        names = ", ".join(E(i) for i in f[1])
+        combos = "; ".join("(" + ", ".join(V[x] for x in t) + ")" for t in sorted(f[2]))
+        return f"The combination ({names}) must be one of: {combos}."
     if k == "alldiff":
         names = ", ".join(E(i) for i in f[1])
         return f"{names} all take different values."
@@ -379,7 +527,11 @@ def norm_facts(facts) -> frozenset:
         elif k == "xor":
             out.add(("xor",) + tuple(sorted((f[1], f[2], f[3]))))  # a^b^c==0 fully symmetric
         elif k == "par":
-            out.add(("par", tuple(sorted(f[1]))))             # variadic parity fully symmetric
+            out.add(("parm", tuple(sorted(f[1])), 0))         # even parity == parm with rhs 0
+        elif k == "parm":
+            out.add(("parm", tuple(sorted(f[1])), int(f[2])))  # variadic parity (explicit rhs) symmetric
+        elif k == "rel":
+            out.add(("rel", tuple(f[1]), tuple(sorted(tuple(int(x) for x in t) for t in f[2]))))
         else:                                                 # lt, le directional
             out.add((k, f[1], f[2]))
     return frozenset(out)

@@ -122,20 +122,39 @@ def canonical_key(rec: dict) -> bytes:
 # stream is a drop-in for the on-disk train corpus. `kind="reduction"` is handled here (build has no
 # reduction component); every other kind delegates verbatim to build._gen_one.
 _SEED_OFFSETS = {                                          # per-component seed bases (id-uniqueness)
-    "curriculum": 1_000_000, "parity": 5_000_000, "hard": 5_500_000,
+    "curriculum": 1_000_000, "parity": 5_000_000, "hard": 5_500_000, "randomrel": 6_500_000,
     "extra": 10_000_000, "compose": 20_000_000, "reduction": 40_000_000,
 }
 
 
-def default_spec(include_reductions: bool = True, name: str = "stream") -> dict:
-    """The default training mixture — build.py's TRAIN families + the 6 broadened domains + train
-    compositions + (optionally) the reduction curriculum. Weights ~ build.py's per-split volumes."""
+def _difficulty_components(base=1.0):
+    """The difficulty-CONTROLLED CSP-spine components (mirrors build.TRAIN_CSP_MIX): family chains
+    (deep), bag-chain (treewidth spread), the affine wall (level 2/3), and additive random relations.
+    Weights are ~ build's per-bucket fractions x `base`."""
+    w = lambda x: max(1, int(round(x * base)))
+    return [
+        dict(kind="hard", families=list(B.CHAIN_FAMILIES), n=None, skins=B.TRAIN_SKINS, weight=w(15)),
+        dict(kind="curriculum", families=["bagchain"], n=B.TRAIN_N, skins=B.TRAIN_SKINS, weight=w(10)),
+        dict(kind="curriculum", families=["affine_l2"], n=B.TRAIN_N, skins=B.TRAIN_SKINS, weight=w(25)),
+        dict(kind="curriculum", families=["affine_l3"], n=B.TRAIN_N, skins=B.TRAIN_SKINS, weight=w(12)),
+        dict(kind="randomrel", families=None, n=None, skins=B.TRAIN_SKINS, weight=w(8)),
+    ]
+
+
+def default_spec(include_reductions: bool = True, name: str = "stream",
+                 difficulty: bool = True) -> dict:
+    """The default training mixture — build.py's TRAIN families + the difficulty-controlled hard-bucket
+    components + the 6 broadened domains + train compositions + (optionally) the reduction curriculum.
+    Pass difficulty=False for the pre-fix (easy-only) mixture."""
     mix = [
         dict(kind="curriculum", families=list(B.TRAIN_FAMILIES), n=B.TRAIN_N,
-             skins=B.TRAIN_SKINS, weight=40),
-        dict(kind="hard", families=None, n=None, skins=B.TRAIN_SKINS, weight=4),
+             skins=B.TRAIN_SKINS, weight=30),
         dict(kind="parity", families=None, n=None, skins=B.TRAIN_SKINS, weight=4),
     ]
+    if difficulty:
+        mix += _difficulty_components(base=1.0)
+    else:
+        mix.append(dict(kind="hard", families=None, n=None, skins=B.TRAIN_SKINS, weight=4))
     for dom in B.EXTRA_DOMAINS:
         mix.append(dict(kind="extra", domain=dom, cfg=B.EXTRA_TRAIN_CFG[dom], weight=3))
     for head in B.COMPOSE_TRAIN_HEADS:
@@ -146,16 +165,21 @@ def default_spec(include_reductions: bool = True, name: str = "stream") -> dict:
     return {"name": name, "mix": mix}
 
 
-def organ_spec(name: str = "organ_stream") -> dict:
-    """A CSP-ONLY mixture for feeding the clair.organ pretrain loop: the 5 train families + the hard
-    propagation chains + parity wall + the reduction curriculum (all rebuild to a (csp, dom) item).
+def organ_spec(name: str = "organ_stream", difficulty: bool = True) -> dict:
+    """A CSP-ONLY mixture for feeding the clair.organ pretrain loop: the train families + the
+    difficulty-controlled hard buckets (deep chains, treewidth spread, the affine level-2/3 wall,
+    random relations) + parity wall + the reduction curriculum (all rebuild to a (csp, dom) item).
     No extra/compose domains — they'd be generated then dropped by the organ-mode item filter."""
-    return {"name": name, "mix": [
-        dict(kind="curriculum", families=list(B.TRAIN_FAMILIES), n=B.TRAIN_N, skins=B.TRAIN_SKINS, weight=40),
-        dict(kind="hard", families=None, n=None, skins=B.TRAIN_SKINS, weight=8),
+    mix = [
+        dict(kind="curriculum", families=list(B.TRAIN_FAMILIES), n=B.TRAIN_N, skins=B.TRAIN_SKINS, weight=30),
         dict(kind="parity", families=None, n=None, skins=B.TRAIN_SKINS, weight=6),
         dict(kind="reduction", families=["sat3", "sat2", "xorsat"], reps=["cnf", "xor"], n=(4, 8), weight=6),
-    ]}
+    ]
+    if difficulty:
+        mix += _difficulty_components(base=1.0)
+    else:
+        mix.append(dict(kind="hard", families=None, n=None, skins=B.TRAIN_SKINS, weight=8))
+    return {"name": name, "mix": mix}
 
 
 def _schedule(mix) -> list:
