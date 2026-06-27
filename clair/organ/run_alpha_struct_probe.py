@@ -174,6 +174,55 @@ def decode_facts(pin_logits, pair_logits, vmask, n):
     return CU.norm_facts(facts)
 
 
+def hardneg_pairs_from(records):
+    """Group hard-neg records by pair_id → {pair_id: {"anchor": idx, "neg": idx, "delta": tag}}.
+    `records` is the raw curriculum-record list (load_csp_records output) aligned 1:1 with the
+    `views` list; indices index into that list. Only complete anchor+neg pairs are returned."""
+    pairs = {}
+    for i, r in enumerate(records):
+        pid = r.get("pair_id")
+        role = r.get("role")
+        if not pid or role not in ("hardneg_anchor", "hardneg_neg"):
+            continue
+        slot = pairs.setdefault(pid, {"delta": r.get("delta")})
+        slot["anchor" if role == "hardneg_anchor" else "neg"] = i
+    return {p: d for p, d in pairs.items() if "anchor" in d and "neg" in d}
+
+
+def hardneg_report(pin_l_all, pair_l_all, vmask, n_arr, views, records):
+    """Hard-negative discrimination: for each matched (anchor, neg) pair — same surface, ONE relation
+    flipped — does α emit the CORRECT (and therefore different) structure for each? By construction
+    true(anchor) != true(neg), so both-exact ⇒ correctly discriminated. Reports the per-pair both-exact
+    rate (the clean 'α read the relation off the text' test), discrimination rate (predicted structures
+    differ at all), and a per-delta breakdown."""
+    from collections import defaultdict
+    pairs = hardneg_pairs_from(records)
+    n_both = n_disc = n_anchor_ok = n_neg_ok = 0
+    by_delta = defaultdict(lambda: {"n": 0, "both": 0, "disc": 0})
+    for _pid, d in pairs.items():
+        ai, ni = d["anchor"], d["neg"]
+        na, nn_ = int(n_arr[ai].item()), int(n_arr[ni].item())
+        pa = decode_facts(pin_l_all[ai], pair_l_all[ai], vmask[ai], na)
+        pn = decode_facts(pin_l_all[ni], pair_l_all[ni], vmask[ni], nn_)
+        ta, tn = CU.norm_facts(views[ai][3]), CU.norm_facts(views[ni][3])
+        a_ok, n_ok = (pa == ta), (pn == tn)
+        both, disc = (a_ok and n_ok), (pa != pn)
+        n_anchor_ok += a_ok; n_neg_ok += n_ok; n_both += both; n_disc += disc
+        dt = d["delta"] or "?"
+        by_delta[dt]["n"] += 1; by_delta[dt]["both"] += both; by_delta[dt]["disc"] += disc
+    N = max(1, len(pairs))
+    return {
+        "n_pairs": len(pairs),
+        "both_exact_rate": round(n_both / N, 4),
+        "anchor_exact_rate": round(n_anchor_ok / N, 4),
+        "neg_exact_rate": round(n_neg_ok / N, 4),
+        "discriminated_rate": round(n_disc / N, 4),
+        "by_delta": {k: {"n": v["n"], "both_exact": round(v["both"] / max(1, v["n"]), 4),
+                         "discriminated": round(v["disc"] / max(1, v["n"]), 4)}
+                     for k, v in sorted(by_delta.items())},
+    }
+
+
 def f1_report(rack, feat_all, pin_l_all, pair_l_all, vmask, n_arr, views, idxs):
     """Per-relation precision/recall/F1 + exact-factor-graph match over `idxs`."""
     rels = ["pin", "eq", "neq", "lt", "le"]
@@ -469,8 +518,11 @@ def nl_frontier_arm(olmo, tok, dev, D, layers, nl_train_path, nl_ood_path, steps
             idx = list(range(len(od_v)))
             pin_l, pair_l = forward_csp(rack, pre_od, dev, idx, L)
             rep = f1_report(rack, None, pin_l, pair_l, pre_od["vmask"], pre_od["n"], od_v, idx)
+            rep["hardneg"] = hardneg_report(pin_l, pair_l, pre_od["vmask"], pre_od["n"], od_v, od)
         log(f"   [nl-frontier L{L}] NL-OOD micro-F1 {rep['micro']['F1']:.3f}  "
-            f"exact {rep['exact_factor_graph_match']:.3f}")
+            f"exact {rep['exact_factor_graph_match']:.3f}  "
+            f"hardneg both-exact {rep['hardneg']['both_exact_rate']:.3f} "
+            f"(disc {rep['hardneg']['discriminated_rate']:.3f}, n={rep['hardneg']['n_pairs']})")
         per_layer[L] = rep
     best_L = max(layers, key=lambda L: per_layer[L]["micro"]["F1"])
     return {"nl_train": nl_train_path, "nl_ood": nl_ood_path,

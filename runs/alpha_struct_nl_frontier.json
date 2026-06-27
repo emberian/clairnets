@@ -1,0 +1,541 @@
+{
+  "model": "allenai/OLMo-2-0425-1B",
+  "layers": [
+    6,
+    9,
+    12
+  ],
+  "note": "Frozen OLMo-2-1B hidden; probe trains only the alpha StructureHead (CSP) + router. NL-frontier arm run --nl_only per-layer (30GB box OOMs on the 3-layer joint precompute); baseline arm (canonical/router/ising/canonical+NL) reproduced in the same session and recorded under baseline_reproduced. NL-frontier train=2344 NL recs + ~1000 canonical mixed (--nl_mix_canonical), NL-OOD eval=591 held-out-skin/held-out-style recs (187 hard-neg pairs).",
+  "baseline_reproduced": {
+    "csp_train_canonical": {
+      "6": {
+        "canonical_heldout_microF1": 0.96,
+        "canonical_exact": 0.764,
+        "nl_zeroshot_microF1": 0.48,
+        "nl_zeroshot_exact": 0.046
+      },
+      "9": {
+        "canonical_heldout_microF1": 0.976,
+        "canonical_exact": 0.821,
+        "nl_zeroshot_microF1": 0.57,
+        "nl_zeroshot_exact": 0.107
+      },
+      "12": {
+        "canonical_heldout_microF1": 0.98,
+        "canonical_exact": 0.85,
+        "nl_zeroshot_microF1": 0.606,
+        "nl_zeroshot_exact": 0.096
+      }
+    },
+    "csp_train_canonical_plus_OLD_nl": {
+      "layer": 12,
+      "nl_heldout_microF1": 0.834,
+      "nl_heldout_exact": 0.407
+    },
+    "router": {
+      "layer": 6,
+      "acc": 1.0
+    },
+    "ising": {
+      "layer": 12,
+      "coupling_edge_F1": 0.847,
+      "coupling_sign_acc": 0.977,
+      "field_sign_acc": 1.0
+    },
+    "prior_committed_baseline": {
+      "canonical_microF1": 0.982,
+      "nl_zeroshot_microF1": 0.616,
+      "nl_trained_microF1": 0.852
+    }
+  },
+  "nl_frontier": {
+    "train": "data/nl_frontier/train.jsonl (2344) + ~1000 canonical mixed",
+    "ood": "data/nl_frontier/ood.jsonl (591; 187 hard-neg pairs)",
+    "per_layer": {
+      "6": {
+        "pin": {
+          "P": 0.4876,
+          "R": 0.3993,
+          "F1": 0.4391,
+          "tp": 591,
+          "fp": 621,
+          "fn": 889
+        },
+        "eq": {
+          "P": 0.4137,
+          "R": 0.653,
+          "F1": 0.5065,
+          "tp": 254,
+          "fp": 360,
+          "fn": 135
+        },
+        "neq": {
+          "P": 0.6789,
+          "R": 0.89,
+          "F1": 0.7703,
+          "tp": 2193,
+          "fp": 1037,
+          "fn": 271
+        },
+        "lt": {
+          "P": 0.6503,
+          "R": 0.5102,
+          "F1": 0.5718,
+          "tp": 251,
+          "fp": 135,
+          "fn": 241
+        },
+        "le": {
+          "P": 0.3786,
+          "R": 0.6187,
+          "F1": 0.4697,
+          "tp": 159,
+          "fp": 261,
+          "fn": 98
+        },
+        "micro": {
+          "P": 0.5882,
+          "R": 0.6785,
+          "F1": 0.6301
+        },
+        "exact_factor_graph_match": 0.0711,
+        "n": 591,
+        "hardneg": {
+          "n_pairs": 187,
+          "both_exact_rate": 0.0642,
+          "anchor_exact_rate": 0.1176,
+          "neg_exact_rate": 0.0802,
+          "discriminated_rate": 0.8182,
+          "by_delta": {
+            "add_lt": {
+              "n": 11,
+              "both_exact": 0.0,
+              "discriminated": 0.9091
+            },
+            "add_neq": {
+              "n": 80,
+              "both_exact": 0.1375,
+              "discriminated": 0.675
+            },
+            "drop_eq": {
+              "n": 5,
+              "both_exact": 0.2,
+              "discriminated": 1.0
+            },
+            "drop_le": {
+              "n": 1,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_lt": {
+              "n": 5,
+              "both_exact": 0.0,
+              "discriminated": 0.8
+            },
+            "drop_neq": {
+              "n": 21,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "eq->neq": {
+              "n": 8,
+              "both_exact": 0.0,
+              "discriminated": 0.75
+            },
+            "le->lt": {
+              "n": 2,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "lt->le": {
+              "n": 4,
+              "both_exact": 0.0,
+              "discriminated": 0.75
+            },
+            "neq->eq": {
+              "n": 37,
+              "both_exact": 0.0,
+              "discriminated": 0.9189
+            },
+            "swap_operands(le)": {
+              "n": 6,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "swap_operands(lt)": {
+              "n": 7,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            }
+          }
+        }
+      },
+      "9": {
+        "pin": {
+          "P": 0.7401,
+          "R": 0.6216,
+          "F1": 0.6757,
+          "tp": 920,
+          "fp": 323,
+          "fn": 560
+        },
+        "eq": {
+          "P": 0.4817,
+          "R": 0.6093,
+          "F1": 0.538,
+          "tp": 237,
+          "fp": 255,
+          "fn": 152
+        },
+        "neq": {
+          "P": 0.7266,
+          "R": 0.9188,
+          "F1": 0.8115,
+          "tp": 2264,
+          "fp": 852,
+          "fn": 200
+        },
+        "lt": {
+          "P": 0.6156,
+          "R": 0.752,
+          "F1": 0.677,
+          "tp": 370,
+          "fp": 231,
+          "fn": 122
+        },
+        "le": {
+          "P": 0.5051,
+          "R": 0.5798,
+          "F1": 0.5399,
+          "tp": 149,
+          "fp": 146,
+          "fn": 108
+        },
+        "micro": {
+          "P": 0.6856,
+          "R": 0.7753,
+          "F1": 0.7277
+        },
+        "exact_factor_graph_match": 0.1438,
+        "n": 591,
+        "hardneg": {
+          "n_pairs": 187,
+          "both_exact_rate": 0.1444,
+          "anchor_exact_rate": 0.1925,
+          "neg_exact_rate": 0.1765,
+          "discriminated_rate": 0.7754,
+          "by_delta": {
+            "add_lt": {
+              "n": 11,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "add_neq": {
+              "n": 80,
+              "both_exact": 0.3375,
+              "discriminated": 0.55
+            },
+            "drop_eq": {
+              "n": 5,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_le": {
+              "n": 1,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_lt": {
+              "n": 5,
+              "both_exact": 0.0,
+              "discriminated": 0.8
+            },
+            "drop_neq": {
+              "n": 21,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "eq->neq": {
+              "n": 8,
+              "both_exact": 0.0,
+              "discriminated": 0.875
+            },
+            "le->lt": {
+              "n": 2,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "lt->le": {
+              "n": 4,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "neq->eq": {
+              "n": 37,
+              "both_exact": 0.0,
+              "discriminated": 0.8919
+            },
+            "swap_operands(le)": {
+              "n": 6,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "swap_operands(lt)": {
+              "n": 7,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            }
+          }
+        }
+      },
+      "12": {
+        "pin": {
+          "P": 0.7862,
+          "R": 0.5689,
+          "F1": 0.6601,
+          "tp": 842,
+          "fp": 229,
+          "fn": 638
+        },
+        "eq": {
+          "P": 0.3986,
+          "R": 0.5913,
+          "F1": 0.4762,
+          "tp": 230,
+          "fp": 347,
+          "fn": 159
+        },
+        "neq": {
+          "P": 0.7642,
+          "R": 0.8446,
+          "F1": 0.8024,
+          "tp": 2081,
+          "fp": 642,
+          "fn": 383
+        },
+        "lt": {
+          "P": 0.6564,
+          "R": 0.6524,
+          "F1": 0.6544,
+          "tp": 321,
+          "fp": 168,
+          "fn": 171
+        },
+        "le": {
+          "P": 0.4468,
+          "R": 0.6537,
+          "F1": 0.5308,
+          "tp": 168,
+          "fp": 208,
+          "fn": 89
+        },
+        "micro": {
+          "P": 0.6956,
+          "R": 0.7166,
+          "F1": 0.706
+        },
+        "exact_factor_graph_match": 0.1269,
+        "n": 591,
+        "hardneg": {
+          "n_pairs": 187,
+          "both_exact_rate": 0.1497,
+          "anchor_exact_rate": 0.1979,
+          "neg_exact_rate": 0.1658,
+          "discriminated_rate": 0.7219,
+          "by_delta": {
+            "add_lt": {
+              "n": 11,
+              "both_exact": 0.0,
+              "discriminated": 0.9091
+            },
+            "add_neq": {
+              "n": 80,
+              "both_exact": 0.35,
+              "discriminated": 0.45
+            },
+            "drop_eq": {
+              "n": 5,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_le": {
+              "n": 1,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_lt": {
+              "n": 5,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "drop_neq": {
+              "n": 21,
+              "both_exact": 0.0,
+              "discriminated": 0.9524
+            },
+            "eq->neq": {
+              "n": 8,
+              "both_exact": 0.0,
+              "discriminated": 0.75
+            },
+            "le->lt": {
+              "n": 2,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "lt->le": {
+              "n": 4,
+              "both_exact": 0.0,
+              "discriminated": 0.75
+            },
+            "neq->eq": {
+              "n": 37,
+              "both_exact": 0.0,
+              "discriminated": 0.9189
+            },
+            "swap_operands(le)": {
+              "n": 6,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            },
+            "swap_operands(lt)": {
+              "n": 7,
+              "both_exact": 0.0,
+              "discriminated": 1.0
+            }
+          }
+        }
+      }
+    },
+    "best_layer": 9,
+    "best_nl_ood": {
+      "pin": {
+        "P": 0.7401,
+        "R": 0.6216,
+        "F1": 0.6757,
+        "tp": 920,
+        "fp": 323,
+        "fn": 560
+      },
+      "eq": {
+        "P": 0.4817,
+        "R": 0.6093,
+        "F1": 0.538,
+        "tp": 237,
+        "fp": 255,
+        "fn": 152
+      },
+      "neq": {
+        "P": 0.7266,
+        "R": 0.9188,
+        "F1": 0.8115,
+        "tp": 2264,
+        "fp": 852,
+        "fn": 200
+      },
+      "lt": {
+        "P": 0.6156,
+        "R": 0.752,
+        "F1": 0.677,
+        "tp": 370,
+        "fp": 231,
+        "fn": 122
+      },
+      "le": {
+        "P": 0.5051,
+        "R": 0.5798,
+        "F1": 0.5399,
+        "tp": 149,
+        "fp": 146,
+        "fn": 108
+      },
+      "micro": {
+        "P": 0.6856,
+        "R": 0.7753,
+        "F1": 0.7277
+      },
+      "exact_factor_graph_match": 0.1438,
+      "n": 591,
+      "hardneg": {
+        "n_pairs": 187,
+        "both_exact_rate": 0.1444,
+        "anchor_exact_rate": 0.1925,
+        "neg_exact_rate": 0.1765,
+        "discriminated_rate": 0.7754,
+        "by_delta": {
+          "add_lt": {
+            "n": 11,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "add_neq": {
+            "n": 80,
+            "both_exact": 0.3375,
+            "discriminated": 0.55
+          },
+          "drop_eq": {
+            "n": 5,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "drop_le": {
+            "n": 1,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "drop_lt": {
+            "n": 5,
+            "both_exact": 0.0,
+            "discriminated": 0.8
+          },
+          "drop_neq": {
+            "n": 21,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "eq->neq": {
+            "n": 8,
+            "both_exact": 0.0,
+            "discriminated": 0.875
+          },
+          "le->lt": {
+            "n": 2,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "lt->le": {
+            "n": 4,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "neq->eq": {
+            "n": 37,
+            "both_exact": 0.0,
+            "discriminated": 0.8919
+          },
+          "swap_operands(le)": {
+            "n": 6,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          },
+          "swap_operands(lt)": {
+            "n": 7,
+            "both_exact": 0.0,
+            "discriminated": 1.0
+          }
+        }
+      }
+    }
+  },
+  "verdict": {
+    "canonical_ceiling_microF1": 0.98,
+    "nl_zeroshot_baseline_microF1": 0.606,
+    "nl_trained_old_nl_indist_microF1": 0.834,
+    "nl_frontier_OOD_best_microF1": 0.7277,
+    "nl_frontier_OOD_best_layer": 9,
+    "nl_frontier_OOD_exact": 0.1438,
+    "hardneg_both_exact_rate": 0.1444,
+    "hardneg_discriminated_rate": 0.7754,
+    "decision": "DATA LEVER HELPS BUT DOES NOT CLOSE THE GAP \u2014 NL-OOD F1 0.728 lifts above NL zero-shot 0.606 yet stays far below the 0.980 canonical ceiling and below in-distribution old-NL 0.834. Hard-neg discrimination 0.78 (alpha registers the relation flip) but both-exact only 0.14 (rarely emits the FULL correct graph on OOD). NL is still the wall: the data-lever alone is insufficient; the harder levers (LoRA to expose the relation latently, and/or alpha-as-search with the certified output-check) are needed."
+  }
+}
