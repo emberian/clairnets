@@ -33,7 +33,31 @@ moves onto α, which is exactly where the science is.
 
 ---
 
-## 1. The architecture — an α STRUCTURE HEAD
+## 1. The architecture — a MULTI-FACULTY α STRUCTURE COMPILER (the "rack")
+
+**REFINED (Ember's directive):** α must be a MULTI-FACULTY structure compiler — a **router + per-faculty
+heads** — NOT a lone CSP factor-graph head. If α only ever emits a CSP factor graph, the woven is forever
+CSP-narrow-only and the whole bank (Ising/graph/type/reduction faculties, the certified ops) is wasted.
+So α is a RACK, built so that *adding a faculty = adding a head*:
+
+```
+shared per-cell ENCODER (mention-pool identity ⊕ CellReader cross-attn read of the prompt)  [CellEncoder]
+   → ROUTER head            : host hidden (masked-mean) → faculty {csp, ising, graph, type, reduction}
+   → per-faculty STRUCTURE heads, each emitting that faculty's NATIVE structure:
+       csp       : pin head [B,N,1+K]  +  typed pair-relation head [B,N,N,R] over {none,eq,neq,lt,le}
+       ising     : couplings J [B,N,N] (sign = align/anti) + fields h [B,N]      (trainable)
+       graph     : edge logits [B,N,N]                                            (scaffold)
+       type      : per-cell type-constraint logits [B,N,Tt]                       (scaffold, key 'typ')
+       reduction : chosen reduction-route logits [B, Rroutes]                     (scaffold)
+```
+
+Implemented in `clair/organ/alpha_struct.py` as `StructureRack` (the rack) over `CellEncoder` +
+`{CSPStructureHead, IsingStructureHead, GraphStructureHead, TypeStructureHead, ReductionHead}` in a
+`nn.ModuleDict`. The router is faculty-general: it reads a masked-mean of the host hidden (needs no
+CSP-style mentions), so it routes problems from any faculty. The non-CSP heads are SCAFFOLDED (interfaces
+wired); the **CSP head + the router are fully trained+probed first** because CSP is the cleanest capability
+test. The capability probe (`clair/organ/run_alpha_struct_probe.py`) trains these on FROZEN OLMo-2-1B
+hidden — the purest test of "can α READ structure off the host hidden?" (no LoRA, no composer, no LM).
 
 ### 1.1 What α emits today vs. under ALPHA_STRUCT
 
