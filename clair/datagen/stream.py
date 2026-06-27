@@ -284,22 +284,29 @@ def problem_stream(seed: int, spec: Optional[dict] = None, *, dedup: bool = True
 
 
 # ===================================================================== torch IterableDataset
-def _item_from_record(rec: dict):
-    """Rebuild (csp, full-domain) from a CSP record's serialized `cons`, within the organ budget
-    (run_glados_staged N_MAX/D_MAX/M_MAX/A_MAX). Returns None for non-CSP / out-of-budget records."""
+def item_from_record_budget(rec: dict, n_max: int, d_max: int, m_max: int, a_max: int):
+    """Rebuild (csp, full-domain) from a CSP record's serialized `cons` within an EXPLICIT budget.
+    Torch-free (depends only on clair.csp), so a spawn worker can call it without importing the
+    trainer (clair.run_glados_staged, which pulls in torch). Returns None for non-CSP / out-of-budget."""
     if rec.get("domain", "csp") != "csp":
         return None
-    from .. import run_glados_staged as G
     n, d = rec["n"], rec["d"]
-    if n > G.N_MAX or d > G.D_MAX or len(rec["cons"]) > G.M_MAX:
+    if n > n_max or d > d_max or len(rec["cons"]) > m_max:
         return None
     cons = []
     for sc, al in rec["cons"]:
-        if len(sc) > G.A_MAX or any(v >= G.D_MAX for t in al for v in t):
+        if len(sc) > a_max or any(v >= d_max for t in al for v in t):
             return None
         cons.append((tuple(sc), frozenset(tuple(t) for t in al)))
     csp = C.CSP(n, d, tuple(cons))
     return (csp, csp.full())
+
+
+def _item_from_record(rec: dict):
+    """Rebuild (csp, full-domain) from a CSP record's serialized `cons`, within the organ budget
+    (run_glados_staged N_MAX/D_MAX/M_MAX/A_MAX). Returns None for non-CSP / out-of-budget records."""
+    from .. import run_glados_staged as G
+    return item_from_record_budget(rec, G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX)
 
 
 def StreamDataset(*args, **kwargs):

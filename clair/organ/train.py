@@ -170,58 +170,89 @@ def check_occupancy_gate(occ: dict, mix_kinds: set, gate: dict) -> list:
     return fails
 
 
-def _train_organ_stream(dev, spec, *, target, steps, pool, R, lr, theta=0.5, seed=0, log_every=15):
-    """The VALIDATED dominate-dedₚ on-policy loop (run_glados_staged.train_organ), but fed from the
+def _resolve_gen_workers(gen_workers, steps):
+    """Pick the resample parallelism. None => AUTO: serial (1) for tiny runs (smoke / selftest, where
+    spawn-pool startup would dominate a sub-50-step run), else min(8, cpu-1) so the real pretrain fans
+    the expensive exact-dedₚ stream-gen across cores. An explicit int is honoured verbatim (1 = the old
+    single-stream serial path; the deterministic-reproducibility unit-of-record)."""
+    if gen_workers is not None:
+        return max(1, int(gen_workers))
+    if steps <= 50:
+        return 1
+    return max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def _train_organ_stream(dev, spec, *, target, steps, pool, R, lr, theta=0.5, seed=0, log_every=15,
+                        gen_workers=None):
+    """The VALIDATED dominate-dedₚ on-policy loop (run_glados_staged.train_organ), fed from the
     difficulty-controlled stream instead of the RUNGS sampler: the initial pool and every on-policy
-    replacement (terminal/stalled instance -> a fresh one) are drawn from a single deterministic
-    StreamDataset/problem_stream generator. Same proposer, same loss, same meet. Returns (m,d,npar,log)."""
+    replacement (terminal/stalled instance -> a fresh one) are drawn from the difficulty stream.
+
+    The resample (the next fresh stream item) is the loop's bottleneck — ~90% of it is the EXACT dedₚ
+    labelling of the HARD instances inside problem_stream, which is inherently expensive even on the Rust
+    port. With gen_workers>1 it is fanned across cores by a deterministic round-robin prefetch pool
+    (datagen.stream_prefetch); gen_workers==1 keeps the exact single-stream serial path. Both are
+    reproducible from (seed, gen_workers). Same proposer, same loss, same meet. Returns (m,d,npar,log)."""
     import time
     import torch
     from .. import csp as C
     from .. import run_glados_staged as G
     torch.manual_seed(seed)
+    K = _resolve_gen_workers(gen_workers, steps)
     d, npar = G.size_for("full", G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX, target, R=R, ds=min(4, R))
     m = G.FactorGraphProposer("full", G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX, d=d, R=R, ds=min(4, R)).to(dev)
     opt = torch.optim.AdamW(m.parameters(), lr=lr, betas=(0.9, 0.95))
-    gen = (it for _, it in _difficulty_items(spec, seed))             # infinite (csp, full) stream
-    items = [next(gen) for _ in range(pool)]
-    print(f"  ORGAN train: difficulty-stream spec={spec['name']}  d_model={d}  params={npar:,}  "
-          f"pool={pool}  R={R} steps={steps}", flush=True)
-    log = []
-    fe_k = fe_n = 0
-    t0 = time.time()
-    for s in range(1, steps + 1):
-        feat = G.featurize(items, dev)
-        vm = feat["var_mask"]
-        tgt, conflict = G.build_targets(items, dev)
-        b, cls, sup = G.fwd(m, feat, vm)
-        loss = G.loss_fn(sup, vm, feat["var_valid"], tgt, conflict)
-        opt.zero_grad(); loss.backward()
-        torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
-        with torch.no_grad():
-            new_vm = G.meet(vm, b, theta)
-            kk, nn_ = G.false_elim(vm, new_vm, feat["var_valid"], tgt); fe_k += kk; fe_n += nn_
-            nvc = new_vm.cpu().numpy()
-            nxt = []
-            for bi, (csp, dom) in enumerate(items):
-                ndom = G.dom_from_mask(nvc[bi], csp)
-                if C.status(ndom) in ("solved", "conflict") or ndom == dom:
-                    nxt.append(next(gen))                            # fresh stream item (on-policy)
-                else:
-                    nxt.append((csp, ndom))
-            items = nxt
-        if s % max(1, steps // log_every) == 0 or s == 1:
-            fer = fe_k / max(1, fe_n)
-            log.append({"step": s, "loss": float(loss.detach()), "false_elim": fer})
-            print(f"    step {s:5d}  loss {float(loss.detach()):.3f}  false_elim {fer:.4f}  "
-                  f"alive {float(vm.sum(-1).mean()):.2f}  {time.time()-t0:.0f}s", flush=True)
-            fe_k = fe_n = 0
+
+    pstream = None
+    if K > 1:
+        from ..datagen import stream_prefetch as SP
+        pstream = SP.ParallelItemStream(spec, seed, (G.N_MAX, G.D_MAX, G.M_MAX, G.A_MAX), workers=K)
+        next_item = pstream.next
+    else:
+        gen = (it for _, it in _difficulty_items(spec, seed))         # infinite (csp, full) stream
+        next_item = lambda: next(gen)
+    try:
+        items = [next_item() for _ in range(pool)]
+        print(f"  ORGAN train: difficulty-stream spec={spec['name']}  d_model={d}  params={npar:,}  "
+              f"pool={pool}  R={R} steps={steps}  gen_workers={K}", flush=True)
+        log = []
+        fe_k = fe_n = 0
+        t0 = time.time()
+        for s in range(1, steps + 1):
+            feat = G.featurize(items, dev)
+            vm = feat["var_mask"]
+            tgt, conflict = G.build_targets(items, dev)
+            b, cls, sup = G.fwd(m, feat, vm)
+            loss = G.loss_fn(sup, vm, feat["var_valid"], tgt, conflict)
+            opt.zero_grad(); loss.backward()
+            torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
+            with torch.no_grad():
+                new_vm = G.meet(vm, b, theta)
+                kk, nn_ = G.false_elim(vm, new_vm, feat["var_valid"], tgt); fe_k += kk; fe_n += nn_
+                nvc = new_vm.cpu().numpy()
+                nxt = []
+                for bi, (csp, dom) in enumerate(items):
+                    ndom = G.dom_from_mask(nvc[bi], csp)
+                    if C.status(ndom) in ("solved", "conflict") or ndom == dom:
+                        nxt.append(next_item())                       # fresh stream item (on-policy)
+                    else:
+                        nxt.append((csp, ndom))
+                items = nxt
+            if s % max(1, steps // log_every) == 0 or s == 1:
+                fer = fe_k / max(1, fe_n)
+                log.append({"step": s, "loss": float(loss.detach()), "false_elim": fer})
+                print(f"    step {s:5d}  loss {float(loss.detach()):.3f}  false_elim {fer:.4f}  "
+                      f"alive {float(vm.sum(-1).mean()):.2f}  {time.time()-t0:.0f}s", flush=True)
+                fe_k = fe_n = 0
+    finally:
+        if pstream is not None:
+            pstream.close()
     return m, d, npar, log
 
 
 def pretrain_organ(out="runs/general_organ_full.pt", steps=1500, target=1.5e6, pool=128, R=12,
                    lr=3e-4, seed=0, dev=None, easy=False, force=False, preflight_n=600, gate=None,
-                   smoke=False):
+                   smoke=False, gen_workers=None):
     """STAGE 1: on-policy dominate-dedₚ training of ONE general narrow organ, saved in the
     {'state','meta'} format clair.organ.bank.load_core_organ reads. Returns (organ, meta).
 
@@ -283,9 +314,10 @@ def pretrain_organ(out="runs/general_organ_full.pt", steps=1500, target=1.5e6, p
     else:
         print(f"[organ] dominate-dedₚ over DIFFICULTY stream  steps={steps} target={target:g} "
               f"R={R} dev={dev}", flush=True)
+        K = _resolve_gen_workers(gen_workers, steps)
         organ, d, npar, log = _train_organ_stream(dev, spec, target=target, steps=steps, pool=pool,
-                                                  R=R, lr=lr, seed=seed)
-        source = {"mode": "difficulty_stream", "spec": spec["name"]}
+                                                  R=R, lr=lr, seed=seed, gen_workers=K)
+        source = {"mode": "difficulty_stream", "spec": spec["name"], "gen_workers": K}
 
     for p in organ.parameters():
         p.requires_grad_(False)
@@ -474,6 +506,9 @@ def main():
     po.add_argument("--force", action="store_true",
                     help="override the occupancy gate (required to actually run --easy/legacy)")
     po.add_argument("--smoke", action="store_true", help="tiny end-to-end pretrain smoke (CPU-ok)")
+    po.add_argument("--gen_workers", type=int, default=None,
+                    help="parallel resample workers for the difficulty stream-gen (the on-policy "
+                         "bottleneck); None=AUTO (serial for tiny runs, else min(8,cpu-1)); 1=serial")
 
     pw = sub.add_parser("weave", help="STAGE 2: graft + train the woven readout (engagement mechanism)")
     pw.add_argument("--base", default="allenai/OLMo-2-0425-1B")
@@ -497,7 +532,7 @@ def main():
     if a.cmd in ("pretrain", "organ"):
         pretrain_organ(out=a.out, steps=a.steps, target=a.target, pool=a.pool, R=a.R, lr=a.lr,
                        seed=a.seed, easy=a.easy, force=a.force, preflight_n=a.preflight_n,
-                       smoke=a.smoke)
+                       smoke=a.smoke, gen_workers=a.gen_workers)
     elif a.cmd == "weave":
         weave(a.base, regime=a.regime, two_stream=bool(a.two_stream), organ_mode=a.organ_mode,
               smoke=a.smoke, out=a.out, steps=a.steps, warm_steps=a.warm_steps)
