@@ -32,7 +32,7 @@ _LE = ("no later", "or in the same", "at or before", "or ties", "or tied", "no w
 _LT = ("before", "precede", "earlier", "ahead", "beat", "higher", "prerequisite",
        "crossed the line", "happened before", "occurred", "ranks ahead", "run before",
        "taken before", "finish")
-_PARITY = ("parity", "xor", "exclusive")
+_PARITY = ("parity", "xor", "exclusive", r"\bodd\b", "even number")
 _SUM = ("plus", "sum of", "adding", "add up", "add ")
 
 
@@ -103,7 +103,8 @@ def _parse_clause(clause: str):
     es_u = list(dict.fromkeys(es))
     if len(es_u) >= 3:
         if _has(clause, _PARITY):
-            return ("par", tuple(es_u))
+            rhs = 1 if (re.search(r"\bodd\b", clause, re.I) or "to one" in clause.lower()) else 0
+            return ("parm", tuple(es_u), rhs)
         if _has(clause, _SUM):
             return _sum_fact(clause, es)
         if _has(clause, _DISTINCT):

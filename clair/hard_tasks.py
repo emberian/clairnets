@@ -73,6 +73,12 @@ def _relabel(f, perm):
         return ("pin", int(perm[f[1]]), f[2])
     if t in ("eq", "neq", "lt", "le"):
         return (t, int(perm[f[1]]), int(perm[f[2]]))
+    if t in ("sum", "xor"):
+        return (t, int(perm[f[1]]), int(perm[f[2]]), int(perm[f[3]]))
+    if t in ("par", "alldiff"):
+        return (t, tuple(int(perm[x]) for x in f[1]))
+    if t == "parm":
+        return ("parm", tuple(int(perm[x]) for x in f[1]), int(f[2]))
     raise ValueError(t)
 
 
@@ -134,7 +140,54 @@ def gen_forcedcolor(rng, L, k=3, determined=True):
     return _finalize(rng, n, k, facts, query, "forcedcolor")
 
 
-FAMILIES = {"eqchain": gen_eqchain, "forcedcolor": gen_forcedcolor}
+def _finalize_g(rng, n, d, kind, facts, query, relation):
+    """Generalized `_finalize` for non-coloring chains: random relabel + fact shuffle, exact label off
+    fast_dedP, for any domain kind / domain size d."""
+    perm = rng.permutation(n)
+    rfacts = [_relabel(f, perm) for f in facts]
+    rng.shuffle(rfacts)
+    q = int(perm[query])
+    csp = CU.build_csp(n, d, rfacts)
+    exact = fast_dedP(csp)
+    det = len(exact[q]) == 1
+    ans = int(next(iter(exact[q]))) if det else CU.ABSTAIN
+    return CU.Problem(relation, n, d, kind, rfacts, q, ans, det, CU.value_names(kind, d))
+
+
+def gen_orderchain(rng, L, determined=True):
+    """A deep ORDERING propagation chain 0<1<...<L. Determined: a TIGHT chain (d = n) forces position
+    i = i for every cell, so the far end is uniquely determined L steps from the start. Abstain: give
+    slack (d = n + 3) so the far end is not forced. Query is the far end (graph distance L)."""
+    n = L + 1
+    if determined:
+        d = n                                       # tight: the strict chain has a unique embedding
+        facts = [("lt", i, i + 1) for i in range(n - 1)]
+        facts.append(("pin", 0, 0))                 # anchor (already forced, makes propagation explicit)
+    else:
+        d = n + 3                                   # slack: positions not pinned down
+        facts = [("lt", i, i + 1) for i in range(n - 1)]
+    query = n - 1
+    return _finalize_g(rng, n, d, "ordinal", facts, query, "orderchain")
+
+
+def gen_arithchain(rng, L, d=None, determined=True):
+    """A deep ARITHMETIC propagation chain: a unit cell U pinned to 1 and sum(i-1, U, i) for each step,
+    so val(i) = val(i-1) + 1 (mod d). Determined: pin the head ⇒ the far end is forced (head + L) mod d,
+    L steps away. Abstain: drop the head pin ⇒ the whole chain floats. Query is the far end (cell L)."""
+    d = int(d) if d is not None else int(rng.integers(4, 7))
+    n = L + 2
+    U = n - 1                                        # the constant '+1' cell
+    facts = [("pin", U, 1 % d)]
+    for i in range(1, L + 1):
+        facts.append(("sum", i - 1, U, i))          # val(i) = val(i-1) + val(U) = val(i-1) + 1
+    if determined:
+        facts.append(("pin", 0, int(rng.integers(0, d))))
+    query = L
+    return _finalize_g(rng, n, d, "number", facts, query, "arithchain")
+
+
+FAMILIES = {"eqchain": gen_eqchain, "forcedcolor": gen_forcedcolor,
+            "orderchain": gen_orderchain, "arithchain": gen_arithchain}
 
 
 def make_hard(rng, family, L, determined, tries=60):

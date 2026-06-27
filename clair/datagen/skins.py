@@ -282,7 +282,7 @@ SKINS: list[Skin] = [
     Skin(
         "circuit", "number", "logic nets on a board",
         nouns=("net", "wire", "gate"), pools=("letters", "nato"),
-        relations=frozenset({"pin", "xor", "par", "sum"}),
+        relations=frozenset({"pin", "xor", "par", "parm", "sum"}),
         value_style="bits",
         intros=(
             "A small logic board wires several {nouns} together.",
@@ -306,7 +306,7 @@ SKINS: list[Skin] = [
     Skin(
         "boolean_logic", "number", "boolean variables with parity rules",
         nouns=("bit", "flag", "signal"), pools=("letters", "greek"),
-        relations=frozenset({"pin", "xor", "par"}),
+        relations=frozenset({"pin", "xor", "par", "parm"}),
         value_style="bits",
         intros=(
             "A handful of {nouns} obey parity rules.",

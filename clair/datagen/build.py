@@ -62,17 +62,45 @@ HELDOUT_SKINS = frozenset({
 })
 
 # --------------------------------------------------------------------------- family / N config
-TRAIN_FAMILIES = ("coloring", "equality", "ordering", "arithmetic", "alldiff")
+# gen_xor (the pure arity-3 affine rung) is now IN train — its omission was the affine-wall-eval-only
+# accident the audit flagged. The difficulty-controlled families (affine/bagchain) are appended as
+# separate mix components (NEW_FAMILY_GEN) so they carry their own level/treewidth targets.
+TRAIN_FAMILIES = ("coloring", "equality", "ordering", "arithmetic", "alldiff", "xor")
 # OOD-N uses only arity<=3 families (alldiff's arity-N extensional table is infeasible at wide N).
 OODN_FAMILIES = ("coloring", "equality", "ordering", "arithmetic")
 # OOD-phrasing uses families that have >=1 held-out skin (coloring/equality/ordering/alldiff).
 PHRASING_FAMILIES = ("coloring", "equality", "ordering", "alldiff")
 HARD_FAMILIES = ("eqchain", "forcedcolor")
-HARD_LENGTHS = (3, 4, 5, 6, 7, 8)
+# the family-parametric propagation chains (depth tail) — every family, not just coloring.
+CHAIN_FAMILIES = ("eqchain", "forcedcolor", "orderchain", "arithchain")
+HARD_LENGTHS = (4, 5, 6, 7, 8, 9)                           # depth ~ L: spans short/med/long thirds
+LONG_LENGTHS = (10,)                                        # ood_depth: one bucket past the trained max
+
+# difficulty-CONTROLLED curriculum families: each carries a target (level / treewidth) so the build
+# mix can fill the hard buckets the audit found empty (98.7% L0, tw median 2). Generated via
+# make_curriculum, rendered + QC'd like any CSP family.
+NEW_FAMILY_GEN = {
+    "affine_l2": (CU.gen_affine, dict(level=2, n_lo=6, n_hi=11)),   # the affine WALL, ~level 2
+    "affine_l3": (CU.gen_affine, dict(level=3, n_lo=7, n_hi=12)),   # wider band, ~level 3+
+    "affine_l4": (CU.gen_affine, dict(level=4, n_lo=9, n_hi=12)),   # ood_level: one bucket past train
+    "bagchain":  (CU.gen_bagchain, dict()),                        # treewidth 1-5 (family randomized)
+}
 
 TRAIN_N = (4, 7)
 WIDE_N = (8, 11)
 MIN_FACTS = 2                                               # drop trivial problems
+
+# TRAIN CSP-spine mix targeting the audited difficulty distribution (was 98.7% L0 / tw-median-2 /
+# depth-3): easy families (L0) + family-parametric chains (DEEP) + bag-chain (treewidth spread) +
+# difficulty-controlled affine (the level-2/3 wall) + additive random relations. (kind, mix-cfg, frac).
+TRAIN_CSP_MIX = (
+    ("curriculum", dict(families=TRAIN_FAMILIES, n=TRAIN_N),  0.27),   # easy spine (L0)
+    ("hard",       dict(families=CHAIN_FAMILIES),             0.18),   # family chains (DEEP)
+    ("curriculum", dict(families=("bagchain",), n=TRAIN_N),  0.10),   # treewidth 1-5 spread
+    ("curriculum", dict(families=("affine_l2",), n=TRAIN_N), 0.25),   # affine wall (level 2)
+    ("curriculum", dict(families=("affine_l3",), n=TRAIN_N), 0.12),   # wide affine (level 3+)
+    ("randomrel",  dict(),                                   0.08),   # additive novel relations
+)
 
 # Per-family density: denser constraints/pins force MORE non-pinned cells, so determined-via-
 # propagation queries are available more often (without them, sparse random CSPs are almost all
@@ -137,14 +165,28 @@ def _pick_query(csp, facts, rng, det_target):
 
 
 def make_curriculum(rng, family, n_lo, n_hi, det_target):
-    if family == "alldiff":
-        n_hi = min(n_hi, 5)         # alldiff's arity-N extensional table is d^n; keep it cheap/small
-    gen = CU.GENERATORS[family]
-    n, d, kind, facts, s = gen(rng, n_lo=n_lo, n_hi=n_hi, **DENSITY.get(family, {}))
+    if family in NEW_FAMILY_GEN:                     # difficulty-controlled: generator owns its sizing
+        gen, kw = NEW_FAMILY_GEN[family]
+        n, d, kind, facts, s = gen(rng, **kw)
+    else:
+        if family == "alldiff":
+            n_hi = min(n_hi, 5)     # alldiff's arity-N extensional table is d^n; keep it cheap/small
+        gen = CU.GENERATORS[family]
+        n, d, kind, facts, s = gen(rng, n_lo=n_lo, n_hi=n_hi, **DENSITY.get(family, {}))
     assert CU.facts_satisfied_by(facts, s, d), "witness violated a fact (generator bug)"
     csp = CU.build_csp(n, d, facts)
     q, ans, det = _pick_query(csp, facts, rng, det_target)
     return CU.Problem(family, n, d, kind, facts, q, ans, det, CU.value_names(kind, d)), csp
+
+
+def make_randomrel(rng, det_target):
+    """A RANDOM allowed-tuple (novel-relation) problem. Built straight from the exact CSP (the prose IS
+    the explicit table, so no keyword round-trip is needed) — exactness via clair.csp on `cons`."""
+    n, d, kind, facts, s = CU.gen_random_relation(rng)
+    assert CU.facts_satisfied_by(facts, s, d), "witness violated a random-relation fact"
+    csp = CU.build_csp(n, d, facts)
+    q, ans, det = _pick_query(csp, facts, rng, det_target)
+    return CU.Problem("random_relation", n, d, kind, facts, q, ans, det, CU.value_names(kind, d)), csp
 
 
 def make_parity(rng, det_target):
@@ -155,8 +197,8 @@ def make_parity(rng, det_target):
     return CU.Problem("parity_k", n, d, kind, facts, q, ans, det, CU.value_names(kind, d)), csp
 
 
-def make_hard(rng, family, det_target):
-    L = int(rng.choice(HARD_LENGTHS))
+def make_hard(rng, family, det_target, lengths=HARD_LENGTHS):
+    L = int(rng.choice(lengths))
     p = HT.make_hard(rng, family, L, det_target)
     return p, p.csp
 
@@ -182,6 +224,10 @@ def _ser_facts(facts):
     for f in facts:
         if f[0] in ("alldiff", "par"):
             out.append([f[0], [int(x) for x in f[1]]])
+        elif f[0] == "parm":
+            out.append(["parm", [int(x) for x in f[1]], int(f[2])])
+        elif f[0] == "rel":
+            out.append(["rel", [int(x) for x in f[1]], [[int(x) for x in t] for t in f[2]]])
         else:
             out.append([f[0]] + [int(x) if isinstance(x, (int, np.integer)) else x for x in f[1:]])
     return out
@@ -280,15 +326,28 @@ def _gen_one(spec, rng, idx):
         return rec, "ok"
 
     det_target = bool(rng.random() < 0.6)
+    if spec["kind"] == "randomrel":
+        # novel-relation records: the prose is an EXPLICIT allowed-table, so the keyword round-trip
+        # gate is skipped (exactness is from clair.csp on `cons`, like the reduction records).
+        family = "random_relation"
+        p, csp = make_randomrel(rng, det_target)
+        if len(p.facts) < MIN_FACTS:
+            return None, "trivial"
+        ents = [CU.ENTITIES[i] for i in range(p.n)]
+        tr = trace.build_trace(p, ents, p.vnames, csp=csp)
+        r = render.Rendering(CU.canonical_render(p), "random_relation", p.kind, ents, p.vnames,
+                             "letters", "prose", CU._question(p))
+        return _record(p, r, tr, split, family, spec["seed"], idx, csp), "ok"
     if spec["kind"] == "curriculum":
         family = spec["families"][idx % len(spec["families"])]
         p, csp = make_curriculum(rng, family, spec["n"][0], spec["n"][1], det_target)
     elif spec["kind"] == "parity":
         family = "parity_k"
         p, csp = make_parity(rng, det_target)
-    else:                                                  # hard
-        family = HARD_FAMILIES[idx % len(HARD_FAMILIES)]
-        p, csp = make_hard(rng, family, det_target)
+    else:                                                  # hard / chain
+        fams = spec.get("families") or HARD_FAMILIES
+        family = fams[idx % len(fams)]
+        p, csp = make_hard(rng, family, det_target, lengths=spec.get("lengths") or HARD_LENGTHS)
 
     if len(p.facts) < MIN_FACTS:
         return None, "trivial"
@@ -327,7 +386,7 @@ def _gen_shard(args):
 
 # --------------------------------------------------------------------------- split driver
 def _shard_specs(split, kind, count, base_seed, skins, families=None, n=None, nshards=16,
-                 domain=None, cfg=None, head=None, triple=None):
+                 domain=None, cfg=None, head=None, triple=None, lengths=None):
     """Split `count` kept records across `nshards` deterministic shards."""
     per = [count // nshards] * nshards
     for i in range(count % nshards):
@@ -338,15 +397,15 @@ def _shard_specs(split, kind, count, base_seed, skins, families=None, n=None, ns
             continue
         spec = {"split": split, "kind": kind, "seed": base_seed + sh,
                 "skins": skins, "families": families, "n": n,
-                "domain": domain, "cfg": cfg, "head": head, "triple": triple}
+                "domain": domain, "cfg": cfg, "head": head, "triple": triple, "lengths": lengths}
         specs.append((spec, per[sh]))
     return specs
 
 
 def build_split(split, kind, count, base_seed, skins, families=None, n=None,
-                nshards=16, pool=None, domain=None, cfg=None, head=None, triple=None):
+                nshards=16, pool=None, domain=None, cfg=None, head=None, triple=None, lengths=None):
     specs = _shard_specs(split, kind, count, base_seed, skins, families, n, nshards,
-                         domain=domain, cfg=cfg, head=head, triple=triple)
+                         domain=domain, cfg=cfg, head=head, triple=triple, lengths=lengths)
     results = list(pool.map(_gen_shard, specs)) if pool else [_gen_shard(s) for s in specs]
     records, agg = [], {"trivial": 0, "ambiguous": 0, "skin_fallback": 0,
                         "label_mismatch": 0, "gen_fail": 0, "attempts": 0}
@@ -362,7 +421,7 @@ def dedup_in_order(by_split, rng):
     """Global MinHash/LSH near-dup removal across ALL splits in a fixed order, so later (eval)
     splits never keep a near-duplicate of an earlier (train) record — no train->eval leakage."""
     order = ["train", "val", "ood_n", "ood_phrasing", "ood_relation",
-             "ood_domain", "ood_composition"]
+             "ood_level", "ood_depth", "ood_domain", "ood_composition"]
     flat, owners = [], []
     for sp in order:
         for rec in by_split.get(sp, []):
@@ -453,9 +512,10 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
         "ood_phrasing": int(4000 * scale),
         "ood_relation": int(4000 * scale),
     }
+    # val/ood splits. TRAIN itself is generated from TRAIN_CSP_MIX (below) so it occupies the hard
+    # difficulty buckets. ood_level / ood_depth are the NEW one-bucket-past-trained-max splits: an
+    # affine system a level beyond the trained max, and a propagation chain deeper than the trained max.
     plan = {
-        "train": dict(kind="curriculum", families=TRAIN_FAMILIES, n=TRAIN_N, skins=TRAIN_SKINS,
-                      base_seed=seed + 1_000_000),
         "val": dict(kind="curriculum", families=TRAIN_FAMILIES, n=TRAIN_N, skins=TRAIN_SKINS,
                     base_seed=seed + 2_000_000),
         "ood_n": dict(kind="curriculum", families=OODN_FAMILIES, n=WIDE_N, skins=TRAIN_SKINS,
@@ -464,6 +524,10 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
                              skins=HELDOUT_SKINS, base_seed=seed + 4_000_000),
         "ood_relation": dict(kind="hard", families=None, n=None, skins=TRAIN_SKINS,
                              base_seed=seed + 5_000_000),
+        "ood_level": dict(kind="curriculum", families=("affine_l4",), n=TRAIN_N, skins=TRAIN_SKINS,
+                          base_seed=seed + 6_000_000),
+        "ood_depth": dict(kind="hard", families=("eqchain", "forcedcolor"), n=None, skins=TRAIN_SKINS,
+                          base_seed=seed + 7_000_000, lengths=LONG_LENGTHS),
     }
     # broadened-domain volumes (scaled): per-domain train share + train compositions, plus the two new
     # eval splits (per-domain held-out + OOD-composition).
@@ -476,6 +540,26 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
     workers = workers or os.cpu_count() or 1
     by_split, attempts = {}, {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
+        # ---- TRAIN: the difficulty-targeted CSP-spine mix (fills the hard buckets) ----
+        train_recs, train_agg, ci = [], {k: 0 for k in
+            ("trivial", "ambiguous", "skin_fallback", "label_mismatch", "gen_fail", "attempts")}, 0
+        for kind, mc, frac in TRAIN_CSP_MIX:
+            cnt = int(round(counts["train"] * frac))
+            if cnt <= 0:
+                continue
+            recs, ap = build_split("train", kind, cnt, seed + 1_000_000 + ci * 100_000, TRAIN_SKINS,
+                                   families=mc.get("families"), n=mc.get("n"),
+                                   nshards=nshards, pool=pool)
+            train_recs.extend(recs)
+            for k in train_agg:
+                train_agg[k] += ap[k]
+            tag = (mc.get("families") or (kind,))
+            print(f"  [train:{str(tag)[:28]:28s}] {len(recs):6d}  {time.time()-t0:.0f}s", flush=True)
+            ci += 1
+        by_split["train"], attempts["train"] = train_recs, train_agg
+        print(f"  [{'train':13s}] generated {len(train_recs):6d} (CSP-spine mix)  "
+              f"{time.time()-t0:.0f}s", flush=True)
+
         for split, cfg in plan.items():
             # ood_relation is half parity_k, half hard_tasks chains.
             if split == "ood_relation":
@@ -488,9 +572,10 @@ def build(out_dir, seed=0, scale=1.0, nshards=16, workers=None, verify_frac=1.0)
                 by_split[split] = recs_p + recs_h
                 attempts[split] = {k: ap[k] + ah[k] for k in ap}
             else:
-                recs, ap = build_split(split, cfg["kind"], counts[split], cfg["base_seed"],
-                                       cfg["skins"], families=cfg["families"], n=cfg["n"],
-                                       nshards=nshards, pool=pool)
+                recs, ap = build_split(split, cfg["kind"], counts.get(split, int(4000 * scale)),
+                                       cfg["base_seed"], cfg["skins"], families=cfg["families"],
+                                       n=cfg["n"], nshards=nshards, pool=pool,
+                                       lengths=cfg.get("lengths"))
                 by_split[split] = recs
                 attempts[split] = ap
             print(f"  [{split:13s}] generated {len(by_split[split]):6d}  "

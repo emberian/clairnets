@@ -69,6 +69,12 @@ GENERIC = {
         "an even number of {list} are one",
         "{list} XOR together to zero",
     ],
+    "parm_odd": [
+        "{list} have odd parity",
+        "the parity of {list} is odd",
+        "an odd number of {list} are one",
+        "{list} XOR together to one",
+    ],
     "alldiff": [
         "{list} are all different", "{list} are pairwise distinct",
         "{list} must all take different values", "no two of {list} are the same",
@@ -245,6 +251,8 @@ def _plan_units(facts, kind, rng, aggregate=True) -> list[Unit]:
             units.append(Unit("xor", (f[1], f[2], f[3])))
         elif k == "par":
             units.append(Unit("par", tuple(f[1])))
+        elif k == "parm":
+            units.append(Unit("parm", tuple(f[1]), int(f[2])))   # value carries the parity rhs
         elif k == "alldiff":
             units.append(Unit("alldiff", tuple(f[1])))
     for cl in neq_cl:
@@ -273,6 +281,10 @@ def _templates(skin: SK.Skin, factkind: str) -> list[str]:
 
 
 def _render_unit(u: Unit, skin: SK.Skin, surfs, vals, noun, nouns, d, rng) -> str:
+    if u.kind == "parm":                                       # parity with explicit rhs: even/odd
+        forms = (skin.verbs.get("par", []) + GENERIC["par"]) if u.value == 0 else GENERIC["parm_odd"]
+        return str(rng.choice(forms)).format(list=_entity_list(surfs, u.args, rng),
+                                             d=d, noun=noun, nouns=nouns)
     fk = "alldiff" if u.kind == "alldiff" else u.kind
     t = str(rng.choice(_templates(skin, fk)))
     sub = {"d": d, "noun": noun, "nouns": nouns}
