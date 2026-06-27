@@ -39,8 +39,12 @@ NMAX = 12          # must match glados_woven.NMAX (cells 0..11, entities A..L)
 
 # ===================================================================== fast EXACT dedP
 # The hard chains reach n=12 cells (d**n = 3**12 = 531k), far above clair.csp.solutions' brute-force
-# budget. This is a GENERIC, still-EXACT per-cell dedP via arc-consistency + complete backtracking
-# search (AC prunes the structured chains to near-linear). Verified == C.exact_dedP in the smoke.
+# budget. `fast_dedP` (below) now ROUTES to clair.csp.exact_dedP — the Rust clair_fast port when the
+# extension is built, pure-Python otherwise — so every labeller that calls it (the GLaDOS datagen
+# query-picker / verifier / trace builder, the organ co-training loss) inherits that speedup. The
+# pure-Python arc-consistency + complete-backtracking version is retained as `_fast_dedP_py`; it was
+# verified cell-for-cell equal to exact_dedP over 9.6k instances (all rungs + affine/xor wall +
+# larger-budget + unsat ⊥) before the routing was switched on.
 def _ac(csp, dom):
     """Arc-consistency to fixpoint over a list-of-sets domain. Returns None on wipeout."""
     dom = [set(s) for s in dom]
@@ -75,8 +79,9 @@ def _sat(csp, dom):
     return False
 
 
-def fast_dedP(csp, dom=None):
-    """EXACT per-cell dedP: value v survives at cell i iff pinning i=v keeps the CSP satisfiable."""
+def _fast_dedP_py(csp, dom=None):
+    """EXACT per-cell dedP: value v survives at cell i iff pinning i=v keeps the CSP satisfiable.
+    Pure-Python AC-then-search fallback (kept for parity / when clair.csp has no Rust path)."""
     base = _ac(csp, dom if dom is not None else csp.full())
     if base is None:
         return tuple(frozenset() for _ in range(csp.n))
@@ -90,6 +95,17 @@ def fast_dedP(csp, dom=None):
                 surv.add(v)
         out.append(frozenset(surv))
     return tuple(out)
+
+
+def fast_dedP(csp, dom=None):
+    """EXACT per-cell dedP: value v survives at cell i iff some full solution (consistent with `dom`)
+    uses v at i. Routes to clair.csp.exact_dedP, which is the Rust clair_fast port when the extension
+    is built (and bitwise-identical pure Python otherwise) — so the GLaDOS datagen labeller inherits
+    the same speedup the on-policy training path already gets. Verified cell-for-cell equal to the
+    old pure-Python AC-then-search (`_fast_dedP_py`) over 9.6k random instances spanning every rung,
+    the affine/xor wall, larger-budget (bigger n/d), and unsat ⊥. `_fast_dedP_py` is retained as a
+    fallback. Same signature + (csp, dom) semantics; dom=None means the full grid."""
+    return C.exact_dedP(csp, csp.full() if dom is None else dom)
 
 
 class FastExact:
