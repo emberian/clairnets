@@ -43,6 +43,8 @@ import torch.nn.functional as F
 
 from ..latent_organ import DenseLatentProjector, dominate_dedp_loss
 from ..oracle_readout import OracleGamma, _mention_tensor, ABSTAIN_STR
+from .alpha_struct import (StructureRack, build_csp_from_struct, decode_structure,
+                           facts_to_struct_targets, structure_sup_loss, output_check)
 from .bank import build_bank, certified_csp_reductions
 from .compose import reduced_product
 from .protocol import Certificate, CSPState, Reduction
@@ -281,9 +283,38 @@ def eval_real_nl(model, tok, dev, jsonl_path, rungs, per_rung=60, bs=8, seed=0, 
     return bank_controls(model, recs, tok, dev, bs, engage_thr, two_stream=two_stream)
 
 
+# ============================================================ ALPHA_STRUCT no-metadata invariant
+# The SHUFFLED diagnostic (runs/shuffled_diag.json) proved today's woven is 100% metadata-driven: the
+# certified floor runs on rec["csp"] (the TRUE structure), so α contributes nothing. ALPHA_STRUCT's
+# structural fix is that the composer runs on α's EMITTED structure (csp_α) and rec["csp"] survives ONLY
+# as the eval-time output-checker. This tripwire makes that a CODE-LEVEL invariant (design §4.1 crit 5):
+# csp_spec_for_record (the only reader of rec["csp"]) RAISES if called inside the ALPHA_STRUCT forward.
+_FORBID_RECORD_CSP_READ = False
+
+
+@contextlib.contextmanager
+def forbid_record_csp():
+    """Inside this context any read of rec['csp'] (via csp_spec_for_record) raises — the structural guard
+    the SHUFFLED diagnostic's metadata-leak motivates. The ALPHA_STRUCT forward runs under it; the
+    eval-time output_check + the structure-supervision target builder run OUTSIDE it (licensed readers)."""
+    global _FORBID_RECORD_CSP_READ
+    prev = _FORBID_RECORD_CSP_READ
+    _FORBID_RECORD_CSP_READ = True
+    try:
+        yield
+    finally:
+        _FORBID_RECORD_CSP_READ = prev
+
+
 def csp_spec_for_record(rec):
-    """(csp, system, tags) for the composer, from a live record. build_live_pool stashes rec['csp']
-    (the organ_csp) and optional rec['sys']/rec['tags']. None if the record carries no structure."""
+    """(csp, system, tags) for the LEGACY bank composer, from a live record. build_live_pool stashes
+    rec['csp'] (the organ_csp) and optional rec['sys']/rec['tags']. None if the record carries no
+    structure. RAISES under forbid_record_csp() — rec['csp'] must never enter the ALPHA_STRUCT forward."""
+    if _FORBID_RECORD_CSP_READ:
+        raise RuntimeError(
+            "METADATA LEAK: rec['csp'] read inside the ALPHA_STRUCT composer forward. The composer must "
+            "run on α's EMITTED structure (csp_α = build_csp_from_struct(α_facts)); rec['csp'] is the "
+            "eval-time output-checker ONLY (notes/alpha_struct_design.md §3-4).")
     csp = rec.get("csp")
     if csp is None:
         return None
@@ -532,6 +563,393 @@ def train_bank_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=Tr
             print(f"  step {s:5d}  lm {lm.item():.3f}  α_J0 {aux_alpha.item():.3f}  "
                   f"gate(tanh α) {gate:+.3f}  bank-woven acc {acc['overall']*100:4.1f}% "
                   f"(det {acc['det_acc']*100:.0f})  {time.time()-t0:.0f}s", flush=True)
+            model.train()
+    if not seen_open:
+        print("  [WARN] γ gate never opened — readout received no gradient (check inject wiring).",
+              flush=True)
+    return model
+
+
+# ============================================================================================
+# ALPHA_STRUCT — α EMITS the structure; the composer runs on csp_α (NOT rec["csp"]).            
+# ============================================================================================
+# This is the Stage-2 architecture the SHUFFLED diagnostic proved is required (runs/shuffled_diag.json:
+# correctness was 100% metadata-driven) and the LoRA/search studies proved is learnable (canonical
+# structure-F1 0.98; LoRA-host closes 36% of the NL gap; α-as-search refines the rest). Here the live
+# organ reads α's COMPILED factor graph, not the handed-in metadata:
+#
+#   StructureRack(host hidden) → pin + typed-pair logits          (α EMITS the structure)
+#     → decode_structure → α_facts                                (the typed factor graph)
+#     → build_csp_from_struct(α_facts, n, d) = csp_α              (NO rec["csp"])
+#     → AlphaStructComposerOrgan: certified floor + CoreNarrowOrgan + α-lattice on csp_α (verifier-gated)
+#     → γ (zero-init gate ⇒ no-op@init) reads the COMPOSED lattice → the LM head generates.
+#
+# rec["csp"] appears ONLY in the eval-time output_check (alpha_struct.output_check) + the structure-
+# supervision target builder — both OUTSIDE the forbid_record_csp() forward guard.
+
+
+class AlphaStructComposerOrgan(BankComposerOrgan):
+    """The ALPHA_STRUCT composer: identical certified machinery as BankComposerOrgan, but it composes on
+    csp_α (built from α's EMITTED facts) instead of the handed-in rec['csp']. The pretrained
+    CoreNarrowOrgan (runs/general_organ_full.pt) plugs in as the neural faculty when present and falls
+    back to a fresh/absent organ for the smoke (build_bank only loads it if the checkpoint exists)."""
+
+    def compose_from_struct(self, facts, n, d, alpha_dom=None):
+        """csp_α = build_csp_from_struct(α_facts) → the verifier-gated reduced product. tags/system are
+        STRUCTURAL metadata, so they are NOT threaded (the certified AC/factor floor suffices for the
+        minimal binary+pin vocab); the soundness guarantee is now relative to csp_α (design §3)."""
+        csp_a = build_csp_from_struct(facts, n, d)
+        return self.compose_one(csp_a, alpha_dom, system=None, tags=())
+
+    @torch.no_grad()
+    def __call__(self, b0, vmask, theta, alpha_facts, nd, K):
+        """b0 [B,N,K] α's per-cell candidate logits; alpha_facts a list of B fact-lists (α's emitted
+        factor graph, or None ⇒ α-only fallback, or [] ⇒ EMPTY_STRUCT contentless control); nd a list of
+        B (n, d). Returns surv [B,N,K] composed from csp_α + a list of composer traces."""
+        B, N, _ = b0.shape
+        alive = (torch.sigmoid(b0) >= theta).float() * vmask.unsqueeze(-1)
+        alive_np = alive.cpu().numpy()
+        out = np.zeros((B, N, K), dtype=np.float32)
+        traces = []
+        for b in range(B):
+            facts = alpha_facts[b] if alpha_facts is not None else None
+            n, d = nd[b]
+            if facts is None:
+                out[b] = alive_np[b]                       # no structure available: α-only fallback
+                traces.append(None)
+                continue
+            d = min(int(d), K)
+            adom = None
+            if self.use_alpha_gate:
+                adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
+                             for i in range(n))             # α's per-cell lattice as a gated passenger
+            try:
+                composed = self.compose_from_struct(facts, n, d, adom)
+                for i in range(n):
+                    for v in composed.dom[i]:
+                        if v < K:
+                            out[b, i, v] = 1.0
+                traces.append(self.last_trace)
+            except Exception:
+                out[b] = alive_np[b]                       # malformed csp_α ⇒ graceful α-only fallback
+                traces.append(None)
+        return torch.from_numpy(out).to(b0.device), traces
+
+
+def _rich_from_set(surv_set, dvec):
+    """[B,N,K] composed candidate SET (+ per-instance domain sizes dvec[B]) → rich [B,N,K+2] =
+    [set(K), |set|/d, reliability] (the alien-consumer encoding; shared schema with BankWoven so the
+    LM mines the partial lattice and discounts low-reliability cells — an α-miscompile degrades
+    gracefully instead of dragging the LM off a cliff)."""
+    B, N, K = surv_set.shape
+    card = surv_set.sum(-1)
+    if dvec is None:
+        d = torch.full((B, 1), float(K), device=surv_set.device)
+    else:
+        d = dvec.to(surv_set.device).float().clamp_min(1.0).view(B, 1)
+    feat = surv_set.new_zeros(B, N, K + 2)
+    feat[..., :K] = surv_set
+    feat[..., K] = (card / d).clamp(0.0, 1.0)
+    feat[..., K + 1] = (1.0 - (card - 1).clamp_min(0.0) / (d - 1).clamp_min(1.0)).clamp(0.0, 1.0)
+    return feat
+
+
+class AlphaStructWoven(nn.Module):
+    """The live ALPHA_STRUCT woven GLaDOS. Forward (one host pass) via two decoder-layer hooks: MID
+    captures host hidden h; INJECT runs the StructureRack(h) → α_facts → csp_α → composer → γ scatter
+    (zero-init gate ⇒ bitwise no-op@init). Trainable: LoRA (host) + the rack + the per-cell candidate
+    head + γ; the organ is the frozen/certified bank. The rack is grounded by structure-supervision (the
+    new J0) against the witness's free true structure; the per-cell candidate head is grounded by the
+    standing dominate-dedₚ J0; the LM-CE flows to LoRA + γ."""
+
+    def __init__(self, peft_model, D, K, rack: StructureRack, composer: AlphaStructComposerOrgan,
+                 mid_layer, inject_layer, gamma_hidden=256, theta=0.5, rich=True, cand_hidden=384):
+        super().__init__()
+        from ..oracle_readout import _decoder_layers
+        self.model = peft_model
+        self.alpha = rack                          # StructureRack (trainable) — α EMITS the structure
+        self.composer = composer                   # AlphaStructComposerOrgan (frozen / certified)
+        din = rack.encoder.din
+        # per-cell candidate lattice head (b0): the gated α-passenger + the J0 grounding target. Reuses
+        # the rack's shared featurization (one encoder pass for both structure + candidate sets).
+        self.cand = nn.Sequential(nn.Linear(din, cand_hidden), nn.GELU(), nn.Linear(cand_hidden, K))
+        self.rich = rich
+        self.Fin = K + 2 if rich else K
+        self.gamma = OracleGamma(D, self.Fin, gamma_hidden)
+        self.D, self.K = D, K
+        self.mid_layer, self.inject_layer = mid_layer, inject_layer
+        self.theta = theta
+        # live state
+        self._mention = self._attn = None
+        self._nd = self._dvec = None
+        self._inject = self._capture = False
+        self._override = None
+        self._empty_struct = False
+        self._h_mid = None
+        self._captured_surv = None
+        self._last_pin = self._last_pair = self._last_b0 = self._last_vmask = self._last_facts = None
+        layers = _decoder_layers(peft_model)
+        self._mid_handle = layers[mid_layer].register_forward_hook(self._mid_hook)
+        self._inj_handle = layers[inject_layer].register_forward_hook(self._inj_hook)
+
+    # ---- hooks ----
+    def _mid_hook(self, module, args, output):
+        self._h_mid = output[0] if isinstance(output, tuple) else output
+        return output
+
+    def _compile_struct(self):
+        """StructureRack(mid hidden) → (pin_logits, pair_logits, b0, vmask). One featurization feeds both
+        the CSP structure head and the per-cell candidate head."""
+        h = self._h_mid.float()
+        m = self._mention.to(h.device)
+        denom = m.sum(-1, keepdim=True).clamp_min(1e-6)
+        v_mean = torch.einsum("bnt,btd->bnd", m, h) / denom            # mention-pool cell identity
+        feat = self.alpha.featurize(v_mean, h, self._attn.to(h.device))
+        pin_l, pair_l = self.alpha.csp(feat)                          # α EMITS structure
+        b0 = self.cand(feat)                                          # α's per-cell candidate lattice
+        vmask = (m.sum(-1) > 0.5).float()
+        self._last_pin, self._last_pair, self._last_b0, self._last_vmask = pin_l, pair_l, b0, vmask
+        return pin_l, pair_l, b0, vmask
+
+    def _decode_facts(self, pin_l, pair_l, vmask):
+        """Per-instance decode of the emitted factor graph. EMPTY_STRUCT ⇒ [] (contentless control)."""
+        B = pin_l.shape[0]
+        facts = []
+        for b in range(B):
+            n, d = self._nd[b]
+            if self._empty_struct:
+                facts.append([])
+            else:
+                facts.append(decode_structure(pin_l[b], pair_l[b], vmask[b], int(n), int(d)))
+        return facts
+
+    def _inj_hook(self, module, args, output):
+        if not (self._inject or self._capture):
+            return output
+        hs = output[0] if isinstance(output, tuple) else output
+        surv = self._override
+        if surv is None:
+            pin_l, pair_l, b0, vmask = self._compile_struct()
+            facts = self._decode_facts(pin_l, pair_l, vmask)
+            self._last_facts = facts
+            # THE INVARIANT: the composer forward runs under forbid_record_csp() — any read of rec['csp']
+            # (csp_spec_for_record) raises. The composer sees ONLY α's emitted structure.
+            with forbid_record_csp():
+                surv = self.composer(b0, vmask, self.theta, facts, self._nd, self.K)[0]
+            surv = surv * vmask.unsqueeze(-1)
+            self._captured_surv = surv.detach()
+            surv = self._captured_surv
+        if not self._inject:
+            return output
+        feat = _rich_from_set(surv, self._dvec) if self.rich else surv
+        delta = self.gamma.delta(feat.to(hs.device), self._mention.to(hs.device))
+        hs = hs + (torch.tanh(self.gamma.alpha) * delta).to(hs.dtype)
+        return (hs,) + tuple(output[1:]) if isinstance(output, tuple) else hs
+
+    # ---- context manager ----
+    @contextlib.contextmanager
+    def live(self, mention, attn, *, inject, capture=False, override=None, nd=None, dvec=None,
+             empty_struct=False):
+        old = (self._mention, self._attn, self._inject, self._capture, self._override, self._nd,
+               self._dvec, self._empty_struct)
+        self._mention, self._attn = mention, attn
+        (self._inject, self._capture, self._override, self._nd, self._dvec, self._empty_struct) = (
+            inject, capture, override, nd, dvec, empty_struct)
+        try:
+            yield
+        finally:
+            (self._mention, self._attn, self._inject, self._capture, self._override, self._nd,
+             self._dvec, self._empty_struct) = old
+
+    def logits(self, input_ids, attn):
+        return self.model(input_ids=input_ids, attention_mask=attn).logits
+
+    def trainable_parameters(self):
+        return [p for p in self.parameters() if p.requires_grad]
+
+    def remove_hooks(self):
+        for attr in ("_mid_handle", "_inj_handle"):
+            h = getattr(self, attr, None)
+            if h is not None:
+                h.remove()
+                setattr(self, attr, None)
+
+    def __del__(self):
+        try:
+            self.remove_hooks()
+        except Exception:
+            pass
+
+    # ---- clean hooks for the two FOLLOW-ON levers (interfaces, not implementations) -----------------
+    def propose_structures(self, pin_l, pair_l, vmask, nd, *, topk=1, temp=1.0, rng=None):
+        """α-AS-SEARCH hook (north-star "search arm" / design §5.3): emit the top-k candidate factor
+        graphs (greedy + temperature samples) for one instance so a verifier-gated search can filter
+        them (compiles-to-solvable + certified-solution-output-checks) and distill the winner. The
+        proposer math is already validated in run_alpha_struct_search.build_candidates; this is the
+        in-woven entry point. INTERFACE ONLY — wire the search loop here next."""
+        raise NotImplementedError(
+            "α-as-search interface: decode top-k structures here and filter with alpha_struct.output_check"
+            " (see clair.organ.run_alpha_struct_search.build_candidates for the validated proposer).")
+
+    def iterate_alpha_organ(self, max_iters=2, **kw):
+        """ITERATIVE α↔organ loop hook (north-star orchestrator): re-read the host hidden conditioned on
+        the composer's last lattice, re-emit a sharpened structure, recompose — the multi-step strategic
+        loop. INTERFACE ONLY — the single-shot forward above is iteration 0."""
+        raise NotImplementedError(
+            "iterative α↔organ loop interface: feed self._captured_surv back into the rack's read and "
+            "recompose for max_iters rounds (the orchestrator loop, notes/north_star_orchestrator.md).")
+
+
+# ============================================================ batch + no-op@init proof
+def _alpha_struct_batch(recs, tok, dev, two_stream):
+    """build_live_batch + the ALPHA_STRUCT extras: per-instance (n, d), the structure-supervision
+    targets (from the witness's free true facts — NOT rec['csp']), and dvec. rec['csp'] is NOT read."""
+    from .. import run_glados_staged as G
+    ba = G.build_live_batch(recs, tok, dev, two_stream=two_stream)
+    Nmax = max(r["n"] for r in recs)
+    ba["nd"] = [(r["n"], len(r["vnames"])) for r in recs]
+    ba["dvec"] = torch.tensor([len(r["vnames"]) for r in recs], device=dev)
+    pin_t, pair_t = facts_to_struct_targets([r.get("facts", []) for r in recs],
+                                            [r["n"] for r in recs], Nmax)
+    ba["pin_tgt"] = pin_t.to(dev); ba["pair_tgt"] = pair_t.to(dev)
+    return ba
+
+
+def verify_noop_alpha_struct(model, tok, dev, rec):
+    """Bitwise no-op at init: the zero-init γ gate ⇒ the live α-structure-composed injection moves
+    logits by 0 (and gate-on moves them). rec['csp'] is NOT threaded — α emits the structure."""
+    enc = tok(rec["prompt"], return_offsets_mapping=True, return_tensors="pt")
+    ids = enc["input_ids"].to(dev); attn = torch.ones_like(ids)
+    mention = _mention_tensor([rec["mentions"]], enc["offset_mapping"], 1, rec["n"], ids.size(1), dev)
+    nd = [(rec["n"], len(rec["vnames"]))]
+    dvec = torch.tensor([len(rec["vnames"])], device=dev)
+    with torch.no_grad():
+        base = model.model(input_ids=ids, attention_mask=attn).logits.float()
+    with torch.no_grad(), model.live(mention, attn, inject=True, capture=True, nd=nd, dvec=dvec):
+        g0 = model.logits(ids, attn).float()
+    noop = float((base - g0).abs().max())
+    with torch.no_grad():
+        saved = model.gamma.alpha.data.clone(); model.gamma.alpha.data.fill_(2.0)
+        with model.live(mention, attn, inject=True, capture=True, nd=nd, dvec=dvec):
+            g1 = model.logits(ids, attn).float()
+        model.gamma.alpha.data.copy_(saved)
+    return noop, float((base - g1).abs().max())
+
+
+# ============================================================ training the ALPHA_STRUCT woven readout
+def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_stream=True,
+                             composer=None, rich=True, use_lora=True):
+    """STAGE-2 ALPHA_STRUCT training (the one-command GPU run once general_organ_full.pt lands).
+
+    Phase A: warm the StructureRack (+ LoRA host, the bidirectional channel the LoRA study validated)
+      on the STRUCTURE-SUPERVISION loss (α-emitted vs the witness's free true factor graph, soundness-
+      asymmetric) + the per-cell candidate head on the standing dominate-dedₚ J0.
+    Phase B: train LoRA + rack + candidate head + γ on the answer-span LM-CE (γ reads the DETACHED
+      α-structure-composed lattice) + the standing structure-supervision + the per-cell J0.
+
+    rec['csp'] NEVER enters the forward (the composer runs under forbid_record_csp() on csp_α). The
+    organ is the frozen/certified bank — the pretrained CoreNarrowOrgan plugs in when present."""
+    from transformers import AutoModelForCausalLM
+    from peft import LoraConfig, get_peft_model
+    from .. import run_glados_staged as G
+    mid_id, D, nL = olmo_ids
+    olmo = AutoModelForCausalLM.from_pretrained(mid_id, dtype=torch.bfloat16).to(dev).eval()
+    for p in olmo.parameters():
+        p.requires_grad_(False)
+    if use_lora:
+        lconf = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.0, bias="none",
+                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                           "gate_proj", "up_proj", "down_proj"], task_type="CAUSAL_LM")
+        peft_model = get_peft_model(olmo, lconf)
+    else:
+        peft_model = olmo
+    mid = min(a.mid_layer, nL - 1); inj = min(a.inject_layer, nL - 1)
+    assert mid < inj, f"mid_layer ({mid}) must precede inject_layer ({inj})"
+    rack = StructureRack(D, G.K, dp=a.alpha_dp, heads=a.alpha_heads)
+    if composer is None:
+        composer = AlphaStructComposerOrgan(dev="cpu",
+                                            core_ckpt=getattr(a, "core_ckpt", "runs/general_organ_full.pt"),
+                                            use_core=getattr(a, "use_core", True))
+    model = AlphaStructWoven(peft_model, D, G.K, rack, composer, mid, inj, gamma_hidden=a.gamma_hidden,
+                             rich=rich).to(dev)
+    model.alpha.float(); model.cand.float(); model.gamma.float()
+    noop, live = verify_noop_alpha_struct(model, tok, dev, eval_recs[0])
+    from ..oracle_readout import n_trainable
+    print(f"\n  ALPHA_STRUCT-WOVEN  mid {mid} -> inject {inj}/{nL}  LoRA={use_lora}  "
+          f"readout={'rich' if rich else 'set'}  faculties={composer.faculties()}  "
+          f"trainable {n_trainable(model):,}", flush=True)
+    print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",
+          flush=True)
+    lora_params = [p for n, p in model.model.named_parameters() if p.requires_grad]
+    rack_cand = list(model.alpha.parameters()) + list(model.cand.parameters())
+    rng = np.random.default_rng(a.seed + 5)
+    struct_w = getattr(a, "struct_sup_w", 1.0)
+
+    def batch(n):
+        idxs = rng.integers(0, len(train_recs), n).tolist()
+        return _alpha_struct_batch([train_recs[i] for i in idxs], tok, dev, two_stream)
+
+    def alpha_capture(ba):
+        m, at = (ba["a_mention"], ba["a_attn"]) if two_stream else (ba["mention"], ba["attn"])
+        ids = ba["a_input_ids"] if two_stream else ba["input_ids"]
+        with model.live(m, at, inject=False, capture=True, nd=ba["nd"], dvec=ba["dvec"]):
+            _ = model.logits(ids, at)
+
+    def struct_loss(ba):
+        return structure_sup_loss(model._last_pin, model._last_pair, ba["pin_tgt"], ba["pair_tgt"],
+                                  model._last_vmask, wpos=getattr(a, "wpos", 2.0),
+                                  wnone=getattr(a, "wnone", 1.0))
+
+    # ----- Phase A: warm the rack (+LoRA) on structure-supervision + the per-cell J0 -----
+    optA = torch.optim.AdamW(
+        [{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
+         {"params": rack_cand, "lr": a.alpha_lr, "weight_decay": 0.0}], betas=(0.9, 0.95))
+    model.train(); t0 = time.time()
+    for s in range(1, a.warm_steps + 1):
+        ba = batch(a.bs)
+        alpha_capture(ba)                              # emits structure + b0; composer runs, γ off
+        l_struct = struct_loss(ba)
+        l_j0 = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
+        loss = struct_w * l_struct + a.alpha_sup_w * l_j0
+        optA.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optA.step()
+        if s % max(1, a.warm_steps // 6) == 0 or s == 1:
+            print(f"  [warmup struct/J0] step {s:5d}  struct {l_struct.item():.3f}  "
+                  f"J0 {l_j0.item():.3f}  {time.time()-t0:.0f}s", flush=True)
+
+    # ----- Phase B: LoRA + rack + cand + γ on LM-CE (γ reads DETACHED csp_α lattice) + standing aux ---
+    optB = torch.optim.AdamW(
+        [{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
+         {"params": rack_cand, "lr": a.alpha_lr, "weight_decay": 0.0},
+         {"params": list(model.gamma.parameters()), "lr": a.gamma_lr, "weight_decay": 0.0}],
+        betas=(0.9, 0.95))
+    model.train(); t0 = time.time(); seen_open = False
+    for s in range(1, a.steps + 1):
+        ba = batch(a.bs)
+        if two_stream:
+            alpha_capture(ba)                          # α-stream (full text) → csp_α lattice + structure
+            aux_struct = struct_loss(ba)
+            aux_j0 = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
+            surv = model._captured_surv[:, : ba["mention"].shape[1], :]
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=False, override=surv,
+                            nd=ba["nd"], dvec=ba["dvec"]):
+                logits = model.logits(ba["input_ids"], ba["attn"]).float()
+        else:
+            with model.live(ba["mention"], ba["attn"], inject=True, capture=True, nd=ba["nd"],
+                            dvec=ba["dvec"]):
+                logits = model.logits(ba["input_ids"], ba["attn"]).float()
+            aux_struct = struct_loss(ba)
+            aux_j0 = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
+        lm = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
+                             ba["labels"][:, 1:].reshape(-1), ignore_index=-100)
+        loss = lm + struct_w * aux_struct + a.alpha_sup_w * aux_j0
+        optB.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optB.step()
+        gate = float(torch.tanh(model.gamma.alpha))
+        seen_open = seen_open or (abs(gate) > 1e-3)
+        if s % max(1, a.steps // 12) == 0 or s == 1:
+            print(f"  step {s:5d}  lm {lm.item():.3f}  struct {aux_struct.item():.3f}  "
+                  f"J0 {aux_j0.item():.3f}  gate(tanh α) {gate:+.3f}  {time.time()-t0:.0f}s", flush=True)
             model.train()
     if not seen_open:
         print("  [WARN] γ gate never opened — readout received no gradient (check inject wiring).",
