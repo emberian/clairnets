@@ -172,14 +172,17 @@ def check_occupancy_gate(occ: dict, mix_kinds: set, gate: dict) -> list:
 
 def _resolve_gen_workers(gen_workers, steps):
     """Pick the resample parallelism. None => AUTO: serial (1) for tiny runs (smoke / selftest, where
-    spawn-pool startup would dominate a sub-50-step run), else min(8, cpu-1) so the real pretrain fans
-    the expensive exact-dedₚ stream-gen across cores. An explicit int is honoured verbatim (1 = the old
-    single-stream serial path; the deterministic-reproducibility unit-of-record)."""
+    spawn-pool startup would dominate a sub-50-step run), else min(4, cpu-2) so the real pretrain fans
+    the expensive exact-dedₚ stream-gen across cores WITHOUT over-subscribing RAM. The cap is 4 (was 8):
+    each spawn worker is a clean ~150 MB interpreter, and an OOM'd worker is what wedged the old blocking
+    reader; min(4, cpu-2) keeps K workers + the trainer inside the box's RAM (see stream_prefetch's
+    MEMORY BUDGET) while still fanning gen across cores. An explicit int is honoured verbatim (1 = the
+    old single-stream serial path; the deterministic-reproducibility unit-of-record)."""
     if gen_workers is not None:
         return max(1, int(gen_workers))
     if steps <= 50:
         return 1
-    return max(1, min(8, (os.cpu_count() or 2) - 1))
+    return max(1, min(4, (os.cpu_count() or 2) - 2))
 
 
 def _train_organ_stream(dev, spec, *, target, steps, pool, R, lr, theta=0.5, seed=0, log_every=15,
