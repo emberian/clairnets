@@ -1211,7 +1211,7 @@ def main():
     train_cells, train_full = train_pools["cells"], train_pools["full"]
     eval_id = build_pool(prng, organ, dev, RUNGS, "id", a.per_rung_eval, ("cells", "full"))
     eval_ood = build_pool(prng, organ, dev, RUNGS, "ood", a.per_rung_eval, ("full",))
-    eval_div = build_diverse_pool(prng, organ, dev, a.curriculum, a.per_rung_eval, CURRIC_RUNGS) \
+    eval_div = build_diverse_pool(prng, organ, dev, a.curriculum, a.per_rung_eval, sorted(CURRIC_RUNGS)) \
         if os.path.exists(a.curriculum) else []
     print(f"\n  data: {len(train_cells)} train recs/mode; eval id {len(eval_id['full'])} ood "
           f"{len(eval_ood['full'])} diverse {len(eval_div)}  built in {time.time()-t0:.0f}s", flush=True)

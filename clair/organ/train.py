@@ -185,8 +185,8 @@ def _organ_process_reward_builder(w_outcome=0.7, w_process=0.3, core_ckpt="runs/
                 if cspd is not None:
                     csp = C.CSP(cspd["n"], cspd["d"], tuple((tuple(sc), frozenset(map(tuple, al)))
                                                             for sc, al in cspd["cons"]))
-                    emitted = int(RL.extract_answer(comp)) if str(RL.extract_answer(comp)).lstrip("-").isdigit() \
-                        else cspd.get("emitted", 0)
+                    ea = RL.extract_answer(comp)
+                    emitted = int(ea) if str(ea).lstrip("-").isdigit() else cspd.get("emitted", 0)
                     proc = opr.reward(csp, cspd["query"], emitted).process
             except Exception:
                 proc = 0.0

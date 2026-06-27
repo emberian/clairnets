@@ -409,7 +409,6 @@ def default_factors(csp: CSP, k=3):
     plus every constraint's own scope. Keeps it small while capturing each constraint exactly."""
     import itertools as _it
     facs = {tuple(sorted(sc)) for sc, _ in csp.cons}                  # every constraint scope is a factor
-    cells = sorted({c for sc, _ in csp.cons for c in sc}) or list(range(csp.n))
     for combo in _it.combinations(range(csp.n), min(k, csp.n)):
         if any(set(sc) <= set(combo) for sc, _ in csp.cons):         # only k-subsets that cover a constraint
             facs.add(combo)
