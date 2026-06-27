@@ -13,15 +13,23 @@ you want the internals.
 
 ```
 clair/organ/
-  protocol.py   the typed spine: Reduction / CSPState / Certificate + the structured-γ readout
-  bank.py       the registry of validated beasts as sound reductions (certified ops + neural guidance)
-  compose.py    verifier-gated certified-reduction composition (the sound reduced product)
-  graft.py      THE model-agnostic neural-graft — graft_organ(host, organ, config) onto any of 7 bases
-  train.py      THE canonical staged pipeline — pretrain_organ → weave → rlvr
-  eval.py       THE arbiter — re-exports clair.eval_suite.run_eval_suite
-  smoke.py      the one-command end-to-end smoke (pretrain → graft → weave → eval; needs a GPU)
-  selftest.py   the consolidated CPU smoke (python -m clair.organ.selftest)
-  README.md     the per-beast status table + the spine contract
+  protocol.py     the typed spine: Reduction / CSPState / Certificate + the structured-γ readout
+  bank.py         the registry of validated beasts as sound reductions (certified ops + neural guidance)
+  compose.py      verifier-gated certified-reduction composition (the sound reduced product)
+  bank_woven.py   ★ THE live woven organ — α → composer(bank) → γ, in the host residual stream
+  reductions.py   the cross-type reduction graph (ProblemReduction + Dijkstra cost-routing)
+  readout_bridge.py  rich-state survival readouts for the non-CSP faculties (energy / unification)
+  process_reward.py  the organ-as-process-reward (LSRL-style cardinality drop, soundness-gated)
+  graft.py        THE model-agnostic neural-graft — graft_organ(host, organ, config) onto any of 7 bases
+  train.py        THE canonical staged pipeline — pretrain_organ → weave → rlvr
+  eval.py         THE arbiter — re-exports clair.eval_suite.run_eval_suite
+  smoke.py        the one-command end-to-end smoke (pretrain → graft → weave → eval; needs a GPU)
+  selftest.py     the consolidated CPU smoke (python -m clair.organ.selftest)
+  README.md       the per-beast status table + the spine contract
+
+clair_fast/        the Rust (PyO3 + rayon) hot path: exact_dedP / solutions / AC, 29–56× CPU, bitwise-identical
+clair/eval_suite.py            the external arbiter (Tier-1/2/3 + causal controls + pass@k, base-agnostic)
+clair/interp_probe_bank.py     the LEARNED-FREE interp probe on the bank-woven organ → runs/interp_bank.json
 ```
 
 ---
@@ -43,6 +51,24 @@ certified ops are trusted; neural/approximate ops are gated by the exact per-cel
 (`csp.exact_dedP`), so a wrong neural proposal can never poison the shared state. (Full per-beast table:
 [`clair/organ/README.md`](clair/organ/README.md).)
 
+**The LIVE woven organ — `bank_woven.py` (the consolidated artifact).** In the host residual stream the organ
+slot IS the bank + composer: **α** (`DenseLatentProjector`) latently compiles the host hidden into a per-cell
+candidate lattice; the **`BankComposerOrgan`** runs the verifier-gated reduced product on the problem's true
+structure — the **certified floor** (Arc/Factor/Modular/GF2/Macro) + the *pretrained* `CoreNarrowOrgan` + α's
+own compile, all gated; **γ** reads the *composed* lattice back through the zero-init gate. The certified
+floor makes the injection **miscompile-robust by construction** (a wrong α-compile can only sharpen toward the
+exact transformer, never below it — it cannot poison the floor). This replaced the old stopgap standalone
+`LatentNarrower`; it **engages** (corrupt→drop ~+97 pts, lift +77, no-op@init 0.0, false-elim 0).
+
+**The reduction graph — `reductions.py` (cross-type, vs the composer's within-type).** A typed
+`ProblemReduction` graph encodes the Karp neighbourhood (MIS↔VC↔clique · 3-SAT/2-SAT/XOR-SAT→CSP ·
+3-SAT→MIS→Ising · {MIS,MaxCut,partition,coloring}→Ising) — every edge **exact-verified end-to-end against X's
+own solver**, reusing the Lucas NP→Ising encoders + `CSPState`; `ReductionGraph.route` is Dijkstra cost-routing
+with a certified-over-approx tie-break. The composer routes *within* a state type; a reduction routes *across*
+types, so the model learns *recognize-X · reduce-X→Y · solve-via-Y · decode*. Smoke on the real bank-woven: a
+route-required family with no direct faculty (XOR-SAT) solved 100% via the reduction; held-out reduction-paths
+100%. One faculty + edges = everything reducible to it.
+
 ## HOW it's trained — three oracle-supervised stages
 
 Every label is **free and exact** (witness-first generation + `clair.csp.exact_dedP`). No human labels.
@@ -53,10 +79,11 @@ Detail: [`notes/training.md`](notes/training.md).
    `wneg≈0.5` for keeping a loose extra), **on-policy** over the 7-rung MIX, monotone (survival only
    decreases). **Recipe (from the sweep): ~1.5M params, R=12, ~30% composed.** → a frozen, general,
    sound narrower (`runs/general_organ_full.pt`).
-2. **`weave`** (STAGE 2) — freeze the organ; train the woven readout: frozen base **+ LoRA + latent-α**
-   (dense projection host-hidden → organ inputs, fully latent) **+ frozen organ + zero-init γ readout**,
-   on the answer-span **LM cross-entropy**. The engagement mechanism (consolidated here, lifted out of
-   the old experiment driver):
+2. **`weave`** (STAGE 2, `organ_mode="bank"` DEFAULT) — freeze the organ; train the woven readout: frozen
+   base **+ LoRA + latent-α** (dense projection host-hidden → organ inputs, fully latent) **+ the frozen
+   bank+composer organ (`bank_woven.BankComposerOrgan`) + zero-init γ readout**, on the answer-span **LM
+   cross-entropy**. (`organ_mode="latent"` keeps the legacy single-faculty `LatentNarrower` for ablation.)
+   The engagement mechanism (consolidated here, lifted out of the old experiment driver):
    - **TWO-STREAM lever** — α reads the FULL text to compile the constraints; the LM GENERATES from a
      **fact-ablated cells prompt** (roster + question only), so the organ is the *only* route to the answer;
    - **J0 direct α-supervision** — a standing dominate-dedₚ loss on α's RAW compile `b0` (the SATNet
@@ -106,6 +133,32 @@ so γ-injection is clean even when the inject layer is a Mamba-2 SSM block.
 
 The causal controls are the honesty gate: WOVEN > TEXT-LoRA *and* corrupt/shuffle/permute → collapse
 means the LM genuinely reads the lattice; otherwise the organ is bypassed and we say so.
+
+## HOW it's READ — `interp_probe_bank.py`, learned-free legibility
+
+The interp advantage over a dense bypass is that we can read what the organ posed and concluded **with no
+trained decoder anywhere** (`clair.interp_probe_bank`). Every number is either DIRECT (threshold α's raw `b0`
+at the live θ → per-cell sets; read the composer's discrete reduced-product trace; set-compare to the exact
+dedₚ) or BEHAVIORAL (the model's own generative answer under the causal controls). On the real bank-woven
+(n = 300, `runs/interp_bank.json`): **α-compile faithfulness F1 0.90 / recall 0.98** (precision 0.82), by-rung
+alldiff 0.97 > coloring 0.90 > arithmetic 0.89 > equality 0.86 > ordering 0.85; candidate-set recovery
+0.93–1.0 across cardinalities; query reaches a singleton 100%. The trace shows which faculty fired and which
+neural proposals were verifier-gated, legible by construction.
+
+**Honest scope (the open frontier).** In this *easy* regime the certified floor carries answer-correctness on
+its own — answer-acc 1.0 whether or not α is faithful, corr(faithful, correct) = 0 (no variance), so the
+**bottleneck test is saturated / inconclusive** here. The genuinely open piece is **α-on-real-NL** (α compiling
+from text with no provided structure, where correctness drops and failures attribute): the `eval_real_nl` hook
+is wired; the result is the next frontier.
+
+## The CPU hot path — `clair_fast/` (Rust, PyO3 + rayon)
+
+The pretrain bottleneck was the single-threaded Python exact-dedₚ ground-truth path (not the GPU — the organs
+are tiny). `clair_fast/` ports `exact_dedP` / `solutions` / `ac_step` + a batched `dedp_batch` (GIL-released
+in-process rayon, replacing the pickling ProcessPool), tuples packed `u64`, domains bitmasks. **29–56× faster**
+(per-call 6.7× small → 55× large; full data-path 29× / 56×), **bitwise-identical** (13,590 comparisons, 0
+mismatches). `csp.py` dispatches to it when importable; `CLAIR_NO_FAST=1` forces the verified pure-Python path.
+This unblocks the real organ-pretrain at the dⁿ-explosion budgets.
 
 ---
 

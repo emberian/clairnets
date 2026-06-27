@@ -42,16 +42,20 @@
 pretrained language model so that the model's own generation reasons *through* it — and we hold ourselves
 to the standard that broke the closest prior work (SATNet): a sound module can still be *bypassed*, so only
 causal controls (shuffle / permute / corrupt the module's state) prove genuine deduction. We build an exact
-CSP harness as ground truth, a bank of three deduction organs (narrow / chain / energy), and a staged
-training recipe. Our findings, with the negatives: coupling a frozen LLM to a checked deductor gains
-calibrated abstention it otherwise lacks (88.8% vs 1.4%); RLVR fixes *calibration*, not *capacity*; 7B
-behaves like 1B on the coupling (capacity is not the wall); *cold co-training fails* (the LM shortcuts the
-text and ignores the organ) — but a staged recipe (organ$arrow.r$excellence $arrow.r$ freeze $arrow.r$
-establish readout) makes a *learned, general* organ causally load-bearing across seven reasoning types
-(woven 98.8% vs base 48% vs text-LoRA 25%; corrupt$arrow.r$2.7% *with the full problem text present*). We
-position this against TransNAR, Coconut, SATNet, and the process-reward line, and lay out the single most
-decisive open experiment: does ordinary next-token continued-pretraining exploit the organ (a general
-architecture) or only targeted RL (a trick)?
+CSP harness as ground truth, a *bank* of deduction organs wired to one typed spine (certified arc / factor /
+modular / GF(2) / macro reductions + a verifier-gated neural narrower + forward-chaining + energy), and a
+staged training recipe. Our findings, with the negatives: coupling a frozen LLM to a checked deductor gains
+calibrated abstention it lacks (88.8% vs 1.4%); RLVR fixes *calibration*, not *capacity*; 7B behaves like 1B
+(capacity is not the wall); *cold co-training fails* — but a staged recipe (organ$arrow.r$excellence
+$arrow.r$ freeze $arrow.r$ weave) makes a *learned, general* organ causally load-bearing. The consolidated
+live organ — latent $alpha$ $arrow.r$ a verifier-gated reduced product over a *certified floor* $arrow.r$
+rich-state $gamma$ — *engages* (corrupt$arrow.r$drop ~97 pts, lift +77), is *miscompile-robust by
+construction* (the floor cannot be poisoned), *generalizes by reduction* (a no-direct-faculty family solved
+100% via a Karp edge), and is *legible learned-free* ($alpha$-compile read at F1 0.90 / recall 0.98); the
+graft is *residual-stream-agnostic* (7/7 bases incl. a Mamba-hybrid). We state the honest scope plainly: in
+the easy regime the certified floor carries correctness on its own, so the bottleneck test is saturated — the
+open frontier is $alpha$ compiling from *real natural language* with no provided structure. We position this
+against TransNAR, Coconut, SATNet, and the process-reward line.
 ]]]
 
 #v(6pt)
