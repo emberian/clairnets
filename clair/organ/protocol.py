@@ -6,9 +6,12 @@ the protocol the codex zoo review (notes/codex_zoo_review.md) named as the preco
 whole zoo to hold: "every domain has explicit semantics: alpha, gamma, top/bottom, meet/reduction,
 verifier/certificate, abstain. Else 'domain x operation' = a taxonomy of vibes."
 
+All soundness claims here are OPERATOR-level and RELATIVE TO THE GIVEN STATE — see notes/soundness.md
+for the (A)/(B)/(C)/(D) hierarchy (operator-sound-rel-given-CSP is (A); it is NOT answer-soundness (D)).
+
 The contract, per beast:
   * an abstract STATE (the lattice element it narrows),
-  * reduce(state) -> state' with gamma(state') subset gamma(state)  (a SOUND narrowing),
+  * reduce(state) -> state' with gamma(state') subset gamma(state)  (a SOUND narrowing OF THAT STATE),
   * a CERTIFICATE saying HOW the soundness holds (sound-by-construction / neural-guidance /
     approximate) and the completeness caveat,
   * abstain (reduce is a no-op when the beast can prove nothing locally),
@@ -37,8 +40,14 @@ from .. import csp as C
 # ============================================================ certificate
 @dataclass(frozen=True)
 class Certificate:
-    """How a reduction's soundness is guaranteed (the thing the composer trusts or must gate)."""
-    sound: bool          # is reduce(s) GUARANTEED gamma-subset of s (drops no real solution)?
+    """How a reduction's soundness is guaranteed (the thing the composer trusts or must gate).
+
+    SCOPE: `sound` is OPERATOR soundness RELATIVE TO THE GIVEN CSP (level (A) in notes/soundness.md):
+    reduce(s) drops no value used by a solution OF THE STATE IT IS HANDED. It is NOT answer-soundness
+    — it says nothing about whether that state is the right problem (the uncertified α-compile gap, (C)).
+    Do not read `sound=True` as 'certified => correct answer'."""
+    sound: bool          # operator-sound REL. given CSP: reduce(s) is a GUARANTEED gamma-subset of s
+                         # (drops no solution OF s). NOT answer-soundness — see notes/soundness.md (A) vs (D).
     kind: str            # 'sound-by-construction' | 'neural-guidance' | 'approximate'
     complete: str        # honest completeness note (what it can / cannot fully solve)
     detail: str = ""

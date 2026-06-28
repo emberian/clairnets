@@ -5,7 +5,10 @@ Every entry IMPORTS + adapts the already-validated, committed organ code (clair.
 (runs/general_organ_full.pt, runs/modular_organ.pt). NOTHING here re-derives an algorithm; it only
 adapts each beast to the typed spine in clair.organ.protocol so they compose + read out uniformly.
 
-Status partition (the honest table — see README):
+Status partition (the honest table — see README). "CERTIFIED" here = OPERATOR-sound RELATIVE TO THE
+GIVEN CSP (level (A) in notes/soundness.md): the op drops no solution of the state it is handed. This
+is NOT answer-soundness (D) — it says nothing about whether that CSP is the right problem (the
+uncertified α-compile gap, (C)). Read these as genuine narrowing theorems, correctly bounded:
   CERTIFIED (sound-by-construction, CSP-domain, reduced-product): ArcConsistency, FactorConsistency,
       ExactDedP, Modular (SNF), GF2 (row-space), Macro (reach-doubling path solver).
   CERTIFIED (own state type, standalone): Unification (forward-chaining least Herbrand model).

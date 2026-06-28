@@ -16,6 +16,13 @@ is judged by an exact verifier, so the organ is free to be learned and loose whi
 > frees it to be loose and even emergent. *Completeness* — does it reach a checkable answer or honestly abstain —
 > is the research variable. The monotone candidate-set lattice is training wheels; the endpoint is a general
 > reasoner that stays sound because the boundary checks it.
+>
+> **The permission only cashes out where the boundary check exists** — train/eval (the witness generator gives
+> ground truth) or a verifier-bearing domain at inference (code tests, a Lean kernel). The certified ops are
+> sound *relative to the CSP they are given*; the composer is sound *relative to `csp_α`* (α's emitted
+> structure); and `α`-correctness — does `csp_α` match the real question — is itself **uncertified**. So on
+> arbitrary NL with no ground truth, "sound" means *conditional on an unverified compile*, not *correct answer*.
+> The full (A)/(B)/(C)/(D) hierarchy is [`notes/soundness.md`](notes/soundness.md).
 
 Grounded in the **Lattice Deduction Transformer** (arXiv 2605.08605) + its Lean proof (soundness is free if
 checked; completeness = lattice-level × width), CliffordNet's geometric product (2601.06793), and the
@@ -82,11 +89,15 @@ narrower — **it is the real consolidated organ**, and everything below is meas
   (α reads the full text; the LM generates from a *fact-ablated cells prompt*, so the organ is the only route)
   + **J0 direct α-supervision** (dominate-dedₚ on α's raw compile — the SATNet grounding fix). *(The earlier
   "gate stays shut, drop = 0" was a step-count under-training artifact, resolved.)*
-- **The certified FLOOR makes it miscompile-robust BY CONSTRUCTION.** The certified ops run from the full
-  domain; the meet of sound narrowings is sound, and the neural/α proposals can only sharpen *toward* the exact
-  per-cell transformer, never below it — so a confidently-wrong α-compile **cannot poison** the injected state.
-  This **subsumes the old "train-for-robustness" calibration story**: robustness is now structural, not a
-  curriculum trick.
+- **The certified FLOOR makes it robust to a wrong per-cell *lattice* compile BY CONSTRUCTION.** The certified
+  ops run from the full domain; the meet of sound narrowings is sound, and the neural/α proposals can only
+  sharpen *toward* the exact per-cell transformer, never below it — so a confidently-wrong α *value-compile*
+  (`b0`) **cannot poison** the injected state. This **subsumes the old "train-for-robustness" calibration
+  story**: that robustness is now structural, not a curriculum trick. **It does NOT cover a wrong *structure*
+  compile** (`csp_α`): the floor is sound only *relative to the CSP it composes on*, so if α emits the wrong
+  factor graph the floor faithfully solves the **wrong problem** and emits a certified-correct answer to it
+  (proved by the SHUFFLED diagnostic). That α-correctness gap is the uncertified link — see
+  [`notes/soundness.md`](notes/soundness.md) (C).
 - **Solve-by-reduction generalizes (the reduction graph).** `organ/reductions.py` is a typed *cross-type*
   `ProblemReduction` graph (MIS↔VC↔clique · 3-SAT/2-SAT/XOR-SAT→CSP · 3-SAT→MIS→Ising · {MIS,MaxCut,partition,
   coloring}→Ising), every edge **exact-verified end-to-end against X's own solver**, Dijkstra cost-routed with a
@@ -120,7 +131,9 @@ narrower — **it is the real consolidated organ**, and everything below is meas
 
 > **Honest scope — the open frontier.** Everything above is measured in the **easy regime**, where the problem's
 > *true* constraint structure is handed to the composer. There the **certified floor carries answer-correctness
-> on its own** — the interp probe shows answer-acc 1.0 whether or not α's compile is faithful, with
+> on its own — precisely *because* the true structure is given** (ground-truth structure IS the boundary check,
+> so soundness level (D) holds for free; this is a property of being handed the answer's structure, not of α) —
+> the interp probe shows answer-acc 1.0 whether or not α's compile is faithful, with
 > corr(faithful, correct) = 0 *because there is no variance to correlate*. So the bottleneck test — *does
 > α-from-hidden DRIVE correctness?* — is **saturated / inconclusive** in this regime. The genuinely open piece is
 > **α-on-real-NL**: α compiling the constraints from natural-language text with **no provided structure**, where
