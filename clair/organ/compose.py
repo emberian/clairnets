@@ -35,25 +35,63 @@ class Trace:
     applied: list = field(default_factory=list)     # [(round, reduction_name, alive_before, alive_after)]
     gated: list = field(default_factory=list)        # neural reductions that were verifier-gated
     sound: bool = True                               # false-elim vs exact oracle == 0
+    false_elim: int = 0                              # #values dropped that the exact oracle keeps (verify=True)
     final_status: str = "open"
 
 
-def _verifier_gate(state: CSPState, proposed: CSPState) -> CSPState:
-    """Keep only the eliminations the exact per-cell verifier also makes — so an unsound neural
-    proposal cannot drop a value some real solution uses. proposed' = proposed `join` exact_dedP,
-    i.e. we re-admit any value the proposer killed that the verifier keeps."""
-    exact = C.exact_dedP(state.csp, state.dom)
-    # re-admit any value the proposer killed that the exact verifier keeps, then clamp to the input
-    safe = tuple((proposed.dom[i] | (exact[i] & state.dom[i])) & state.dom[i] for i in range(state.csp.n))
+# The per-step gate-strength knob (Finding-3 thesis test). "exact" = the original sound-but-redundant
+# gate (the neural organ is strictly dominated by exact_dedP); the cheaper modes RELAX the per-step
+# soundness check so the neural organ can do narrowing the exact verifier is too expensive to confirm
+# every round — the regime the bet ("neural proposes, checked at OUTPUT") actually cashes out in.
+GATE_MODES = ("exact", "factor", "arc", "none")
+
+
+def _gate_reference(state: CSPState, gate: str):
+    """The per-cell sound narrowing the gate re-admits against (the values the neural proposer is NOT
+    allowed to drop). exact_dedP is the strongest sound transformer (and the most expensive — backtracking
+    enumeration, super-poly in n); factor/arc are CHEAP certified subsets (a polynomial floor); `none`
+    re-admits nothing (the neural eliminations are accepted directly, output-checked only)."""
+    if gate == "exact":
+        return C.exact_dedP(state.csp, state.dom)              # the expensive per-step oracle
+    if gate == "factor":
+        return C.factor_consistency_cells(state.csp, state.dom, 3)   # cheap level-2 certified subset
+    if gate == "arc":
+        return C.ac_step(state.csp, state.dom)                 # cheapest certified subset (one AC pass)
+    if gate == "none":
+        return None                                            # trust the neural eliminations directly
+    raise ValueError(f"unknown gate mode {gate!r}; expected one of {GATE_MODES}")
+
+
+def _verifier_gate(state: CSPState, proposed: CSPState, gate: str = "exact") -> CSPState:
+    """Keep only the eliminations the gate's verifier also makes — so an unsound neural proposal cannot
+    drop a value the verifier proves alive. proposed' = proposed `join` ref, i.e. we re-admit any value
+    the proposer killed that the (mode-selected) verifier keeps, then clamp to the input.
+
+    gate="exact" (DEFAULT) is the original sound-by-construction gate: ref = exact_dedP, so the composite
+    eliminates a value only if the exact transformer also does — the neural organ is then strictly
+    DOMINATED by exact_dedP (Finding 3). The cheaper modes re-admit against a weaker/empty reference, so
+    the neural organ's eliminations BEYOND what the cheap verifier can confirm are accepted per-step
+    (soundness then holds only at the OUTPUT check, not every round)."""
+    if gate == "none":
+        # output-only: accept the neural eliminations directly (clamp to the input domain)
+        return state.with_dom(tuple(proposed.dom[i] & state.dom[i] for i in range(state.csp.n)))
+    ref = _gate_reference(state, gate)
+    # re-admit any value the proposer killed that the (mode-selected) verifier keeps, then clamp to input
+    safe = tuple((proposed.dom[i] | (ref[i] & state.dom[i])) & state.dom[i] for i in range(state.csp.n))
     return state.with_dom(safe)
 
 
-def reduced_product(state: CSPState, reductions, verify: bool = True, max_rounds: int = 64):
+def reduced_product(state: CSPState, reductions, verify: bool = True, max_rounds: int = 64,
+                    gate: str = "exact"):
     """Compose `reductions` over a shared CSPState by the verifier-gated reduced product.
 
     Returns (state', trace). Certified reductions are trusted (asserted subset); neural/approximate
-    ones are intersected with what the exact verifier confirms. Soundness (false-elim 0 vs the exact
-    oracle on the ORIGINAL state) is asserted at the end when verify=True."""
+    ones are gated through `gate` (the per-step gate-strength knob, default "exact" = the original
+    exact_dedP per-cell verifier; "factor"/"arc" = cheap certified subsets; "none" = trust the neural
+    eliminations directly, OUTPUT-checked only). Soundness (false-elim 0 vs the exact oracle on the
+    ORIGINAL state) is asserted at the end ONLY in the default exact-gate mode (the sound regime); under
+    a relaxed gate the false-elim is recorded on the trace (tr.sound / tr.false_elim) but NOT asserted —
+    relaxing the gate is exactly what trades per-step soundness for cheap large-scale narrowing."""
     applicable = [r for r in reductions if r.state_type == "csp-domain"]
     origin = state
     tr = Trace()
@@ -71,7 +109,7 @@ def reduced_product(state: CSPState, reductions, verify: bool = True, max_rounds
                 assert raw.issub(cur), f"certified reduction {r.name} returned a non-subset (unsound!)"
                 out = raw
             else:
-                out = _verifier_gate(cur, raw)          # gate neural proposals through the verifier
+                out = _verifier_gate(cur, raw, gate)    # gate neural proposals (knob: exact|factor|arc|none)
                 if out.dom != raw.dom:
                     tr.gated.append(r.name)
             cur = cur.meet(out)
@@ -89,11 +127,15 @@ def reduced_product(state: CSPState, reductions, verify: bool = True, max_rounds
         ref = exact_oracle(origin)
         fe = false_elim(state, ref)
         tr.sound = (fe == 0)
-        assert fe == 0, f"composition was UNSOUND: dropped {fe} value(s) the exact verifier keeps"
+        tr.false_elim = fe
+        # Only the exact gate is sound-by-construction per-step; assert there. A relaxed gate may
+        # legitimately drop a value the exact verifier keeps (that is the measured cost of the regime).
+        if gate == "exact":
+            assert fe == 0, f"composition was UNSOUND: dropped {fe} value(s) the exact verifier keeps"
     return state, tr
 
 
-def reduced_product_batch(states, shared, extra=None, max_rounds: int = 64):
+def reduced_product_batch(states, shared, extra=None, max_rounds: int = 64, gate: str = "exact"):
     """BATCHED reduced product: run the verifier-gated reduced product for a LIST of states at once, fanning
     every reduction that exposes `reduce_batch` (e.g. the neural CoreNarrowOrgan) across the whole active set
     in a single call, while keeping the EXACT per-instance round structure of `reduced_product`.
@@ -120,7 +162,7 @@ def reduced_product_batch(states, shared, extra=None, max_rounds: int = 64):
             assert raw.issub(cur), f"certified reduction {r.name} returned a non-subset (unsound!)"
             out = raw
         else:
-            out = _verifier_gate(cur, raw)
+            out = _verifier_gate(cur, raw, gate)
             if out.dom != raw.dom:
                 traces[i].gated.append(r.name)
         cur = cur.meet(out)
@@ -146,7 +188,7 @@ def reduced_product_batch(states, shared, extra=None, max_rounds: int = 64):
                 raws = r.reduce_batch([cur[i] for i in idxs])
                 for j, i in enumerate(idxs):
                     before = cur[i].alive()
-                    out = _verifier_gate(cur[i], raws[j])
+                    out = _verifier_gate(cur[i], raws[j], gate)
                     if out.dom != raws[j].dom:
                         traces[i].gated.append(r.name)
                     cur[i] = cur[i].meet(out)
