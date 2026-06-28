@@ -210,7 +210,7 @@ def compare_modes(model, recs, tok, dev, bs=8, two_stream=True, search_K=8, sear
     K = G.K
     model.eval()
     true_gold = [r["gold_idx"] for r in recs]
-    rng = torch.Generator().manual_seed(seed + 4242)
+    rng = torch.Generator(device=dev).manual_seed(seed + 4242)   # match the rack's tensor device (CUDA)
     modes = {"greedy": (1, 1), "search": (search_K, 1), "loop": (1, loop_T),
              "search+loop": (search_K, loop_T)}
     out = {}

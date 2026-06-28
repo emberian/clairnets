@@ -1,0 +1,11 @@
+{
+  "n": 200,
+  "n_answer_differing": 200,
+  "ALPHA_STRUCT_true_all": 0.495,
+  "ALPHA_STRUCT_true_on_informative": 0.495,
+  "ANSWER_DIFFERING_CORRUPT": 0.275,
+  "NO_STRUCT_all": 0.375,
+  "NO_STRUCT_on_informative": 0.375,
+  "collapse_sharp": 0.21999999999999997,
+  "drops_to_nostruct": -0.09999999999999998
+}
