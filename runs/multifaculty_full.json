@@ -1,0 +1,68 @@
+{
+  "args": {
+    "model": "allenai/OLMo-2-0425-1B",
+    "smoke": false,
+    "steps": 3000,
+    "warm_steps": 1000,
+    "bs": 16,
+    "seed": 0,
+    "lora_r": 16,
+    "lora_lr": 0.0001,
+    "alpha_lr": 0.0003,
+    "gamma_lr": 0.002,
+    "gamma_hidden": 256,
+    "alpha_dp": 384,
+    "alpha_heads": 6,
+    "mid_layer": 6,
+    "inject_layer": 12,
+    "struct_sup_w": 1.0,
+    "edge_sup_w": 1.0,
+    "router_w": 1.0,
+    "alpha_sup_w": 1.0,
+    "wpos": 2.0,
+    "wnone": 1.0,
+    "n_csp": 450,
+    "n_graph": 450,
+    "n_cross": 450,
+    "n_eval": 100,
+    "core_ckpt": "runs/general_organ_full.pt",
+    "single_stream": false,
+    "out": "runs/multifaculty_full.json",
+    "ckpt": "runs/multifaculty_full.pt",
+    "two_stream": true
+  },
+  "final": {
+    "by_faculty": {
+      "csp": 0.9,
+      "graph": 1.0,
+      "cross": 0.93
+    },
+    "n_by_faculty": {
+      "csp": 100,
+      "graph": 100,
+      "cross": 100
+    },
+    "router_acc": 1.0
+  },
+  "no_organ": {
+    "by_faculty": {
+      "csp": 0.35,
+      "graph": 0.67,
+      "cross": 0.55
+    },
+    "n_by_faculty": {
+      "csp": 100,
+      "graph": 100,
+      "cross": 100
+    },
+    "router_acc": 0.0
+  },
+  "exact_proof": {
+    "n_inst": 200,
+    "graph_faculty_acc": 1.0,
+    "cross_balance_yes_frac": 0.5,
+    "cross_multifaculty_acc": 1.0,
+    "cross_graphonly_acc": 0.625,
+    "cross_csponly_majority_acc": 0.5
+  }
+}
