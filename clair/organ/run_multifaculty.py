@@ -24,15 +24,19 @@ from ..oracle_readout import _mention_tensor, ABSTAIN_STR, n_trainable
 from ..latent_organ import dominate_dedp_loss
 from .alpha_struct import StructureRack, structure_sup_loss, facts_to_struct_targets
 from . import faculty as FAC
-from .faculty import LIVE_FACULTIES, FACULTY_IDX, edges_to_adj_target
+from .faculty import LIVE_FACULTIES, FACULTY_IDX, edges_to_adj_target, TRI_CHANNELS, TRI_N_CHANNELS
 from .multifaculty import MultiFacultyComposerOrgan, MultiFacultyWoven
+from .readout_bridge import coupling_loss
 from . import faculty_tasks as FT
 
 
 # ============================================================ pool
-def build_mf_pool(rng, n_csp, n_graph, n_cross, split="id", two_stream=True):
-    """Mixed multi-faculty pool: determined CSP (coloring/equality) + graph reachability + cross. With
-    two_stream, the gen prompt is fact-ABLATED (α reads the full text) so the organ is the only route."""
+def build_mf_pool(rng, n_csp, n_graph, n_cross, n_ising=0, n_type=0, n_reduction=0, n_tri=0,
+                  split="id", two_stream=True):
+    """Mixed N-FACULTY pool: determined CSP (coloring/equality) + graph reachability + 2-hop cross +
+    single-faculty ISING (max-cut optimization) + TYPE inference + the reduction-routed MIS + the 3-hop
+    TRI (csp→graph→ising). With two_stream the gen prompt is fact-ABLATED (α reads the full text) so the
+    organ is the only route. Optimization/yes-no tasks are class-balanced (want_yes alternation)."""
     recs = []
     if n_csp:
         csp = G.build_live_pool(rng, ["coloring", "equality"], split,
@@ -45,6 +49,14 @@ def build_mf_pool(rng, n_csp, n_graph, n_cross, split="id", two_stream=True):
         recs.append(FT.gen_graph_record(rng, two_stream=two_stream))
     for k in range(n_cross):
         recs.append(FT.gen_cross_record(rng, want_yes=(k % 2 == 0), two_stream=two_stream))
+    for k in range(n_ising):
+        recs.append(FT.gen_ising_record(rng, want_yes=(k % 2 == 0), two_stream=two_stream))
+    for _ in range(n_type):
+        recs.append(FT.gen_type_record(rng, two_stream=two_stream))
+    for k in range(n_reduction):
+        recs.append(FT.gen_reduction_record(rng, want_yes=(k % 2 == 0), two_stream=two_stream))
+    for k in range(n_tri):
+        recs.append(FT.gen_tri_record(rng, want_yes=(k % 2 == 0), two_stream=two_stream))
     rng.shuffle(recs)
     return recs
 
@@ -58,28 +70,49 @@ def _mf_batch(recs, tok, dev, two_stream=True):
                                             [r["n"] for r in recs], Nmax)
     ba["pin_tgt"] = pin_t.to(dev); ba["pair_tgt"] = pair_t.to(dev)
     edge_t = torch.zeros(B, Nmax, Nmax, device=dev)
-    edge_m = torch.zeros(B, device=dev)            # 1 for graph/cross (graph head supervised)
-    struct_m = torch.zeros(B, device=dev)          # 1 for csp/cross (csp head supervised)
+    edge_m = torch.zeros(B, device=dev)            # 1 for graph/cross/reduction/tri (graph head supervised)
+    struct_m = torch.zeros(B, device=dev)          # 1 for csp/cross/type/tri (csp pin/pair head supervised)
     csp_m = torch.zeros(B, device=dev)             # 1 for csp (J0 candidate-head grounding)
+    J_t = torch.zeros(B, Nmax, Nmax, device=dev)   # Ising coupling-supervision targets (ising faculty)
+    h_t = torch.zeros(B, Nmax, device=dev)
+    ising_m = torch.zeros(B, device=dev)           # 1 for ising (coupling head supervised)
     router_t = torch.zeros(B, dtype=torch.long, device=dev)
     specs = []
     for b, r in enumerate(recs):
         fac = r["faculty"]; router_t[b] = FACULTY_IDX[fac]
-        if fac in ("graph", "cross"):
+        if fac in ("graph", "cross", "reduction", "tri"):
             edge_m[b] = 1.0
             A = edges_to_adj_target([tuple(e) for e in r.get("true_edges", [])], r["n"])
             edge_t[b, : r["n"], : r["n"]] = torch.from_numpy(A).to(dev)
-        if fac in ("csp", "cross"):
+        if fac in ("csp", "cross", "type", "tri"):
             struct_m[b] = 1.0
         if fac == "csp":
             csp_m[b] = 1.0
-        specs.append({"faculty": fac, "n": r["n"], "d": len(r["vnames"]) if fac == "csp" else 2,
+        if fac == "ising":
+            ising_m[b] = 1.0
+            Jn = np.asarray(r["J_true"], np.float32); hn = np.asarray(r["h_true"], np.float32)
+            J_t[b, : r["n"], : r["n"]] = torch.from_numpy(Jn).to(dev)
+            h_t[b, : r["n"]] = torch.from_numpy(hn).to(dev)
+        d = len(r["vnames"]) if fac == "csp" else 2
+        specs.append({"faculty": fac, "n": r["n"], "d": d,
                       "source": int(r.get("source", 0)), "target": int(r.get("target", r.get("query", 0)))})
     ba["edge_tgt"] = edge_t; ba["edge_mask"] = edge_m; ba["struct_mask"] = struct_m
     ba["csp_mask"] = csp_m; ba["router_tgt"] = router_t; ba["specs"] = specs
+    ba["J_tgt"] = J_t; ba["h_tgt"] = h_t; ba["ising_mask"] = ising_m
     ba["dvec"] = torch.tensor([(len(r["vnames"]) if r["faculty"] == "csp" else r["n"]) for r in recs],
                               device=dev)
     return ba
+
+
+def _coupling_sup_loss(J_pred, h_pred, J_tgt, h_tgt, vmask, ising_mask):
+    """Masked direct coupling supervision (readout_bridge.coupling_loss) of α's Ising head vs the true
+    (J,h), over the ISING instances only (the annealer is non-differentiable, so this is α's only learning
+    signal for the optimization faculty — the (J,h) analogue of J0 for the CSP α)."""
+    sel = ising_mask > 0.5
+    if not bool(sel.any()):
+        return J_pred.sum() * 0.0
+    vm = (vmask * ising_mask.unsqueeze(-1))[sel]
+    return coupling_loss(J_pred[sel], h_pred[sel], J_tgt[sel], h_tgt[sel], vmask=vm)
 
 
 def _edge_sup_loss(edge_logits, edge_tgt, vmask, edge_mask, wpos=4.0):
@@ -148,6 +181,8 @@ def score_mf(model, recs, tok, dev, bs=8, route_by_model=True, control="true", t
                             route_by_model=route_by_model):
                 _ = model.logits(pids, pattn)
             surv = model._captured_surv[:, :Nmax, :].clone()
+            tri = model._captured_tri[:, :, :Nmax, :].clone()
+            tri_mask = model._captured_tri_mask.clone()
             rl = model._last["router"]
             for b, r in enumerate(chunk):
                 router_ok += int(int(rl[b].argmax()) == FACULTY_IDX[r["faculty"]]); router_tot += 1
@@ -164,7 +199,7 @@ def score_mf(model, recs, tok, dev, bs=8, route_by_model=True, control="true", t
             mention = _mention_tensor(spans, offsets, len(fulls), Nmax, T, dev)
             idx = torch.tensor(prob_of, device=dev)
             ctx = model.live(mention, attn, inject=True, capture=False, override=surv[idx],
-                             dvec=dvec[idx])
+                             dvec=dvec[idx], tri_override=tri[idx], tri_mask=tri_mask[idx])
         else:
             ctx = model.live(None, None, inject=False)
         with ctx:
@@ -205,11 +240,17 @@ def train_multifaculty(olmo_ids, tok, dev, a, train_recs, eval_recs):
     assert mid < inj
     rack = StructureRack(D, G.K, faculties=LIVE_FACULTIES, dp=a.alpha_dp, heads=a.alpha_heads)
     composer = MultiFacultyComposerOrgan(dev="cpu", core_ckpt=getattr(a, "core_ckpt",
-                                         "runs/general_organ_full.pt"), use_core=getattr(a, "use_core", True))
+                                         "runs/general_organ_full.pt"), use_core=getattr(a, "use_core", True),
+                                         ising_restarts=getattr(a, "ising_restarts", 32),
+                                         ising_steps=getattr(a, "ising_steps", 100))
     model = MultiFacultyWoven(peft_model, D, G.K, rack, composer, mid, inj,
                               gamma_hidden=a.gamma_hidden).to(dev)
     model.alpha.float(); model.cand.float(); model.gamma.float()
-    noop, live = verify_noop_mf(model, tok, dev, eval_recs[0])
+    # use a non-tri/non-ising rec for the gate-on check (tri starts disconnected: flow-gates zero-init ⇒
+    # its feature is 0 at init, so a tri rec would show no gate-on movement by design).
+    noop_rec = next((r for r in eval_recs if r["faculty"] in ("csp", "graph", "cross", "type")),
+                    eval_recs[0])
+    noop, live = verify_noop_mf(model, tok, dev, noop_rec)
     print(f"\n  MULTIFACULTY-WOVEN  mid {mid} -> inject {inj}/{nL}  faculties={composer.faculties()}  "
           f"trainable {n_trainable(model):,}", flush=True)
     print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",
@@ -238,7 +279,8 @@ def train_multifaculty(olmo_ids, tok, dev, a, train_recs, eval_recs):
         l_edge = _edge_sup_loss(L["edge"], ba["edge_tgt"], L["vmask"], ba["edge_mask"])
         l_router = F.cross_entropy(L["router"], ba["router_tgt"])
         l_j0 = dominate_dedp_loss([L["b0"]], ba["tgt"], L["vmask"] * ba["csp_mask"].unsqueeze(-1))
-        return l_struct, l_edge, l_router, l_j0
+        l_coup = _coupling_sup_loss(L["J"], L["h"], ba["J_tgt"], ba["h_tgt"], L["vmask"], ba["ising_mask"])
+        return l_struct, l_edge, l_router, l_j0, l_coup
 
     # ---- Phase A: warm rack heads + router + candidate head (no LM-CE) ----
     optA = torch.optim.AdamW([{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
@@ -247,41 +289,50 @@ def train_multifaculty(olmo_ids, tok, dev, a, train_recs, eval_recs):
     model.train(); t0 = time.time()
     for s in range(1, a.warm_steps + 1):
         ba = batch(a.bs); capture(ba)
-        ls, le, lr, lj = aux_losses(ba)
-        loss = a.struct_sup_w * ls + a.edge_sup_w * le + a.router_w * lr + a.alpha_sup_w * lj
+        ls, le, lr, lj, lc = aux_losses(ba)
+        loss = (a.struct_sup_w * ls + a.edge_sup_w * le + a.router_w * lr + a.alpha_sup_w * lj
+                + a.coupling_w * lc)
         optA.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optA.step()
         if s % max(1, a.warm_steps // 6) == 0 or s == 1:
             print(f"  [warmA] step {s:5d}  struct {ls.item():.3f}  edge {le.item():.3f}  "
-                  f"router {lr.item():.3f}  J0 {lj.item():.3f}  {time.time()-t0:.0f}s", flush=True)
+                  f"router {lr.item():.3f}  J0 {lj.item():.3f}  coup {lc.item():.3f}  "
+                  f"{time.time()-t0:.0f}s", flush=True)
 
-    # ---- Phase B: LM-CE (γ reads the DETACHED dispatched lattice) + standing aux ----
+    # ---- Phase B: LM-CE (γ reads the DETACHED dispatched lattice) + the LEARNED FLOW GATES + aux ----
     optB = torch.optim.AdamW([{"params": lora_params, "lr": a.lora_lr, "weight_decay": 0.01},
                               {"params": rack_cand, "lr": a.alpha_lr, "weight_decay": 0.0},
-                              {"params": list(model.gamma.parameters()), "lr": a.gamma_lr, "weight_decay": 0.0}],
+                              {"params": list(model.gamma.parameters()), "lr": a.gamma_lr, "weight_decay": 0.0},
+                              {"params": [model.flow_gate], "lr": a.gamma_lr, "weight_decay": 0.0}],
                              betas=(0.9, 0.95))
     model.train(); t0 = time.time(); seen_open = False
     for s in range(1, a.steps + 1):
         ba = batch(a.bs)
-        capture(ba)                                          # dispatched lattice (γ off) + heads
-        ls, le, lr, lj = aux_losses(ba)
-        surv = model._captured_surv[:, : ba["mention"].shape[1], :]
+        capture(ba)                                          # dispatched lattice + tri channels (γ off) + heads
+        ls, le, lr, lj, lc = aux_losses(ba)
+        Nm = ba["mention"].shape[1]
+        surv = model._captured_surv[:, :Nm, :]
+        tri = model._captured_tri[:, :, :Nm, :]
+        tri_mask = model._captured_tri_mask
         with model.live(ba["mention"], ba["attn"], inject=True, capture=False, override=surv,
-                        dvec=ba["dvec"]):
+                        dvec=ba["dvec"], tri_override=tri, tri_mask=tri_mask):
             logits = model.logits(ba["input_ids"], ba["attn"]).float()
         lm = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                              ba["labels"][:, 1:].reshape(-1), ignore_index=-100)
-        loss = lm + a.struct_sup_w * ls + a.edge_sup_w * le + a.router_w * lr + a.alpha_sup_w * lj
+        loss = (lm + a.struct_sup_w * ls + a.edge_sup_w * le + a.router_w * lr + a.alpha_sup_w * lj
+                + a.coupling_w * lc)
         optB.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0); optB.step()
         gate = float(torch.tanh(model.gamma.alpha)); seen_open = seen_open or abs(gate) > 1e-3
         if s % max(1, a.steps // 12) == 0 or s == 1:
             sc = score_mf(model, eval_recs, tok, dev, bs=a.bs, route_by_model=True, two_stream=two_stream)
             bf = sc["by_faculty"]
-            print(f"  step {s:5d}  lm {lm.item():.3f}  edge {le.item():.3f}  router {lr.item():.3f}  "
-                  f"gate {gate:+.3f}  route-acc {sc['router_acc']*100:.0f}%  "
-                  f"csp {bf['csp']*100:.0f} graph {bf['graph']*100:.0f} cross {bf['cross']*100:.0f}  "
-                  f"{time.time()-t0:.0f}s", flush=True)
+            fg = [round(float(torch.tanh(model.flow_gate[c])), 2) for c in range(TRI_N_CHANNELS)]
+            print(f"  step {s:5d}  lm {lm.item():.3f}  coup {lc.item():.3f}  router {lr.item():.3f}  "
+                  f"gate {gate:+.3f}  flow{fg}  route {sc['router_acc']*100:.0f}%  "
+                  f"csp {bf['csp']*100:.0f} grp {bf['graph']*100:.0f} crs {bf['cross']*100:.0f} "
+                  f"isg {bf['ising']*100:.0f} typ {bf['type']*100:.0f} red {bf['reduction']*100:.0f} "
+                  f"tri {bf['tri']*100:.0f}  {time.time()-t0:.0f}s", flush=True)
             model.train()
     if not seen_open:
         print("  [WARN] γ gate never opened.", flush=True)
@@ -312,10 +363,17 @@ def main():
     ap.add_argument("--alpha_sup_w", type=float, default=1.0)
     ap.add_argument("--wpos", type=float, default=2.0)
     ap.add_argument("--wnone", type=float, default=1.0)
-    ap.add_argument("--n_csp", type=int, default=300)
-    ap.add_argument("--n_graph", type=int, default=300)
-    ap.add_argument("--n_cross", type=int, default=300)
-    ap.add_argument("--n_eval", type=int, default=80)
+    ap.add_argument("--coupling_w", type=float, default=1.0)
+    ap.add_argument("--ising_restarts", type=int, default=32)
+    ap.add_argument("--ising_steps", type=int, default=100)
+    ap.add_argument("--n_csp", type=int, default=240)
+    ap.add_argument("--n_graph", type=int, default=240)
+    ap.add_argument("--n_cross", type=int, default=240)
+    ap.add_argument("--n_ising", type=int, default=240)
+    ap.add_argument("--n_type", type=int, default=240)
+    ap.add_argument("--n_reduction", type=int, default=240)
+    ap.add_argument("--n_tri", type=int, default=240)
+    ap.add_argument("--n_eval", type=int, default=70)
     ap.add_argument("--core_ckpt", default="runs/general_organ_full.pt")
     ap.add_argument("--single_stream", action="store_true",
                     help="disable two-stream (default two-stream: gen prompt fact-ablated → organ is the only route)")
@@ -325,32 +383,41 @@ def main():
     a.two_stream = not a.single_stream
     if a.smoke:
         a.steps, a.warm_steps, a.bs = 40, 30, 6
-        a.n_csp = a.n_graph = a.n_cross = 40; a.n_eval = 24
+        a.n_csp = a.n_graph = a.n_cross = a.n_ising = a.n_type = a.n_reduction = a.n_tri = 24
+        a.n_eval = 14
 
     dev = G.device()
     tok = _tok(a.model)
     rng = np.random.default_rng(a.seed)
-    print(f"device={dev}  building multi-faculty pool "
-          f"(csp={a.n_csp} graph={a.n_graph} cross={a.n_cross}) ...", flush=True)
-    train = build_mf_pool(rng, a.n_csp, a.n_graph, a.n_cross, two_stream=a.two_stream)
+    pool_kw = dict(n_ising=a.n_ising, n_type=a.n_type, n_reduction=a.n_reduction, n_tri=a.n_tri)
+    print(f"device={dev}  building N-faculty pool "
+          f"(csp={a.n_csp} graph={a.n_graph} cross={a.n_cross} ising={a.n_ising} type={a.n_type} "
+          f"reduction={a.n_reduction} tri={a.n_tri}) ...", flush=True)
+    train = build_mf_pool(rng, a.n_csp, a.n_graph, a.n_cross, two_stream=a.two_stream, **pool_kw)
     ev = build_mf_pool(np.random.default_rng(a.seed + 1), a.n_eval, a.n_eval, a.n_eval,
-                       two_stream=a.two_stream)
+                       two_stream=a.two_stream,
+                       n_ising=a.n_eval, n_type=a.n_eval, n_reduction=a.n_eval, n_tri=a.n_eval)
     olmo_ids = _olmo_ids(a.model, dev)
     model = train_multifaculty(olmo_ids, tok, dev, a, train, ev)
 
-    # final eval: router argmax dispatch + the no-organ control (cross should collapse)
+    # final eval: router argmax dispatch + the no-organ control (cross/ising/reduction/tri collapse)
     sc = score_mf(model, ev, tok, dev, bs=a.bs, route_by_model=True, control="true", two_stream=a.two_stream)
     sc0 = score_mf(model, ev, tok, dev, bs=a.bs, route_by_model=True, control="zero", two_stream=a.two_stream)
     proof = FT.prove_multifaculty(n_inst=200, seed=123)
-    print("\n================ MULTIFACULTY WOVEN — FINAL ================")
+    proof_ext = FT.prove_extended(n_inst=120, seed=123)
+    flow = {TRI_CHANNELS[c]: float(torch.tanh(model.flow_gate[c])) for c in range(TRI_N_CHANNELS)}
+    print("\n================ N-FACULTY WOVEN — FINAL ================")
     print(f"  router accuracy (end-to-end, router argmax dispatch): {sc['router_acc']*100:.1f}%")
     for f in LIVE_FACULTIES:
-        print(f"  {f:6s} answer acc: {sc['by_faculty'][f]*100:5.1f}%  (no-organ {sc0['by_faculty'][f]*100:.1f}%)  "
+        print(f"  {f:9s} answer acc: {sc['by_faculty'][f]*100:5.1f}%  (no-organ {sc0['by_faculty'][f]*100:.1f}%)  "
               f"n={sc['n_by_faculty'][f]}")
-    out = {"args": vars(a), "final": sc, "no_organ": sc0, "exact_proof": proof}
+    print(f"  LEARNED FLOW GATES (tanh, zero-init): " +
+          "  ".join(f"{k}={v:+.3f}" for k, v in flow.items()))
+    out = {"args": vars(a), "final": sc, "no_organ": sc0, "flow_gates": flow,
+           "exact_proof": proof, "exact_proof_extended": proof_ext}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2, default=str))
-    torch.save({"state_dict": model.state_dict(), "args": vars(a), "final": sc}, a.ckpt)
+    torch.save({"state_dict": model.state_dict(), "args": vars(a), "final": sc, "flow_gates": flow}, a.ckpt)
     print(f"\nwrote {a.out} + {a.ckpt}", flush=True)
     return out
 

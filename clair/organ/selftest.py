@@ -370,7 +370,7 @@ def test_multifaculty():
     b0 = torch.zeros(1, n, K); vmask = torch.ones(1, n)
     specs = [{"faculty": "graph", "facts": [], "n": n, "d": 2,
               "source": rg["source"], "target": rg["target"]}]
-    surv, disp = comp.dispatch(b0, vmask, 0.5, edge_logits, specs, K)
+    surv, disp, _tri = comp.dispatch(b0, vmask, 0.5, edge_logits, specs, K)
     assert disp[0] == "graph", "a graph problem must dispatch to the graph faculty (NOT csp-locked)"
     truth = reachable(n, frozenset(map(tuple, rg["true_edges"])), rg["source"])
     assert int(surv[0, rg["target"], 0]) == int(rg["target"] in truth), "graph readout must encode reach"
@@ -385,6 +385,46 @@ def test_multifaculty():
     print(f"    multifaculty win     cross {res['cross_multifaculty_acc']*100:.0f}% vs "
           f"graph-only {res['cross_graphonly_acc']*100:.0f}% / csp-only "
           f"{res['cross_csponly_majority_acc']*100:.0f}% (routing NECESSARY)")
+
+    # (f) the NEW faculties end-to-end at the composer (ising / type / reduction / tri) + the dispatch
+    from .multifaculty import MultiFacultyComposerOrgan as _MFC
+    K2 = K
+    comp = _MFC(dev="cpu", use_core=False, ising_restarts=32, ising_steps=100)
+    rng2 = np.random.default_rng(7)
+    for nm, gen in (("ising", FT.gen_ising_record), ("type", FT.gen_type_record),
+                    ("reduction", FT.gen_reduction_record), ("tri", FT.gen_tri_record)):
+        r = gen(rng2)
+        n = r["n"]
+        b0 = torch.zeros(1, n, K2); vmask = torch.ones(1, n)
+        edge_l = torch.full((1, n, n), -9.0)
+        for (u, v) in r.get("true_edges", []):
+            edge_l[0, u, v] = 9.0
+        J_l = torch.zeros(1, n, n); h_l = torch.zeros(1, n)
+        if nm == "ising":
+            J_l[0, :n, :n] = torch.as_tensor(np.asarray(r["J_true"], np.float32))
+            h_l[0, :n] = torch.as_tensor(np.asarray(r["h_true"], np.float32))
+        facts = [tuple(f) for f in r.get("true_facts", [])]
+        d = len(r["vnames"]) if nm == "csp" else 2
+        specs = [{"faculty": nm, "facts": facts, "n": n, "d": d,
+                  "source": r["source"], "target": r["target"]}]
+        surv, disp, tri = comp.dispatch(b0, vmask, 0.5, edge_l, specs, K2, J_logits=J_l, h_logits=h_l)
+        assert disp[0] == nm, f"{nm} must dispatch to its own faculty"
+        assert int(surv[0, r["target"]].argmax()) == r["gold_idx"], f"{nm} readout must match exact gold"
+        if nm == "tri":
+            assert int((tri[0].abs().sum((1, 2)) > 0).sum()) == 3, "tri must emit all 3 wiring channels"
+    print("    new faculties        ising/type/reduction/tri dispatch + readout == exact gold "
+          "(reduction via Karp route mis→ising; tri 3-hop emits 3 flow channels)")
+
+    # (g) the NEW faculties' exact necessity (organ optimum vs majority; tri vs every sub-wiring)
+    ext = FT.prove_extended(n_inst=80, seed=5)
+    assert ext["ising_faculty_acc"] > 0.99 and ext["ising_majority_acc"] < 0.7
+    assert ext["type_faculty_acc"] > 0.99
+    assert ext["reduction_faculty_acc"] > 0.99 and ext["reduction_majority_acc"] < 0.7
+    assert ext["tri_full3hop_acc"] > 0.99 and ext["tri_isingonly_acc"] < 0.5
+    print(f"    new-faculty win      ising {ext['ising_faculty_acc']*100:.0f}% (maj {ext['ising_majority_acc']*100:.0f}) "
+          f"type {ext['type_faculty_acc']*100:.0f}% reduction {ext['reduction_faculty_acc']*100:.0f}% "
+          f"(maj {ext['reduction_majority_acc']*100:.0f}) | tri 3-hop {ext['tri_full3hop_acc']*100:.0f}% vs "
+          f"ising-only {ext['tri_isingonly_acc']*100:.0f}% / csp+ising {ext['tri_csp_ising_acc']*100:.0f}%")
 
 
 def main():

@@ -41,17 +41,20 @@ def _mentions(text, n):
     return {int(k): [tuple(s) for s in v] for k, v in CU.entity_mentions(text, n).items()}
 
 
-def _finish_record(prompt, n, source, target, ans_yes, faculty, extra, alpha_prompt=None):
+def _finish_record(prompt, n, source, target, ans_yes, faculty, extra, alpha_prompt=None,
+                   vnames=None, gold_idx=None):
     """Assemble the common record fields (mentions/vnames/gold) for a yes/no reachability prompt. When
     `alpha_prompt` is given (TWO-STREAM), α reads the FULL text (with the roads/colours) while the gen
     prompt is fact-ABLATED (roster + question only) — so the organ readout is the ONLY route to the
-    answer (the validated ALPHA_STRUCT engagement recipe; the gate cannot open on a text shortcut)."""
+    answer (the validated ALPHA_STRUCT engagement recipe; the gate cannot open on a text shortcut).
+    `vnames`/`gold_idx` generalize the answer domain beyond yes/no (the type faculty answers a monotype)."""
     body = prompt[: prompt.rfind(" Answer:")]
-    gold_idx = 0 if ans_yes else 1                         # YESNO = ["yes","no"]
+    vn = list(vnames) if vnames is not None else list(YESNO)
+    gi = int(gold_idx) if gold_idx is not None else (0 if ans_yes else 1)
     rec = {
-        "prompt": prompt, "answer": "yes" if ans_yes else "no", "n": n,
-        "query": int(target), "determined": True, "gold_idx": int(gold_idx),
-        "relation": faculty, "faculty": faculty, "vnames": list(YESNO),
+        "prompt": prompt, "answer": vn[gi], "n": n,
+        "query": int(target), "determined": True, "gold_idx": int(gi),
+        "relation": faculty, "faculty": faculty, "vnames": vn,
         "mentions": _mentions(body, n),
         "source": int(source), "target": int(target),
     }
@@ -178,6 +181,266 @@ def FAC_K():
     return G.K
 
 
+# ================================================================ exact Ising / max-cut ground truth
+def _ising_energy(J, h, s):
+    return float(-0.5 * (s @ J @ s) - (h * s).sum())
+
+
+def _all_ground_states(J, h, n):
+    """All min-energy ±1 configs of H=−½sᵀJs−hᵀs by brute enumeration (small n). Returns (list[array], E)."""
+    best = None
+    mins = []
+    for m in range(1 << n):
+        s = np.array([1.0 if (m >> i) & 1 else -1.0 for i in range(n)], dtype=np.float32)
+        E = _ising_energy(J, h, s)
+        if best is None or E < best - 1e-9:
+            best = E
+            mins = [s.copy()]
+        elif abs(E - best) < 1e-9:
+            mins.append(s.copy())
+    return mins, best
+
+
+def _relspin_determined(J, h, n, source, target):
+    """Across ALL ground states (canonicalised so spin[source]=+1), is spin[target] constant? Returns
+    (determined, same_side_bool). The well-posedness gate for the relative-team question."""
+    mins, _E = _all_ground_states(J, h, n)
+    vals = set()
+    for s in mins:
+        sc = s * s[source]                                   # canonicalize source := +1
+        vals.add(int(sc[target]))
+    if len(vals) != 1:
+        return False, None
+    return True, (next(iter(vals)) == 1)
+
+
+# ---------------------------------------------------------------- ISING faculty record
+def _rivalry_sentences(edges):
+    return " ".join(f"{CU.ENTITIES[u]} and {CU.ENTITIES[v]} are rivals." for (u, v) in sorted(edges))
+
+
+def gen_ising_record(rng, n_choices=(5, 6, 7), p_edge=0.42, want_yes=None, two_stream=True):
+    """A MAX-CUT optimization NL task: split cities into two teams so that rivals land on OPPOSITE teams
+    (max-cut of the rivalry graph). The answer (is t on s's team in the optimal split?) needs argmin over
+    an energy — narrowing+chaining provably cannot express it. Carries the true (J,h) for α's coupling
+    supervision (the CouplingProjector target). Resampled until the queried pair's relative team is
+    DETERMINED (constant across all ground states). `want_yes` balances the same/different team classes."""
+    for _ in range(256):
+        n = int(rng.choice(n_choices))
+        edges = frozenset((i, j) for i in range(n) for j in range(i + 1, n) if rng.random() < p_edge)
+        if len(edges) < n - 1:
+            continue
+        J = FAC.maxcut_J(n, edges); h = np.zeros(n, dtype=np.float32)
+        s = 0
+        cand = [t for t in range(n) if t != s]
+        rng.shuffle(cand)
+        for t in cand:
+            det, same = _relspin_determined(J, h, n, s, t)
+            if det and (want_yes is None or bool(same) == bool(want_yes)):
+                q = (f"Split the cities into two teams so that rivals are on opposite teams. "
+                     f"Is {CU.ENTITIES[t]} on the same team as {CU.ENTITIES[s]}? Answer:")
+                full = f"{_cities_intro(n)} {_rivalry_sentences(edges)} {q}"
+                gen = f"{_cities_intro(n)} {q}" if two_stream else full
+                surv = FAC.IsingMaxcut().survival(FAC.IsingState(n, J, h, s, t), FAC_K())
+                return _finish_record(gen, n, s, t, same, "ising",
+                                      {"true_edges": sorted(edges), "J_true": J.tolist(),
+                                       "h_true": h.tolist(), "surv": surv, "tgt": surv.copy(),
+                                       "true_facts": []}, alpha_prompt=full if two_stream else None)
+    raise RuntimeError("could not sample a determined Ising instance")
+
+
+# ---------------------------------------------------------------- TYPE faculty record
+def _type_decl_sentence(name, tname):
+    art = "an" if tname == "int" else "a"
+    return f"{name} is {art} {'integer' if tname=='int' else 'boolean'}."
+
+
+def gen_type_record(rng, n_choices=(4, 5, 6), two_stream=True):
+    """A TYPE-INFERENCE NL task: variables get base monotypes by declaration, propagated through 'has the
+    same type as' (type-variable unification = eq on the type lattice). The query variable is base-typed
+    via a chain of equalities the organ must follow (clair.typeinfer / csp arc-consistency). Answer ∈
+    {int,bool}. Distractors of the other type keep it non-degenerate."""
+    n = int(rng.choice(n_choices))
+    perm = list(rng.permutation(n))
+    # an eq-tree so types propagate; a base-type pin per root; >=2 groups for both int and bool to appear
+    facts = []
+    # split cells into 2 groups by a random cut so both types can occur
+    cut = 1 + int(rng.integers(max(1, n - 2)))
+    groups = [perm[:cut], perm[cut:]] if cut < n else [perm]
+    decl_text = []
+    cell_type = {}
+    for gi, grp in enumerate(groups):
+        if not grp:
+            continue
+        tname = TYPE_NAMES_LOCAL[int(rng.integers(2))]
+        tval = 0 if tname == "int" else 1
+        root = grp[0]
+        facts.append(("pin", root, tval))
+        decl_text.append(_type_decl_sentence(CU.ENTITIES[root], tname))
+        cell_type[root] = tval
+        # link the rest of the group to the root via an eq-tree (random parent already placed)
+        placed = [root]
+        for c in grp[1:]:
+            par = placed[int(rng.integers(len(placed)))]
+            facts.append(("eq", c, par))
+            decl_text.append(f"{CU.ENTITIES[c]} has the same type as {CU.ENTITIES[par]}.")
+            cell_type[c] = tval
+            placed.append(c)
+    # query a NON-pinned cell (one whose type required following an equality)
+    nonpinned = [c for c in range(n) if c in cell_type and not any(
+        f[0] == "pin" and f[1] == c for f in facts)]
+    if not nonpinned:
+        return gen_type_record(rng, n_choices, two_stream)
+    t = int(rng.choice(nonpinned))
+    tval = cell_type[t]
+    q = f"What is the type of {CU.ENTITIES[t]}? Answer:"
+    full = f"Variables {', '.join(CU.ENTITIES[i] for i in range(n))}. {' '.join(decl_text)} {q}"
+    gen = f"Variables {', '.join(CU.ENTITIES[i] for i in range(n))}. {q}" if two_stream else full
+    surv = FAC.TypeInfer().survival(FAC.TypeState(FAC.build_type_csp(facts, n), n, t), FAC_K())
+    return _finish_record(gen, n, 0, t, None, "type",
+                          {"true_facts": [list(f) for f in facts], "true_edges": [],
+                           "surv": surv, "tgt": surv.copy()},
+                          alpha_prompt=full if two_stream else None,
+                          vnames=list(TYPE_NAMES_LOCAL), gold_idx=tval)
+
+
+# ---------------------------------------------------------------- REDUCTION faculty record (MIS via Karp route)
+def _border_sentences(edges):
+    return " ".join(f"{CU.ENTITIES[u]} borders {CU.ENTITIES[v]}." for (u, v) in sorted(edges))
+
+
+def _all_max_independent_sets(n, edges):
+    """All MAXIMUM independent sets of an undirected graph (small n). Returns list[frozenset]."""
+    adj = {i: set() for i in range(n)}
+    for (u, v) in edges:
+        adj[u].add(v); adj[v].add(u)
+    best = -1; sets = []
+    for m in range(1 << n):
+        sel = [i for i in range(n) if (m >> i) & 1]
+        if all(v not in adj[u] for u in sel for v in sel if v != u):
+            if len(sel) > best:
+                best = len(sel); sets = [frozenset(sel)]
+            elif len(sel) == best:
+                sets.append(frozenset(sel))
+    return sets
+
+
+def gen_reduction_record(rng, n_choices=(5, 6, 7), p_edge=0.34, want_yes=None, two_stream=True):
+    """A MAX-INDEPENDENT-SET NL task — a problem with NO DIRECT faculty (argmax|IS| is an optimization, not
+    a narrowing). Solved by ROUTING across the Karp graph mis→ising (organ/reductions). Resampled until the
+    queried city's MIS-membership is DETERMINED (constant across all maximum independent sets). `want_yes`
+    balances the in-set / not-in-set classes."""
+    for _ in range(256):
+        n = int(rng.choice(n_choices))
+        edges = frozenset((i, j) for i in range(n) for j in range(i + 1, n) if rng.random() < p_edge)
+        if len(edges) < 2:
+            continue
+        mis = _all_max_independent_sets(n, edges)
+        if len(mis) == 0:
+            continue
+        det_cells = [t for t in range(n) if all((t in s) for s in mis) or all((t not in s) for s in mis)]
+        if want_yes is not None:
+            det_cells = [t for t in det_cells if (t in mis[0]) == bool(want_yes)]
+        if not det_cells:
+            continue
+        t = int(rng.choice(det_cells))
+        ans_yes = (t in mis[0])
+        q = (f"Choose the largest possible set of cities with no two that border each other. "
+             f"Is {CU.ENTITIES[t]} in that set? Answer:")
+        full = f"{_cities_intro(n)} {_border_sentences(edges)} {q}"
+        gen = f"{_cities_intro(n)} {q}" if two_stream else full
+        # the graph head is supervised on the symmetric adjacency (both directions)
+        diredges = sorted(set((u, v) for (u, v) in edges) | set((v, u) for (u, v) in edges))
+        surv = FAC.ReductionRoute().survival(FAC.ReductionState(n, edges, 0, t), FAC_K())
+        return _finish_record(gen, n, 0, t, ans_yes, "reduction",
+                              {"true_edges": diredges, "surv": surv, "tgt": surv.copy(),
+                               "true_facts": []}, alpha_prompt=full if two_stream else None)
+    raise RuntimeError("could not sample a determined MIS instance")
+
+
+# ---------------------------------------------------------------- TRI faculty record (3-hop multiorganic)
+def _tri_channel_answer(csp, cand_edges, source, target, n, channel):
+    """The EXACT (LM-free) same-team answer under one wiring channel, with its determinacy — for the
+    necessity proof. Returns (determined, same_team_bool)."""
+    und, nodes = FAC._tri_channel_edges(csp, cand_edges, source, n, channel)
+    if source not in nodes:
+        nodes = nodes | {source}
+    node_list = sorted(nodes)
+    loc = {v: i for i, v in enumerate(node_list)}
+    m = len(node_list)
+    if target not in loc:
+        return True, False                                   # outside district → 'opposite' by convention
+    J = FAC.maxcut_J(m, [(loc[u], loc[v]) for (u, v) in und if u in loc and v in loc])
+    h = np.zeros(m, dtype=np.float32)
+    return _relspin_determined(J, h, m, loc[source], loc[target])
+
+
+def gen_tri_record(rng, n_choices=(6, 7, 8), p_cand=0.5, want_yes=None, two_stream=True):
+    """The 3-FACULTY beast: unique 2-colouring (CSP) → same-colour roads are open (csp→graph flow) → the
+    cities reachable from S form a district (GRAPH closure) → split the district's open roads by max-cut
+    (graph→ising flow). Query: is T on S's team in the optimal split? Resampled until (a) T is in the
+    district, (b) the district max-cut relative team of (S,T) is DETERMINED, and (c) the full 3-hop answer
+    DIFFERS from the ising-only ('raw') answer — so a single/two-faculty organ provably fails."""
+    for _ in range(1024):
+        n = int(rng.choice(n_choices))
+        facts, colors, _tree = _planted_2coloring(rng, n)
+        csp = CU.build_csp(n, 2, facts)
+        ded = C.exact_dedP(csp, csp.full())
+        if any(len(ded[i]) != 1 for i in range(n)):
+            continue
+        if [int(next(iter(ded[i]))) for i in range(n)] != colors:
+            continue
+        cand = frozenset((i, j) for i in range(n) for j in range(n)
+                        if i != j and rng.random() < p_cand)
+        s = int(rng.integers(n))
+        act = active_edges(colors, cand, "eq")
+        dist = reachable(n, act, s)
+        if not (2 <= len(dist) <= n // 2 + 1):               # district a SMALL proper subset, so the
+            continue                                          # outside structure perturbs the color-only
+        #                                                     # max-cut → the reachability flow matters more
+        choices = [t for t in dist if t != s]
+        rng.shuffle(choices)
+        # NECESSITY: every valid target must DIFFER from the ising-only ('raw') wiring (so opening no
+        # flow / the optimization alone is wrong). PREFER targets that ALSO differ from the csp→ising
+        # ('color', no graph-closure) wiring — so the graph-closure flow is necessary too; this is what
+        # the learned flow gates must discover. We keep the strongest available target.
+        strong = weak = None
+        for t in choices:
+            det_full, same_full = _tri_channel_answer(csp, cand, s, t, n, "color_reach")
+            if not det_full:
+                continue
+            if want_yes is not None and bool(same_full) != bool(want_yes):
+                continue
+            det_raw, same_raw = _tri_channel_answer(csp, cand, s, t, n, "raw")
+            if det_raw and same_raw == same_full:
+                continue                                      # ising-only must be wrong (hard)
+            det_col, same_col = _tri_channel_answer(csp, cand, s, t, n, "color")
+            if det_col and same_col != same_full:
+                strong = (t, same_full); break               # both flows necessary — best
+            weak = weak or (t, same_full)
+        sel = strong or weak
+        if sel is None:
+            continue
+        t, same_full = sel
+        q = (f"Cities of the same color are connected by open roads. Among the cities reachable from "
+             f"{CU.ENTITIES[s]} along open roads, split them into two teams to put as many open-road "
+             f"pairs as possible on opposite teams. Is {CU.ENTITIES[t]} on the same team as "
+             f"{CU.ENTITIES[s]}? Answer:")
+        full = (f"{_cities_intro(n)} {' '.join(_color_sentence(f) for f in facts)} "
+                f"{_road_sentences(cand)} {q}")
+        gen = f"{_cities_intro(n)} {q}" if two_stream else full
+        surv = FAC.TriCSPGraphIsing().survival(FAC.TriState(csp, cand, s, t), FAC_K())
+        return _finish_record(gen, n, s, t, same_full, "tri",
+                              {"true_facts": [list(f) for f in facts],
+                               "true_edges": sorted(cand), "cand_edges": sorted(cand),
+                               "colors": colors, "surv": surv, "tgt": surv.copy()},
+                              alpha_prompt=full if two_stream else None)
+    raise RuntimeError("could not sample a discriminating tri-faculty instance")
+
+
+TYPE_NAMES_LOCAL = ["int", "bool"]
+
+
 # ---------------------------------------------------------------- the exact, LM-free multifaculty proof
 def prove_multifaculty(n_inst=200, seed=0, verbose=True):
     """Exact composer-level proof (no LM): dispatch each task's TRUE typed struct and show
@@ -225,6 +488,73 @@ def prove_multifaculty(n_inst=200, seed=0, verbose=True):
         "cross_graphonly_acc": graphonly_ok / n_inst,
         "cross_csponly_majority_acc": csponly_acc,
     }
+
+
+def prove_extended(n_inst=120, seed=0):
+    """Exact, LM-free necessity proofs for the NEW faculties (ising / type / reduction / tri):
+      ising     : the organ's optimal-split relative team == the exact ground-truth (determined max-cut);
+                  a non-optimizing baseline (majority guess) cannot.
+      type      : the type faculty's per-cell forced monotype == the exact typing on determined queries.
+      reduction : MIS membership via the Karp route mis→ising == the exact MIS membership.
+      tri       : the full 3-hop answer == ground truth, while EVERY sub-wiring (raw=ising-only,
+                  color=csp+ising-no-closure) and the single-faculty baselines provably FAIL."""
+    rng = np.random.default_rng(seed)
+    K = FAC_K()
+    res = {"n_inst": n_inst}
+
+    # ---- ISING: organ optimum vs exact determined gold; majority baseline ----
+    ok = 0; golds = []
+    for k in range(n_inst):
+        r = gen_ising_record(rng, want_yes=(k % 2 == 0))
+        sv = FAC.IsingMaxcut().survival(
+            FAC.IsingState(r["n"], np.asarray(r["J_true"], np.float32),
+                           np.asarray(r["h_true"], np.float32), r["source"], r["target"]), K)
+        ok += int(int(sv[r["target"]].argmax()) == r["gold_idx"])
+        golds.append(r["gold_idx"] == 0)
+    p = sum(golds) / max(1, len(golds))
+    res["ising_faculty_acc"] = ok / n_inst
+    res["ising_majority_acc"] = max(p, 1.0 - p)
+
+    # ---- TYPE: forced monotype vs exact on determined queries ----
+    ok = 0
+    for _ in range(n_inst):
+        r = gen_type_record(rng)
+        sv = FAC.TypeInfer().survival(FAC.TypeState(FAC.build_type_csp(
+            [tuple(f) for f in r["true_facts"]], r["n"]), r["n"], r["target"]), K)
+        ok += int(int(sv[r["target"]].argmax()) == r["gold_idx"])
+    res["type_faculty_acc"] = ok / n_inst
+
+    # ---- REDUCTION: MIS-via-route membership vs exact ----
+    ok = 0; golds = []
+    for k in range(n_inst):
+        r = gen_reduction_record(rng, want_yes=(k % 2 == 0))
+        und = frozenset((min(u, v), max(u, v)) for (u, v) in r["true_edges"])
+        sv = FAC.ReductionRoute().survival(FAC.ReductionState(r["n"], und, 0, r["target"]), K)
+        ok += int(int(sv[r["target"]].argmax()) == r["gold_idx"])
+        golds.append(r["gold_idx"] == 0)
+    p = sum(golds) / max(1, len(golds))
+    res["reduction_faculty_acc"] = ok / n_inst
+    res["reduction_majority_acc"] = max(p, 1.0 - p)
+
+    # ---- TRI: full 3-hop vs each sub-wiring ----
+    tri_full = tri_raw = tri_color = 0; golds = []
+    for k in range(n_inst):
+        r = gen_tri_record(rng, want_yes=(k % 2 == 0))
+        n = r["n"]; csp = CU.build_csp(n, 2, [tuple(f) for f in r["true_facts"]])
+        cand = frozenset(map(tuple, r["cand_edges"])); s = r["source"]; t = r["target"]
+        gold = (r["gold_idx"] == 0); golds.append(gold)
+        _d, full = _tri_channel_answer(csp, cand, s, t, n, "color_reach")
+        dr, raw = _tri_channel_answer(csp, cand, s, t, n, "raw")
+        dc, col = _tri_channel_answer(csp, cand, s, t, n, "color")
+        tri_full += int(full == gold)
+        tri_raw += int(dr and raw == gold)
+        tri_color += int(dc and col == gold)
+    p = sum(golds) / max(1, len(golds))
+    res["tri_full3hop_acc"] = tri_full / n_inst
+    res["tri_isingonly_acc"] = tri_raw / n_inst              # raw = ising on all edges (no flows)
+    res["tri_csp_ising_acc"] = tri_color / n_inst           # color flow only (no graph closure)
+    res["tri_majority_acc"] = max(p, 1.0 - p)
+    return res
 
 
 def main():
