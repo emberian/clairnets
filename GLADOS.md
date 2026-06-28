@@ -41,8 +41,9 @@ reach-doubling macros, FOL forward-chaining, energy, and the learned `core_narro
 `blade_affine_organ`), each wired to ONE typed **spine** (`protocol.Reduction`):
 
 - an abstract **STATE** (the lattice element it narrows; `CSPState` = per-cell domains over a finite CSP);
-- **`reduce(state) → state′`** with γ(state′) ⊆ γ(state) — a **sound narrowing**, or a no-op = ABSTAIN;
-- a **`certificate()`** — `sound-by-construction` / `neural-guidance` / `approximate` + the completeness caveat;
+- **`reduce(state) → state′`** with γ(state′) ⊆ γ(state) — a **sound narrowing OF THAT STATE**, or a no-op = ABSTAIN;
+- a **`certificate()`** — `sound-by-construction` / `neural-guidance` / `approximate` + the completeness caveat
+  (`sound` = operator-sound *relative to the given CSP* (A), **not** answer-sound (D) — [`notes/soundness.md`](notes/soundness.md));
 - the uniform **`survival(state, K) → surv[n,K]`** structured-γ readout — the exact tensor `OracleGamma`
   projects into the host residual stream. **One channel the LM reads every organ through.**
 
@@ -56,8 +57,11 @@ slot IS the bank + composer: **α** (`DenseLatentProjector`) latently compiles t
 candidate lattice; the **`BankComposerOrgan`** runs the verifier-gated reduced product on the problem's true
 structure — the **certified floor** (Arc/Factor/Modular/GF2/Macro) + the *pretrained* `CoreNarrowOrgan` + α's
 own compile, all gated; **γ** reads the *composed* lattice back through the zero-init gate. The certified
-floor makes the injection **miscompile-robust by construction** (a wrong α-compile can only sharpen toward the
-exact transformer, never below it — it cannot poison the floor). This replaced the old stopgap standalone
+floor makes the injection **robust to a wrong per-cell *value*-compile by construction** (a wrong α value-compile
+`b0` can only sharpen toward the exact transformer, never below it — it cannot poison the floor) — but the floor
+is sound only *relative to the CSP it composes on*, so a wrong *structure*-compile `csp_α` is NOT covered: the
+floor then solves the wrong problem and certifies the wrong answer (the SHUFFLED gap; see
+[`notes/soundness.md`](notes/soundness.md) (C)). This replaced the old stopgap standalone
 `LatentNarrower`; it **engages** (corrupt→drop ~+97 pts, lift +77, no-op@init 0.0, false-elim 0).
 
 **The reduction graph — `reductions.py` (cross-type, vs the composer's within-type).** A typed
@@ -146,7 +150,9 @@ alldiff 0.97 > coloring 0.90 > arithmetic 0.89 > equality 0.86 > ordering 0.85; 
 neural proposals were verifier-gated, legible by construction.
 
 **Honest scope (the open frontier).** In this *easy* regime the certified floor carries answer-correctness on
-its own — answer-acc 1.0 whether or not α is faithful, corr(faithful, correct) = 0 (no variance), so the
+its own — *because the true structure is handed in* (ground-truth structure = the (D) boundary check; soundness
+becomes answer-soundness only where that check exists — see [`notes/soundness.md`](notes/soundness.md)) —
+answer-acc 1.0 whether or not α is faithful, corr(faithful, correct) = 0 (no variance), so the
 **bottleneck test is saturated / inconclusive** here. The genuinely open piece is **α-on-real-NL** (α compiling
 from text with no provided structure, where correctness drops and failures attribute): the `eval_real_nl` hook
 is wired; the result is the next frontier.

@@ -159,6 +159,9 @@ target, not by trying to backprop through `build_csp_from_struct`.
 
 ## 3. Keeping the certified-floor robustness — the soundness story
 
+> The three layers below are the (A)/(B)/(C)/(D) hierarchy; the canonical, repo-wide statement of what
+> "sound" means in GLaDOS lives in [`soundness.md`](soundness.md). This section is its α-struct instance.
+
 The change does NOT weaken the floor; it re-bases what the floor is sound *with respect to*, and adds an
 honest output-check on top. Spell it out as three layers:
 

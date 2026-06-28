@@ -22,9 +22,13 @@ Result, vs the standalone narrower:
       problem instance, threaded into the records, and is verifier-gated);
   (2) MULTI-FACULTY — the whole bank is available; the composer routes by each reduction's
       `applies()` (Modular on LinSystems, GF2 on XOR, Macro on path-CSPs, …);
-  (3) CERTIFIED-FLOOR-BACKED — the injected lattice is sound by construction (the certified ops run
-      from the full domain and the meet of sound narrowings is sound; the neural proposals only ever
-      sharpen toward the exact per-cell transformer, never below it). Not pure-neural.
+  (3) CERTIFIED-FLOOR-BACKED — the injected lattice is sound by construction RELATIVE TO THE CSP IT
+      COMPOSES ON (the certified ops run from the full domain and the meet of sound narrowings is sound;
+      the neural proposals only ever sharpen toward the exact per-cell transformer, never below it). Not
+      pure-neural. This is (A)/(B) soundness (notes/soundness.md), NOT answer-soundness: when that CSP is
+      α's emitted csp_α, the lattice is sound only MODULO the unverified compile — a wrong csp_α gives a
+      certified-correct answer to the wrong problem (the SHUFFLED gap, (C)). Answer-soundness needs the
+      output check, which needs ground truth (train/eval) or a domain verifier (code/proof) — (D).
 
 α is trained by the DIRECT J0 dominate-dedₚ supervision on its raw compile b0 (the SATNet grounding
 fix) — the composer is discrete/non-differentiable, so γ reads the DETACHED composed lattice while α
@@ -101,8 +105,10 @@ class BankComposerOrgan:
         return [r.name for r in self.base_reductions]
 
     def compose_one(self, csp, alpha_dom, system=None, tags=()):
-        """Compose from the FULL domain on the true structure. The certified floor is sound-by-
-        construction; CoreNarrowOrgan + α are verifier-gated. Returns the composed CSPState."""
+        """Compose from the FULL domain on the given structure (`csp`). The certified floor is sound-by-
+        construction RELATIVE TO `csp`; CoreNarrowOrgan + α are verifier-gated. Sound rel. `csp`, NOT
+        answer-sound (notes/soundness.md (B)): if `csp` is α's emitted csp_α the result is sound only
+        modulo that unverified compile. Returns the composed CSPState."""
         full = CSPState.full(csp, system=system, tags=frozenset(tags))
         reds = list(self.base_reductions)
         if self.use_alpha_gate and alpha_dom is not None:
@@ -911,13 +917,18 @@ class AlphaStructWoven(nn.Module):
         (candidate 0 = greedy argmax; 1..K-1 = temperature samples — `sample_candidates`), compile each
         to csp_α, run the EXACT certified solver (`solve_query` = exact_dedP), KEEP candidates that are
         SOLVABLE (not ⊥) and DETERMINE the query, and SELECT the highest structure-CONFIDENCE survivor.
-        The selection is SOUND — it reads only the candidate's own structure + the certified solver +
-        the model's confidence, never gold. Returns the selected
+        The selection is SOUND ONLY RELATIVE TO csp_α — it reads the candidate's own emitted structure +
+        the certified solver on THAT structure + the model's confidence, never gold. So a candidate can
+        be 'solvable + determines the query' on csp_α while csp_α is the WRONG problem: this filter does
+        NOT give answer-soundness (notes/soundness.md (B) vs (D)). Returns the selected
             {facts, conf, solvable, determines, answer, certified, n_pass, K}.
-        If `output_check_fn` + `csp_true` are supplied (the RELIABILITY layer, used OUTSIDE the
-        forbid_record_csp forward — e.g. the diagnostic), the survivor must ALSO pass the certified
-        output_check (answer is a real solution-value of the TRUE instance) — the gate that licenses the
-        accept. With none passing we fall back to the greedy candidate (uncertified). K=1 ⇒ greedy only
+        Answer-soundness arrives ONLY via `output_check_fn` + `csp_true` (the RELIABILITY layer, used
+        OUTSIDE the forbid_record_csp forward — e.g. the diagnostic): the survivor must ALSO pass the
+        output_check (answer is a real solution-value of the TRUE instance) — the (D) gate that licenses
+        the accept, and it needs ground truth (or a domain verifier) to exist. The `certified` flag below
+        is set on that gate when present, else on the csp_α-relative filter alone (rel.-csp_α only — read
+        it as 'passed the available check', not 'correct'). With none passing we fall back to the greedy
+        candidate (uncertified). K=1 ⇒ greedy only
         ⇒ identical to the single-shot decode (no behavior change)."""
         cands = sample_candidates(pin_l_b, pair_l_b, vmask_b, n, K, temp=temp, d=d, rng=rng)
         for c in cands:
@@ -949,8 +960,10 @@ class AlphaStructWoven(nn.Module):
             stop on FIXPOINT (structure stable vs the previous step) or T.
 
         α-as-search composes INSIDE each step (search_K>1 ⇒ propose+verifier-select the step's structure).
-        Every step's lattice is the certified-floor narrowing of its csp_α (SOUND each step — the floor
-        never drops a real solution value); the final answer is output-checked downstream. T=1 ⇒ one
+        Every step's lattice is the certified-floor narrowing of its csp_α (sound REL. csp_α each step —
+        the floor never drops a value used by a solution OF csp_α; this is NOT answer-soundness if csp_α
+        is the wrong compile); answer-soundness arrives only when the final answer is output-checked
+        downstream against ground truth or a domain verifier (notes/soundness.md (B)/(D)). T=1 ⇒ one
         emission, no feedback ever applied ⇒ bitwise the single-shot core. Returns (surv [B,N,K], info).
 
         Generalizes toward the multi-step orchestrator (notes/north_star_orchestrator.md): here the loop

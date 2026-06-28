@@ -15,6 +15,11 @@ Each round applies every APPLICABLE csp-domain reduction to the current state an
 intersects) the results; iterate to a fixpoint. The meet of sound narrowings is a sound narrowing,
 so the composite stays sound by construction — the final `verify` is a belt-and-braces check that
 false-elim vs the exact oracle is 0.
+
+SCOPE: all "sound" here is RELATIVE TO THE INPUT CSP this composer was handed (level (B) in
+notes/soundness.md): false-elim 0 means we drop no solution OF THAT CSP. It is NOT answer-soundness —
+if the input is csp_α (α's emitted structure), the composite is sound only MODULO that unverified
+compile; a wrong csp_α yields a certified-correct answer to the wrong problem (SHUFFLED, (C)/(D)).
 """
 from __future__ import annotations
 
