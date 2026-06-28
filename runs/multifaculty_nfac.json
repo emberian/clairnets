@@ -1,0 +1,108 @@
+{
+  "args": {
+    "model": "allenai/OLMo-2-0425-1B",
+    "smoke": false,
+    "steps": 3000,
+    "warm_steps": 1000,
+    "bs": 16,
+    "seed": 0,
+    "lora_r": 16,
+    "lora_lr": 0.0001,
+    "alpha_lr": 0.0003,
+    "gamma_lr": 0.002,
+    "gamma_hidden": 256,
+    "alpha_dp": 384,
+    "alpha_heads": 6,
+    "mid_layer": 6,
+    "inject_layer": 12,
+    "struct_sup_w": 1.0,
+    "edge_sup_w": 1.0,
+    "router_w": 1.0,
+    "alpha_sup_w": 1.0,
+    "wpos": 2.0,
+    "wnone": 1.0,
+    "coupling_w": 1.0,
+    "ising_restarts": 32,
+    "ising_steps": 100,
+    "n_csp": 240,
+    "n_graph": 240,
+    "n_cross": 240,
+    "n_ising": 240,
+    "n_type": 240,
+    "n_reduction": 240,
+    "n_tri": 240,
+    "n_eval": 70,
+    "core_ckpt": "runs/general_organ_full.pt",
+    "single_stream": false,
+    "out": "runs/multifaculty_nfac.json",
+    "ckpt": "runs/multifaculty_nfac.pt",
+    "two_stream": true
+  },
+  "final": {
+    "by_faculty": {
+      "csp": 0.8857142857142857,
+      "graph": 1.0,
+      "cross": 0.9571428571428572,
+      "ising": 1.0,
+      "type": 1.0,
+      "reduction": 0.9714285714285714,
+      "tri": 0.7
+    },
+    "n_by_faculty": {
+      "csp": 70,
+      "graph": 70,
+      "cross": 70,
+      "ising": 70,
+      "type": 70,
+      "reduction": 70,
+      "tri": 70
+    },
+    "router_acc": 1.0
+  },
+  "no_organ": {
+    "by_faculty": {
+      "csp": 0.2571428571428571,
+      "graph": 0.6285714285714286,
+      "cross": 0.5714285714285714,
+      "ising": 0.5,
+      "type": 0.4,
+      "reduction": 0.5714285714285714,
+      "tri": 0.5428571428571428
+    },
+    "n_by_faculty": {
+      "csp": 70,
+      "graph": 70,
+      "cross": 70,
+      "ising": 70,
+      "type": 70,
+      "reduction": 70,
+      "tri": 70
+    },
+    "router_acc": 0.0
+  },
+  "flow_gates": {
+    "raw": -0.021079955622553825,
+    "color": 0.2068873643875122,
+    "color_reach": 0.3430735170841217
+  },
+  "exact_proof": {
+    "n_inst": 200,
+    "graph_faculty_acc": 1.0,
+    "cross_balance_yes_frac": 0.5,
+    "cross_multifaculty_acc": 1.0,
+    "cross_graphonly_acc": 0.625,
+    "cross_csponly_majority_acc": 0.5
+  },
+  "exact_proof_extended": {
+    "n_inst": 120,
+    "ising_faculty_acc": 1.0,
+    "ising_majority_acc": 0.5,
+    "type_faculty_acc": 1.0,
+    "reduction_faculty_acc": 1.0,
+    "reduction_majority_acc": 0.5,
+    "tri_full3hop_acc": 1.0,
+    "tri_isingonly_acc": 0.0,
+    "tri_csp_ising_acc": 0.9416666666666667,
+    "tri_majority_acc": 0.5
+  }
+}
