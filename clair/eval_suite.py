@@ -97,15 +97,32 @@ def save_woven(model, path, *, base_id, cfg):
     return path
 
 
-def load_woven(path, dev=None, base_id=None):
+def load_woven(path, dev=None, base_id=None, kind="auto"):
     """Rebuild a woven model from a checkpoint on top of its base (by HF id). Returns (model, tok, meta).
-    base_id overrides the stored id (judge the SAME woven deltas on a DIFFERENT base, if compatible)."""
+    base_id overrides the stored id (judge the SAME woven deltas on a DIFFERENT base, if compatible).
+
+    kind ∈ {auto, live, alpha_struct, multifaculty}: 'auto' detects from the blob (woven_loader.detect_kind).
+    The legacy LiveLatentWoven path stays inline here; the ALPHA_STRUCT (rack+cand+fb_adapter) and
+    MULTIFACULTY (rack+cand+flow_gate) reconstructions are delegated to clair.organ.woven_loader, which
+    rebuilds those heads over a named base (the old loader dropped them)."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
     from . import oracle_readout as O
     from . import latent_organ as LAT
+    from .organ import woven_loader as WL
     dev = dev or device()
     blob = torch.load(path, map_location="cpu", weights_only=False)
+    detected = WL.detect_kind(blob)
+    kind = detected if (kind in (None, "auto")) else kind
+    blob.setdefault("kind", detected)
+    if kind == "alpha_struct":
+        model, tok = WL.load_alpha_struct(blob, dev=dev, base_id=base_id)
+        print(f"  loaded woven checkpoint {path}  kind=alpha_struct (auto-detected={detected})", flush=True)
+        return model, tok, blob
+    if kind == "multifaculty":
+        model, tok = WL.load_multifaculty(blob, dev=dev, base_id=base_id)
+        print(f"  loaded woven checkpoint {path}  kind=multifaculty (auto-detected={detected})", flush=True)
+        return model, tok, blob
     cfg = blob["cfg"]
     mid = base_id or blob["base_id"]
     tok = AutoTokenizer.from_pretrained(mid)
@@ -227,6 +244,170 @@ def _apply_control(surv, recs, control, K, perm):
     return O.apply_control(surv, recs, control, K, perm=perm)
 
 
+# ============================================================================== ALPHA_STRUCT woven path
+# The ALPHA_STRUCT woven does NOT use the live candidate-scorer's α (DenseLatentProjector → LatentNarrower).
+# Its α is the StructureRack that EMITS a typed factor graph → csp_α → the certified composer → γ. So the
+# capture forward uses model.live(..., nd=, dvec=) (NOT the live `pment` capture), and the injected lattice
+# is the composer's per-cell survival. The candidate SCORING half is identical (length-normalized answer-
+# span logprob over the legal candidates), so the controls / pass@k / TTS all reuse one cached pass.
+@torch.no_grad()
+def _alpha_struct_candidate_scores(woven, recs, tok, dev, control="true", *, use_base=False,
+                                   override_oracle=False, fewshot="", bs=8, perm=None, two_stream=True):
+    from . import oracle_readout as O
+    woven.eval()
+    K = woven.K
+    if perm is None:
+        perm = tuple(list(range(1, K)) + [0])
+    inject = control != "zero"
+    out = []
+    for i in range(0, len(recs), bs):
+        chunk = recs[i:i + bs]
+        Bp = len(chunk); Nmax = max(r["n"] for r in chunk)
+        surv = None
+        if inject:
+            if override_oracle:
+                surv = torch.zeros(Bp, Nmax, K, device=dev)
+                for b, r in enumerate(chunk):
+                    if r.get("surv") is not None:
+                        surv[b, : r["n"], :] = torch.from_numpy(r["surv"]).to(dev)
+            else:
+                cap_p = [(r.get("alpha_prompt", r["prompt"]) if two_stream else r["prompt"]) for r in chunk]
+                cap_m = [(r.get("alpha_mentions", r["mentions"]) if two_stream else r["mentions"]) for r in chunk]
+                penc = tok(cap_p, return_offsets_mapping=True, padding=True, return_tensors="pt")
+                pids = penc["input_ids"].to(dev); pattn = penc["attention_mask"].to(dev)
+                pment = O._mention_tensor(cap_m, penc["offset_mapping"], Bp, Nmax, pids.size(1), dev)
+                nd = [(r["n"], len(r["vnames"])) for r in chunk]
+                dvec = torch.tensor([len(r["vnames"]) for r in chunk], device=dev)
+                with woven.live(pment, pattn, inject=False, capture=True, nd=nd, dvec=dvec):
+                    _ = woven.logits(pids, pattn)
+                surv = woven._captured_surv[:, :Nmax, :].clone()
+            surv = _apply_control(surv, chunk, control, K, perm)
+        fulls, plens, spans, prob_of = [], [], [], []
+        shift = len(fewshot)
+        for pi, r in enumerate(chunk):
+            cands = [" " + v for v in r["vnames"]] + [" " + O.ABSTAIN_STR]
+            for cand in cands:
+                fulls.append(fewshot + r["prompt"] + cand); plens.append(shift + len(r["prompt"]))
+                spans.append({k: [(x + shift, y + shift) for (x, y) in v] for k, v in r["mentions"].items()})
+                prob_of.append(pi)
+        enc = tok(fulls, return_offsets_mapping=True, padding=True, return_tensors="pt")
+        ids = enc["input_ids"].to(dev); attn = enc["attention_mask"].to(dev)
+        offsets = enc["offset_mapping"]; T = ids.size(1)
+        if inject:
+            mention = O._mention_tensor(spans, offsets, len(fulls), Nmax, T, dev)
+            idx = torch.tensor(prob_of, device=dev)
+            dvec_f = torch.tensor([len(chunk[p]["vnames"]) for p in prob_of], device=dev)
+            ctx = woven.live(mention, attn, inject=True, capture=False, override=surv[idx],
+                             nd=[(chunk[p]["n"], len(chunk[p]["vnames"])) for p in prob_of], dvec=dvec_f)
+        else:
+            ctx = woven.live(None, None, inject=False)
+        base_ctx = woven.model.disable_adapter() if (use_base and hasattr(woven.model, "disable_adapter")) \
+            else contextlib.nullcontext()
+        with base_ctx, ctx:
+            logits = woven.logits(ids, attn).float()
+        out += _rows_to_scores(logits, ids, attn, offsets, plens, prob_of, chunk, T, dev)
+    return out
+
+
+# ============================================================================== MULTIFACULTY woven path
+# The MULTIFACULTY woven routes (router argmax) to a faculty, the matching head emits that faculty's native
+# struct, and the dispatching composer returns the per-cell lattice (+ the 3-hop tri channels). Controls
+# corrupt that DISPATCHED lattice (per-faculty, since each record's surv is the faculty-specific narrowing).
+# Records are grouped by `faculty` in the metrics (by_rung == by_faculty).
+@torch.no_grad()
+def _multifaculty_candidate_scores(woven, recs, tok, dev, control="true", *, use_base=False,
+                                   override_oracle=False, fewshot="", bs=8, perm=None, two_stream=True):
+    from . import oracle_readout as O
+    woven.eval()
+    K = woven.K
+    if perm is None:
+        perm = tuple(list(range(1, K)) + [0])
+    inject = control != "zero"
+    out = []
+    for i in range(0, len(recs), bs):
+        chunk = recs[i:i + bs]
+        Bp = len(chunk); Nmax = max(r["n"] for r in chunk)
+        dvec = torch.tensor([r["n"] for r in chunk], device=dev)
+        specs = [{"faculty": r["faculty"], "n": r["n"],
+                  "d": len(r["vnames"]) if r["faculty"] == "csp" else 2,
+                  "source": int(r.get("source", 0)),
+                  "target": int(r.get("target", r.get("query", 0)))} for r in chunk]
+        surv = tri = tri_mask = None
+        if inject:
+            cap_p = [(r.get("alpha_prompt", r["prompt"]) if two_stream else r["prompt"]) for r in chunk]
+            cap_m = [(r.get("alpha_mentions", r["mentions"]) if two_stream else r["mentions"]) for r in chunk]
+            penc = tok(cap_p, return_offsets_mapping=True, padding=True, return_tensors="pt")
+            pids = penc["input_ids"].to(dev); pattn = penc["attention_mask"].to(dev)
+            pment = O._mention_tensor(cap_m, penc["offset_mapping"], Bp, Nmax, pids.size(1), dev)
+            with woven.live(pment, pattn, inject=False, capture=True, specs=specs, dvec=dvec,
+                            route_by_model=True):
+                _ = woven.logits(pids, pattn)
+            surv = woven._captured_surv[:, :Nmax, :].clone()
+            tri = woven._captured_tri[:, :, :Nmax, :].clone()
+            tri_mask = woven._captured_tri_mask.clone()
+            ctl_recs = [dict(r, query=int(r.get("query", r.get("target", 0)))) for r in chunk]
+            surv = _apply_control(surv, ctl_recs, control, K, perm)
+        fulls, plens, spans, prob_of = [], [], [], []
+        for pi, r in enumerate(chunk):
+            for cand in [" " + v for v in r["vnames"]] + [" " + O.ABSTAIN_STR]:
+                fulls.append(r["prompt"] + cand); plens.append(len(r["prompt"]))
+                spans.append({k: [tuple(s) for s in v] for k, v in r["mentions"].items()}); prob_of.append(pi)
+        enc = tok(fulls, return_offsets_mapping=True, padding=True, return_tensors="pt")
+        ids = enc["input_ids"].to(dev); attn = enc["attention_mask"].to(dev)
+        offsets = enc["offset_mapping"]; T = ids.size(1)
+        if inject:
+            mention = O._mention_tensor(spans, offsets, len(fulls), Nmax, T, dev)
+            idx = torch.tensor(prob_of, device=dev)
+            ctx = woven.live(mention, attn, inject=True, capture=False, override=surv[idx], dvec=dvec[idx],
+                             tri_override=tri[idx], tri_mask=tri_mask[idx])
+        else:
+            ctx = woven.live(None, None, inject=False)
+        base_ctx = woven.model.disable_adapter() if (use_base and hasattr(woven.model, "disable_adapter")) \
+            else contextlib.nullcontext()
+        with base_ctx, ctx:
+            logits = woven.logits(ids, attn).float()
+        out += _rows_to_scores(logits, ids, attn, offsets, plens, prob_of, chunk, T, dev,
+                               relation_key="faculty")
+    return out
+
+
+def _rows_to_scores(logits, ids, attn, offsets, plens, prob_of, chunk, T, dev, relation_key="relation"):
+    """Shared candidate-row → {scores, gold, relation, determined} reduction (length-normalized answer-span
+    logprob per legal candidate). Used by the alpha_struct + multifaculty scorers so they emit the exact
+    record shape _metrics_from_scores / the TTS verifier consume."""
+    lp = torch.log_softmax(logits[:, :-1], -1)
+    tok_lp = lp.gather(-1, ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+    row_scores = torch.full((len(prob_of),), -1e9, device=dev)
+    for row in range(len(prob_of)):
+        offs = offsets[row].tolist(); mask = torch.zeros(T - 1, device=dev)
+        for ti in range(1, T):
+            lo, hi = offs[ti]
+            if lo != hi and lo >= plens[row] and attn[row, ti] > 0.5:
+                mask[ti - 1] = 1.0
+        denom = mask.sum().clamp_min(1.0)
+        row_scores[row] = (tok_lp[row] * mask).sum() / denom
+    prob_of_t = torch.tensor(prob_of, device=dev)
+    out = []
+    for pi, r in enumerate(chunk):
+        rows = (prob_of_t == pi).nonzero().flatten()
+        sc = row_scores[rows].detach().cpu().numpy()
+        out.append({"scores": sc, "gold": int(r["gold_idx"]),
+                    "relation": r.get(relation_key, r.get("relation", "?")),
+                    "determined": bool(r.get("determined", True))})
+    return out
+
+
+def _woven_score_fn(kind):
+    """The candidate-score primitive for a woven kind (live = the DenseLatentProjector path; alpha_struct =
+    the StructureRack→csp_α→composer path; multifaculty = the router-dispatch path). All three return the
+    same per-record {scores, gold, relation, determined} so the arms / controls / pass@k / TTS are shared."""
+    if kind == "alpha_struct":
+        return _alpha_struct_candidate_scores
+    if kind == "multifaculty":
+        return _multifaculty_candidate_scores
+    return _live_candidate_scores
+
+
 def _metrics_from_scores(scored, ks=(1,)):
     """pass@1 / pass@k (closed-set top-k membership) + per-rung accuracy from cached candidate scores."""
     assert 1 in ks, f"acc is defined as pass@1, so 1 must be in ks (got {ks})"
@@ -251,35 +432,53 @@ def _metrics_from_scores(scored, ks=(1,)):
             "by_rung": {r: c / max(1, n) for r, (c, n) in by_rung.items()}}
 
 
-def run_csp_tier(woven, tok, dev, *, rungs=None, per_rung=16, ks=(1, 4), controls=True, seed=0):
+def _build_woven_pools(kind, rng, rungs, per_rung):
+    """The right record pool for the woven kind. live/alpha_struct → the clair CSP curriculum (in-dist +
+    OOD); alpha_struct adds the two-stream fields (alpha_prompt; fact-ablated gen prompt). multifaculty →
+    the mixed N-faculty pool (one suite), grouped by faculty in the metrics."""
+    from . import run_glados_staged as S
+    if kind == "multifaculty":
+        from .organ.run_multifaculty import build_mf_pool
+        n = max(2, per_rung)
+        return {"mixed": build_mf_pool(rng, n, n, n, n_ising=n, n_type=n, n_reduction=n, n_tri=n,
+                                       split="id", two_stream=True)}
+    rungs = rungs or S.RUNGS
+    ts = (kind == "alpha_struct")
+    return {"in-dist": S.build_live_pool(rng, rungs, "id", per_rung, two_stream=ts),
+            "OOD-N":   S.build_live_pool(rng, rungs, "ood", per_rung, two_stream=ts)}
+
+
+def run_csp_tier(woven, tok, dev, *, kind="live", rungs=None, per_rung=16, ks=(1, 4), controls=True, seed=0):
     """Tier-1 CSP via the clair curriculum + the woven α/γ path. Returns the per-arm uplift table
     (woven / oracle-readout / text-LoRA / base), the causal-control table, and pass@k — all exact-
-    verified by the curriculum gold answer."""
-    from . import run_glados_staged as S
-    rungs = rungs or S.RUNGS
+    verified by the curriculum gold answer. `kind` selects the reconstruction-matched inference path +
+    record pool (live / alpha_struct / multifaculty). oracle (inject the exact dedₚ) is only meaningful
+    where records carry rec['surv'] (the CSP tiers), so it is computed for live/alpha_struct only."""
     rng = np.random.default_rng(seed + 11)
-    pools = {
-        "in-dist": S.build_live_pool(rng, rungs, "id", per_rung),
-        "OOD-N":   S.build_live_pool(rng, rungs, "ood", per_rung),
-    }
-    res = {"pools": {k: len(v) for k, v in pools.items()}, "arms": {}, "controls": {}, "pass@k": {}}
+    score_fn = _woven_score_fn(kind)
+    has_oracle = kind in ("live", "alpha_struct")
+    pools = _build_woven_pools(kind, rng, rungs, per_rung)
+    res = {"kind": kind, "pools": {k: len(v) for k, v in pools.items()}, "arms": {}, "controls": {},
+           "pass@k": {}}
+    from . import run_glados_staged as S
     for sname, pool in pools.items():
-        woven_sc = _live_candidate_scores(woven, pool, tok, dev, control="true")
-        lora_sc = _live_candidate_scores(woven, pool, tok, dev, control="zero")  # LoRA, no inject
-        base_sc = _live_candidate_scores(woven, pool, tok, dev, control="zero", use_base=True,
-                                         fewshot=S.FEWSHOT)
-        orc_sc = _live_candidate_scores(woven, pool, tok, dev, control="true", override_oracle=True)
-        res["arms"][sname] = {
+        woven_sc = score_fn(woven, pool, tok, dev, control="true")
+        lora_sc = score_fn(woven, pool, tok, dev, control="zero")  # LoRA, no inject
+        base_sc = score_fn(woven, pool, tok, dev, control="zero", use_base=True, fewshot=S.FEWSHOT)
+        arms = {
             "woven": _metrics_from_scores(woven_sc, ks),
-            "oracle": _metrics_from_scores(orc_sc, ks),
             "textlora": _metrics_from_scores(lora_sc, ks),
             "base": _metrics_from_scores(base_sc, ks),
         }
-        res["pass@k"][sname] = res["arms"][sname]["woven"]["pass@k"]
+        if has_oracle:
+            orc_sc = score_fn(woven, pool, tok, dev, control="true", override_oracle=True)
+            arms["oracle"] = _metrics_from_scores(orc_sc, ks)
+        res["arms"][sname] = arms
+        res["pass@k"][sname] = arms["woven"]["pass@k"]
         if controls:
             row = {}
             for c in ("true", "shuffle", "permute", "corrupt", "zero"):
-                sc = woven_sc if c == "true" else _live_candidate_scores(woven, pool, tok, dev, control=c)
+                sc = woven_sc if c == "true" else score_fn(woven, pool, tok, dev, control=c)
                 row[c] = _metrics_from_scores(sc, (1,))["acc"]
             res["controls"][sname] = row
     return res
@@ -357,7 +556,7 @@ def _tts_beam(scores, beam, ci):
     return int(order[0]), False
 
 
-def run_test_time_search(woven, tok, dev, *, mode="best_of_n", rungs=None, per_rung=24,
+def run_test_time_search(woven, tok, dev, *, kind="live", mode="best_of_n", rungs=None, per_rung=24,
                          Ns=(1, 2, 4, 8, 16), temp=1.0, trials=8, beam=4, seed=0, score_fn=None):
     """Test-time search on the Tier-1 CSP curriculum, selected by the EXACT organ-verifier.
 
@@ -366,12 +565,19 @@ def run_test_time_search(woven, tok, dev, *, mode="best_of_n", rungs=None, per_r
     (sample N, sound-verify-select) for each N in `Ns`, averaged over `trials` independent draws, and
     optionally a (deterministic) verifier-pruned beam. Reports the accuracy-vs-compute curve plus, at
     each N, the share of problems where the verifier CERTIFIED an accept vs fell back to best-by-score.
+
+    The verifier (`_tts_csp_certificate`) needs rec['csp'] + rec['query'], so the pool is always CSP-
+    structured: live/alpha_struct use the CSP curriculum; multifaculty uses its CSP-faculty subset.
     """
     from . import run_glados_staged as S
     rungs = rungs or S.RUNGS
     rng = np.random.default_rng(seed + 23)
-    pool = S.build_live_pool(rng, rungs, "id", per_rung)
-    score_fn = score_fn or _live_candidate_scores
+    if kind == "multifaculty":
+        from .organ.run_multifaculty import build_mf_pool
+        pool = build_mf_pool(rng, max(2, per_rung), 0, 0, split="id", two_stream=True)  # csp-faculty only
+    else:
+        pool = S.build_live_pool(rng, rungs, "id", per_rung, two_stream=(kind == "alpha_struct"))
+    score_fn = score_fn or _woven_score_fn(kind)
     scored = score_fn(woven, pool, tok, dev, control="true")     # per-record candidate scores (cached)
     certs = [_tts_csp_certificate(r) for r in pool]
     golds = [s["gold"] for s in scored]
@@ -502,6 +708,144 @@ def tts_structural_smoke(seed=0, per_rung=4, Ns=(1, 2, 4, 8, 16), temp=0.7):
         prev = acc
     print("  best-of-N accuracy is non-decreasing in N and the verifier-certified share grows -> the "
           "sound selector turns sampled coverage into accuracy. SMOKE OK.", flush=True)
+    return True
+
+
+# ============================================================================== woven-loader CPU smoke
+def woven_loader_smoke(seed=0, tok_id="allenai/OLMo-2-0425-1B"):
+    """CPU/structural smoke for the kind-aware loader (NO big model, NO GPU): for EACH new checkpoint kind
+    (alpha_struct, multifaculty) — build a TINY woven on a random Llama, SAVE the blob in the driver's
+    NATIVE shape, prove detect_kind() classifies it + --woven_kind auto resolves, RECONSTRUCT through the
+    loader's build/load logic on a FRESH tiny base, prove the heads round-trip, then run the eval-suite
+    woven ARM (woven/textlora/base + the causal controls true/shuffle/permute/corrupt/zero) through the
+    kind's scorer + _metrics_from_scores so the load → forward → arm/control plumbing is exercised end-to-
+    end. Uses the real OLMo tokenizer (cached) on a tiny vocab-matched random Llama (no weight download)."""
+    import tempfile
+    from transformers import AutoTokenizer
+    from peft import get_peft_model_state_dict, set_peft_model_state_dict, LoraConfig, get_peft_model
+    from transformers import LlamaForCausalLM
+    from . import run_glados_staged as S
+    from .organ import woven_loader as WL
+    np.random.seed(seed); torch.manual_seed(seed)
+    dev = "cpu"
+    K = S.K
+    tok = AutoTokenizer.from_pretrained(tok_id)
+    tok.padding_side = "right"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    V = len(tok)
+    print(f"==== WOVEN-LOADER structural smoke (CPU; tiny random Llama, real tok vocab={V}) ====", flush=True)
+
+    def fresh_peft(lora_targets=("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"),
+                   D=64, nL=4, lora_r=4):
+        from transformers import LlamaConfig
+        cfg = LlamaConfig(hidden_size=D, intermediate_size=2 * D, num_hidden_layers=nL,
+                          num_attention_heads=4, num_key_value_heads=4, vocab_size=V,
+                          max_position_embeddings=64)
+        base = LlamaForCausalLM(cfg)
+        lconf = LoraConfig(r=lora_r, lora_alpha=2 * lora_r, lora_dropout=0.0, bias="none",
+                           target_modules=list(lora_targets), task_type="CAUSAL_LM")
+        return get_peft_model(base, lconf), D, nL
+
+    tmpdir = tempfile.mkdtemp(prefix="woven_smoke_")
+    rng = np.random.default_rng(seed)
+
+    # ----------------------------------------------------------------- ALPHA_STRUCT
+    print("\n-- ALPHA_STRUCT --", flush=True)
+    D, nL = 64, 4
+    dp, heads, gh, ch, mid, inj = 24, 6, 32, 48, 1, 3
+    peft0, _, _ = fresh_peft(D=D, nL=nL)
+    m0 = WL.build_alpha_struct(peft0, D, K, dp=dp, heads=heads, gamma_hidden=gh, cand_hidden=ch,
+                               mid_layer=mid, inject_layer=inj, rich=True,
+                               core_ckpt="runs/__nonexistent__.pt", use_core=True, dev=dev)
+    with torch.no_grad():               # open the γ gate so injection actually moves the residual
+        m0.gamma.alpha.data.fill_(1.0)
+        for p in list(m0.alpha.parameters()) + list(m0.cand.parameters()):
+            p.data += 0.05 * torch.randn_like(p)
+    blob_as = {"kind": "alpha_struct", "base_id": tok_id,
+               "cfg": {"D": D, "K": K, "use_lora": True, "mid_layer": mid, "inject_layer": inj, "rich": True},
+               "rack": m0.alpha.state_dict(), "cand": m0.cand.state_dict(),
+               "fb_adapter": m0.fb_adapter.state_dict(), "gamma": m0.gamma.state_dict(),
+               "lora": get_peft_model_state_dict(m0.model)}
+    p_as = os.path.join(tmpdir, "alpha_struct_tiny.pt"); torch.save(blob_as, p_as)
+    m0.remove_hooks()
+    assert WL.detect_kind(blob_as) == "alpha_struct", "alpha_struct NOT auto-detected"
+    print("  detect_kind -> alpha_struct  (PASS)", flush=True)
+    # reconstruct THROUGH the loader's config-inference + build/load (cfg omits dp/heads/gamma/cand_hidden)
+    c = WL._alpha_struct_cfg(blob_as)
+    assert (c["dp"], c["heads"], c["gamma_hidden"], c["cand_hidden"]) == (dp, heads, gh, ch), \
+        f"config inference wrong: {c}"
+    print(f"  config inferred from shapes: dp={c['dp']} heads={c['heads']} gamma_hidden={c['gamma_hidden']} "
+          f"cand_hidden={c['cand_hidden']}  (PASS)", flush=True)
+    peft1, _, _ = fresh_peft(D=D, nL=nL)
+    set_peft_model_state_dict(peft1, blob_as["lora"])
+    m1 = WL.build_alpha_struct(peft1, c["D"], c["K"], dp=c["dp"], heads=c["heads"], gamma_hidden=c["gamma_hidden"],
+                               cand_hidden=c["cand_hidden"], mid_layer=c["mid_layer"], inject_layer=c["inject_layer"],
+                               rich=c["rich"], core_ckpt="runs/__nonexistent__.pt", use_core=True, dev=dev)
+    WL.load_alpha_struct_weights(m1, blob_as)
+    rt = max(float((m0.alpha.state_dict()[k] - m1.alpha.state_dict()[k]).abs().max())
+             for k in m0.alpha.state_dict())
+    assert rt < 1e-6, f"rack weights did not round-trip (max diff {rt})"
+    print(f"  reconstructed AlphaStructWoven; rack weights round-trip (max diff {rt:.1e})  (PASS)", flush=True)
+    pool = S.build_live_pool(rng, ["coloring", "equality"], "id", 2, two_stream=True)
+    sc_true = _alpha_struct_candidate_scores(m1, pool, tok, dev, control="true")
+    ctrls = {c2: _metrics_from_scores(
+                (sc_true if c2 == "true" else _alpha_struct_candidate_scores(m1, pool, tok, dev, control=c2)),
+                (1,))["acc"]
+             for c2 in ("true", "shuffle", "permute", "corrupt", "zero")}
+    mt = _metrics_from_scores(sc_true, (1, 4))
+    base_sc = _alpha_struct_candidate_scores(m1, pool, tok, dev, control="zero", use_base=True, fewshot=S.FEWSHOT)
+    assert len(sc_true) == len(pool) and "pass@k" in mt and len(base_sc) == len(pool)
+    print(f"  arm+control plumbing computes on {len(pool)} recs: woven acc {mt['acc']*100:.0f}% "
+          f"pass@4 {mt['pass@k'][4]*100:.0f}% | controls " + " ".join(f"{k}={v*100:.0f}" for k, v in ctrls.items())
+          + "  (PASS)", flush=True)
+    m1.remove_hooks()
+
+    # ----------------------------------------------------------------- MULTIFACULTY
+    print("\n-- MULTIFACULTY --", flush=True)
+    args = {"model": tok_id, "lora_r": 4, "alpha_dp": dp, "alpha_heads": heads, "gamma_hidden": gh,
+            "mid_layer": mid, "inject_layer": inj, "core_ckpt": "runs/__nonexistent__.pt",
+            "ising_restarts": 4, "ising_steps": 8}
+    peft2, _, _ = fresh_peft(D=D, nL=nL)
+    mf0 = WL.build_multifaculty(peft2, D, K, dp=dp, heads=heads, gamma_hidden=gh, mid_layer=mid,
+                                inject_layer=inj, core_ckpt="runs/__nonexistent__.pt", use_core=True,
+                                ising_restarts=4, ising_steps=8, dev=dev)
+    with torch.no_grad():
+        mf0.gamma.alpha.data.fill_(1.0)
+        mf0.flow_gate.data += 0.1 * torch.randn_like(mf0.flow_gate)
+    blob_mf = {"state_dict": mf0.state_dict(), "args": args,
+               "flow_gates": {str(i): float(v) for i, v in enumerate(mf0.flow_gate.detach())}}
+    p_mf = os.path.join(tmpdir, "multifaculty_tiny.pt"); torch.save(blob_mf, p_mf)
+    mf0_sd = {k: v.clone() for k, v in mf0.state_dict().items() if k.startswith("alpha.")}
+    mf0.remove_hooks()
+    assert WL.detect_kind(blob_mf) == "multifaculty", "multifaculty NOT auto-detected"
+    print("  detect_kind -> multifaculty  (PASS)", flush=True)
+    peft3, _, _ = fresh_peft(D=D, nL=nL)
+    mf1 = WL.build_multifaculty(peft3, D, K, dp=dp, heads=heads, gamma_hidden=gh, mid_layer=mid,
+                                inject_layer=inj, core_ckpt="runs/__nonexistent__.pt", use_core=True,
+                                ising_restarts=4, ising_steps=8, dev=dev)
+    miss, unexp = mf1.load_state_dict(blob_mf["state_dict"], strict=False)
+    rt = max(float((mf0_sd[k] - mf1.state_dict()[k]).abs().max()) for k in mf0_sd)
+    assert rt < 1e-6, f"multifaculty rack weights did not round-trip (max diff {rt})"
+    print(f"  reconstructed MultiFacultyWoven (missing={len(miss)} unexpected={len(unexp)}); "
+          f"rack round-trips (max diff {rt:.1e})  (PASS)", flush=True)
+    n = 2
+    mfpool = _build_woven_pools("multifaculty", np.random.default_rng(seed + 1), None, n)["mixed"]
+    sc_true = _multifaculty_candidate_scores(mf1, mfpool, tok, dev, control="true")
+    ctrls = {c2: _metrics_from_scores(
+                (sc_true if c2 == "true" else _multifaculty_candidate_scores(mf1, mfpool, tok, dev, control=c2)),
+                (1,))["acc"]
+             for c2 in ("true", "shuffle", "permute", "corrupt", "zero")}
+    mt = _metrics_from_scores(sc_true, (1, 4))
+    facs = sorted({s["relation"] for s in sc_true})
+    assert len(sc_true) == len(mfpool) and "pass@k" in mt
+    print(f"  arm+control plumbing computes on {len(mfpool)} recs over faculties={facs}: woven acc "
+          f"{mt['acc']*100:.0f}% | controls " + " ".join(f"{k}={v*100:.0f}" for k, v in ctrls.items())
+          + "  (PASS)", flush=True)
+    mf1.remove_hooks()
+    print("\nWOVEN-LOADER SMOKE OK — both new kinds: native-blob save, auto-detect, config inference, "
+          "reconstruct+round-trip, and the eval arm + 5 causal controls compute through the right path.\n",
+          flush=True)
     return True
 
 
@@ -745,7 +1089,7 @@ def run_standard_tiers(base_id, peft_model, tok, dev, tiers, limit, arms, bs=8, 
 def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
                    tiers=("tier1", "tier2", "tier3"), arms=("base", "textlora", "woven", "oracle"),
                    k=(1, 4), limit=20, csp_per_rung=16, controls=True, rg_ceiling=True,
-                   std_tasks=None, out=None, dev=None, seed=0,
+                   std_tasks=None, out=None, dev=None, seed=0, woven_kind="auto",
                    test_time_search="none", tts_n=(1, 2, 4, 8, 16), tts_beam=4, tts_temp=1.0,
                    tts_trials=8):
     """THE arbiter. base_model = a HF id (OLMo/Gemma/Qwen/...). woven_ckpt = a saved woven checkpoint
@@ -762,8 +1106,17 @@ def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
 
     # ---- load the woven model (and its base/peft) ----
     woven, peft_model = woven_model, None
+    kind = woven_kind if woven_kind not in (None, "auto") else "live"
     if woven is None and woven_ckpt is not None:
-        woven, tok, _ = load_woven(woven_ckpt, dev=dev, base_id=base_model)
+        woven, tok, _blob = load_woven(woven_ckpt, dev=dev, base_id=base_model, kind=woven_kind)
+        kind = _blob.get("kind", "live")
+    elif woven is not None:
+        from .organ.woven_loader import detect_kind as _dk
+        # an in-memory woven_model: detect by class name (no blob to inspect)
+        cn = type(woven).__name__
+        kind = ("alpha_struct" if cn == "AlphaStructWoven" else
+                "multifaculty" if cn == "MultiFacultyWoven" else "live")
+    print(f"  woven kind = {kind}", flush=True)
     if woven is not None:
         peft_model = woven.model
         if tok is None:
@@ -783,13 +1136,13 @@ def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
         base_obj = AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.bfloat16).to(dev).eval()
 
     report = {"base_model": base_model, "woven_ckpt": woven_ckpt, "have_woven": woven is not None,
-              "arms": list(arms), "k": list(ks), "tiers": list(tiers), "results": {}}
+              "woven_kind": kind, "arms": list(arms), "k": list(ks), "tiers": list(tiers), "results": {}}
 
     # ===== TIER 1 =====
     if "tier1" in tiers:
         print(f"\n----- TIER 1 (target: exact-verified logic/CSP) [{_now()}] -----", flush=True)
         if woven is not None:
-            csp = _safe(lambda: run_csp_tier(woven, tok, dev, per_rung=csp_per_rung, ks=ks,
+            csp = _safe(lambda: run_csp_tier(woven, tok, dev, kind=kind, per_rung=csp_per_rung, ks=ks,
                                              controls=controls, seed=seed), "tier1.csp_curriculum",
                         report["results"])
             if csp is not None:
@@ -797,7 +1150,7 @@ def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
                 _print_csp(csp, ks)
             if test_time_search != "none":
                 tts = _safe(lambda: run_test_time_search(
-                    woven, tok, dev, mode=test_time_search, per_rung=csp_per_rung, Ns=tuple(tts_n),
+                    woven, tok, dev, kind=kind, mode=test_time_search, per_rung=csp_per_rung, Ns=tuple(tts_n),
                     temp=tts_temp, trials=tts_trials, beam=tts_beam, seed=seed),
                     "tier1.test_time_search", report["results"])
                 if tts is not None:
@@ -840,11 +1193,13 @@ def run_eval_suite(base_model, woven_ckpt=None, woven_model=None, tok=None,
 
 
 def _print_csp(csp, ks):
-    print("\n  Tier-1 CSP uplift (overall acc; arms):", flush=True)
+    print(f"\n  Tier-1 CSP uplift (overall acc; arms) [kind={csp.get('kind','live')}]:", flush=True)
     print(f"    {'suite':10s}  {'BASE':>6s} {'TEXT-LoRA':>10s} {'WOVEN':>7s} {'ORACLE':>7s}", flush=True)
     for sname, arms in csp["arms"].items():
+        orc = arms.get("oracle", {}).get("acc")
+        orc_s = f"{orc*100:6.1f}%" if orc is not None else f"{'  n/a':>7s}"
         print(f"    {sname:10s}  {arms['base']['acc']*100:5.1f}% {arms['textlora']['acc']*100:9.1f}% "
-              f"{arms['woven']['acc']*100:6.1f}% {arms['oracle']['acc']*100:6.1f}%", flush=True)
+              f"{arms['woven']['acc']*100:6.1f}% {orc_s}", flush=True)
     print("\n  pass@k (woven):", flush=True)
     for sname, pk in csp["pass@k"].items():
         print(f"    {sname:10s}  " + "  ".join(f"pass@{k}={pk[k]*100:.1f}%" for k in ks), flush=True)
@@ -888,13 +1243,16 @@ def _print_uplift(report, ks):
                   f"{(w*100 if w is not None else float('nan')):10.1f}%", flush=True)
     csp = R.get("tier1.csp_curriculum")
     if isinstance(csp, dict) and "arms" in csp:
-        idd = csp["arms"].get("in-dist", {})
+        sname0 = next(iter(csp["arms"]), None)            # 'in-dist' (live/alpha_struct) or 'mixed' (mf)
+        idd = csp["arms"].get(sname0, {}) if sname0 else {}
         if idd:
-            print(f"\n  Tier-1 CSP in-dist: base {idd['base']['acc']*100:.0f}%  textLoRA "
+            orc = idd.get("oracle", {}).get("acc")
+            orc_s = f"{orc*100:.0f}%" if orc is not None else "n/a"
+            print(f"\n  Tier-1 CSP {sname0}: base {idd['base']['acc']*100:.0f}%  textLoRA "
                   f"{idd['textlora']['acc']*100:.0f}%  WOVEN {idd['woven']['acc']*100:.0f}%  oracle "
-                  f"{idd['oracle']['acc']*100:.0f}%  | pass@{max(ks)} {csp['pass@k']['in-dist'][max(ks)]*100:.0f}%",
+                  f"{orc_s}  | pass@{max(ks)} {csp['pass@k'][sname0][max(ks)]*100:.0f}%",
                   flush=True)
-            ctl = csp["controls"].get("in-dist")
+            ctl = csp["controls"].get(sname0)
             if ctl:
                 # CANONICAL causal-drop (matches run_glados_staged._live_controls): content-sensitivity
                 # only, so the min excludes 'zero' (no-injection = the separate LIFT/necessary axis).
@@ -933,6 +1291,8 @@ def main():
     ap = argparse.ArgumentParser(description="GLaDOS standardized eval-suite arbiter")
     ap.add_argument("--base", default="allenai/OLMo-2-0425-1B", help="base model HF id")
     ap.add_argument("--woven_ckpt", default=None, help="saved woven checkpoint (.pt)")
+    ap.add_argument("--woven_kind", choices=["auto", "live", "alpha_struct", "multifaculty"], default="auto",
+                    help="woven checkpoint kind (auto = detect from the blob)")
     ap.add_argument("--tiers", nargs="+", default=["tier1", "tier2", "tier3"])
     ap.add_argument("--arms", nargs="+", default=["base", "textlora", "woven", "oracle"])
     ap.add_argument("--k", nargs="+", type=int, default=[1, 4])
@@ -956,12 +1316,19 @@ def main():
     ap.add_argument("--tts_smoke", action="store_true",
                     help="CPU/structural test-time-search smoke (no model): the exact verifier prunes "
                          "stub candidates correctly + best-of-N rises with N")
+    ap.add_argument("--woven_smoke", action="store_true",
+                    help="CPU/structural loader smoke (no big model): reconstruct a tiny AlphaStructWoven + "
+                         "MultiFacultyWoven from a native blob, auto-detect kind, run the arm + controls")
     ap.add_argument("--smoke_ckpt", default="runs/woven_smoke.pt")
     a = ap.parse_args()
     dev = device()
 
     if a.tts_smoke:
         tts_structural_smoke(seed=a.seed)
+        return
+
+    if a.woven_smoke:
+        woven_loader_smoke(seed=a.seed, tok_id=a.base)
         return
 
     if a.smoke:
@@ -981,6 +1348,7 @@ def main():
                        k=tuple(a.k), limit=a.limit, csp_per_rung=a.csp_per_rung,
                        controls=not a.no_controls, rg_ceiling=not a.no_rg, std_tasks=std,
                        out=a.out or "runs/eval_suite_smoke.json", dev=dev, seed=a.seed,
+                       woven_kind=a.woven_kind,
                        test_time_search=a.test_time_search, tts_n=tuple(a.tts_n), tts_beam=a.tts_beam,
                        tts_temp=a.tts_temp, tts_trials=a.tts_trials)
         return
@@ -988,7 +1356,7 @@ def main():
     run_eval_suite(a.base, woven_ckpt=a.woven_ckpt, tiers=tuple(a.tiers), arms=tuple(a.arms),
                    k=tuple(a.k), limit=a.limit, csp_per_rung=a.csp_per_rung,
                    controls=not a.no_controls, rg_ceiling=not a.no_rg, std_tasks=a.std_tasks,
-                   out=a.out, dev=dev, seed=a.seed,
+                   out=a.out, dev=dev, seed=a.seed, woven_kind=a.woven_kind,
                    test_time_search=a.test_time_search, tts_n=tuple(a.tts_n), tts_beam=a.tts_beam,
                    tts_temp=a.tts_temp, tts_trials=a.tts_trials)
 
