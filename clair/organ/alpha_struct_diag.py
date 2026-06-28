@@ -54,9 +54,14 @@ def alpha_input_perm(recs, rng, key=("relation", "n")):
 
 # ---------------------------------------------------------------- composer-capture (α emits the structure)
 @torch.no_grad()
-def capture_surv(model, recs, tok, dev, two_stream=True, empty_struct=False, alpha_perm=None):
+def capture_surv(model, recs, tok, dev, two_stream=True, empty_struct=False, alpha_perm=None,
+                 search_K=1, search_temp=1.0, loop_T=1, search_rng=None):
     """Run the capture forward: α reads the (optionally permuted, for α-INPUT-CORRUPT) α-stream → emits
-    csp_α → composer. Returns (surv [B,Nmax,K], emitted_facts). rec['csp'] is NEVER threaded."""
+    csp_α → composer. Returns (surv [B,Nmax,K], emitted_facts). rec['csp'] is NEVER threaded.
+
+    search_K>1 ⇒ LEVER A (α-as-search) selects the structure; loop_T>1 ⇒ LEVER B (iterative α↔organ
+    loop). The query cell (for the verifier 'determines-query' selector) is threaded from the records —
+    NOT rec['csp']; the certified output_check stays OUTSIDE this forward (the reliability layer)."""
     from .. import run_glados_staged as G
     B = len(recs); Nmax = max(r["n"] for r in recs)
     src = recs if alpha_perm is None else [recs[alpha_perm[i]] for i in range(len(recs))]
@@ -67,7 +72,10 @@ def capture_surv(model, recs, tok, dev, two_stream=True, empty_struct=False, alp
     pment = _mention_tensor(cap_m, penc["offset_mapping"], B, Nmax, pids.size(1), dev)
     nd = [(r["n"], len(r["vnames"])) for r in recs]
     dvec = torch.tensor([len(r["vnames"]) for r in recs], device=dev)
-    with model.live(pment, pattn, inject=False, capture=True, nd=nd, dvec=dvec, empty_struct=empty_struct):
+    queries = [int(r["query"]) for r in recs]
+    with model.live(pment, pattn, inject=False, capture=True, nd=nd, dvec=dvec, empty_struct=empty_struct,
+                    search_K=search_K, search_temp=search_temp, loop_T=loop_T, queries=queries,
+                    search_rng=search_rng):
         _ = model.logits(pids, pattn)
     return model._captured_surv[:, :Nmax, :].clone(), list(model._last_facts or [])
 
@@ -188,6 +196,53 @@ def run_gate(model, recs, tok, dev, bs=8, two_stream=True, seed=0, verbose=True)
     return out
 
 
+# ---------------------------------------------------------------- greedy vs search vs loop (the levers)
+@torch.no_grad()
+def compare_modes(model, recs, tok, dev, bs=8, two_stream=True, search_K=8, search_temp=1.0, loop_T=2,
+                  seed=0, verbose=True):
+    """Measure the TRUE arm under the three inference modes the levers add (the acceptance gate's
+    lever readout): greedy (K=1,T=1 — the single-shot core), α-as-search (K>1,T=1), the iterative
+    α↔organ loop (K=1,T>1), and search+loop. Per mode: determined-query accuracy + the certified
+    output_check rate (the SOUND reliability gate — answer ∈ exact_dedP(csp_true)[query]). The
+    output_check runs OUTSIDE the forward (licensed reader of rec['csp'])."""
+    from .shuffled_diag import score_preds
+    from .. import run_glados_staged as G
+    K = G.K
+    model.eval()
+    true_gold = [r["gold_idx"] for r in recs]
+    rng = torch.Generator().manual_seed(seed + 4242)
+    modes = {"greedy": (1, 1), "search": (search_K, 1), "loop": (1, loop_T),
+             "search+loop": (search_K, loop_T)}
+    out = {}
+    for name, (sk, lt) in modes.items():
+        preds = [None] * len(recs)
+        for i in range(0, len(recs), bs):
+            chunk = list(range(i, min(i + bs, len(recs)))); hr = [recs[c] for c in chunk]
+            Nmax = max(r["n"] for r in hr)
+            surv_b, _ = capture_surv(model, hr, tok, dev, two_stream, search_K=sk, search_temp=search_temp,
+                                     loop_T=lt, search_rng=rng)
+            surv = torch.zeros(len(chunk), Nmax, K, device=dev)
+            for li, c in enumerate(chunk):
+                surv[li, : recs[c]["n"]] = surv_b[li, : recs[c]["n"]]
+            pr = score_preds(model, hr, surv, tok, dev, inject=True)
+            for li, c in enumerate(chunk):
+                preds[c] = pr[li]
+        acc = sum(preds[i] == true_gold[i] for i in range(len(recs))) / max(1, len(recs))
+        oc = 0
+        for i in range(len(recs)):
+            ci = recs[i].get("csp"); pi = preds[i]
+            if ci is not None and pi is not None and pi < len(recs[i]["vnames"]):
+                oc += int(output_check(pi, ci, recs[i]["query"]))      # certified gate, OUTSIDE the forward
+        out[name] = {"acc": acc, "output_check_rate": oc / max(1, len(recs)), "search_K": sk, "loop_T": lt}
+    if verbose:
+        print("\n  ALPHA_STRUCT inference levers (TRUE arm; det-query acc + certified output-check):", flush=True)
+        print(f"    {'mode':14s} {'K':>3s} {'T':>3s} {'acc':>8s} {'output-check':>13s}", flush=True)
+        for name, r in out.items():
+            print(f"    {name:14s} {r['search_K']:>3d} {r['loop_T']:>3d} {r['acc']*100:7.1f}% "
+                  f"{r['output_check_rate']*100:12.1f}%", flush=True)
+    return out
+
+
 def _invariant_guard_fires(rec) -> bool:
     """The code-level no-metadata invariant: csp_spec_for_record MUST raise inside forbid_record_csp()."""
     try:
@@ -224,7 +279,7 @@ def structural_smoke():
     (d) the no-metadata invariant guard fires. No training, no download."""
     from transformers import LlamaConfig, LlamaForCausalLM
     from peft import LoraConfig, get_peft_model
-    from .alpha_struct import StructureRack
+    from .alpha_struct import StructureRack, solve_query, build_csp_from_struct, output_check, decode_structure
     from .bank_woven import AlphaStructWoven, AlphaStructComposerOrgan
     from .. import csp as C
 
@@ -283,9 +338,73 @@ def structural_smoke():
     assert fires, "INVARIANT GUARD did not fire — rec['csp'] readable inside the forward!"
     print(f"[smoke] invariant guard FIRES on rec['csp'] read inside forbid_record_csp()  (PASS)")
 
+    # ============================================ LEVER A — α-as-search (the verifier rejects ⊥)
+    print("\n[smoke] --- LEVER A: α-as-search (propose_structures + sound verifier select) ---")
+    # solve_query rejects an UNSAT (⊥) structure outright (pin(0,0) ∧ pin(1,1) ∧ eq(0,1) ⇒ 0==1).
+    solv, det, _ = solve_query([("pin", 0, 0), ("pin", 1, 1), ("eq", 0, 1)], 2, 2, 1)
+    assert (not solv) and (not det), "solve_query must reject the ⊥ (contradictory) structure"
+    print(f"[smoke] solve_query rejects ⊥ structure  solvable={solv}  (PASS)")
+    # craft per-instance logits: GREEDY decodes the ⊥ above; sampling reaches the SAT determining graph.
+    Kc = model.K; n2, d2, q2 = 2, 2, 1
+    pin_lb = torch.full((n2, 1 + Kc), -4.0); pair_lb = torch.full((n2, n2, 5), -4.0)
+    pin_lb[0, 1] = 5.0                                       # cell0 → pin(0, value0)  (stable)
+    pin_lb[1, 2] = 2.3; pin_lb[1, 1] = 2.0                   # cell1 → greedy value1 (⊥); value0 sampled (SAT)
+    pair_lb[0, 1, 1] = 5.0; pair_lb[1, 0, 1] = 5.0          # eq(0,1)
+    vmb = torch.ones(n2)
+    sat_csp = build_csp_from_struct([("pin", 0, 0), ("eq", 0, 1)], n2, d2)
+    g = torch.Generator().manual_seed(0)
+    sel1 = model.propose_structures(pin_lb, pair_lb, vmb, n2, d2, q2, K=1)
+    assert not sel1["certified"], "K=1 greedy must NOT certify (it decodes the ⊥ structure)"
+    sel16 = model.propose_structures(pin_lb, pair_lb, vmb, n2, d2, q2, K=16, rng=g,
+                                     output_check_fn=output_check, csp_true=sat_csp)
+    assert sel16["certified"] and sel16["determines"] and sel16["answer"] == 0, \
+        f"search must recover a SOLVABLE+determining candidate that output-checks (got {sel16})"
+    s, _, _ = solve_query(sel16["facts"], n2, d2, q2)
+    assert s, "the SELECTED structure must be solvable (the verifier kept only ⊥-free candidates)"
+    print(f"[smoke] greedy(K=1) certified={sel1['certified']} ⊥; search(K=16) certified={sel16['certified']} "
+          f"answer={sel16['answer']} (n_pass={sel16['n_pass']})  — verifier rejects ⊥, selects SAT  (PASS)")
+
+    # ============================================ LEVER B — iterative α↔organ loop
+    print("\n[smoke] --- LEVER B: iterative α↔organ loop (feedback channel + T=1 no-op) ---")
+    queries = [1, 1]
+    # T=1 == the single-shot core: the loop's one emission equals the greedy decode.
+    with torch.no_grad(), model.live(mention, attn, inject=False, capture=True, nd=nd, dvec=dvec,
+                                     loop_T=1, queries=queries):
+        _ = model.logits(ids, attn)
+    facts_core = [list(f) for f in model._last_facts]
+    # the feedback channel CHANGES α's emission (crafted, like the γ gate-open proof): with the fb_adapter
+    # opened, conditioning on a non-zero organ report re-routes the rack's decode.
+    with torch.no_grad(), model.live(mention, attn, inject=False, capture=True, nd=nd, dvec=dvec,
+                                     loop_T=1, queries=queries):
+        _ = model.logits(ids, attn)                          # populate _h_mid for the direct re-compile
+        pin0, pair0, _, vm0 = model._compile_struct(None)
+        facts_nofb = [decode_structure(pin0[b], pair0[b], vm0[b], nd[b][0], nd[b][1]) for b in range(B)]
+        saved_fb = model.fb_adapter.weight.data.clone()
+        torch.manual_seed(1); model.fb_adapter.weight.data.copy_(torch.randn_like(saved_fb) * 8.0)
+        fb = torch.ones(B, mention.shape[1], 3)              # a non-zero organ report (narrowed/determined)
+        pin1, pair1, _, vm1 = model._compile_struct(fb)
+        facts_fb = [decode_structure(pin1[b], pair1[b], vm1[b], nd[b][0], nd[b][1]) for b in range(B)]
+        model.fb_adapter.weight.data.copy_(saved_fb)         # restore zero-init (no-op preserved)
+    assert facts_nofb == facts_core, "T=1 loop emission must equal the single-shot core decode (no-op)"
+    changed = any(set(map(tuple, facts_fb[b])) != set(map(tuple, facts_nofb[b])) for b in range(B))
+    assert changed, "the feedback channel did not change α's emission (fb_adapter inert)"
+    print(f"[smoke] T=1 loop == single-shot core (facts match); feedback FLIPS emission "
+          f"inst0: {facts_nofb[0]} -> {facts_fb[0]}  (PASS)")
+    # run the multi-step loop end-to-end: T steps, each lattice a sound certified narrowing.
+    with torch.no_grad(), model.live(mention, attn, inject=True, capture=True, nd=nd, dvec=dvec,
+                                     loop_T=3, queries=queries):
+        g3 = model.logits(ids, attn).float()
+    info = model._last_loop_info
+    assert info["steps"] >= 1 and len(info["facts_per_step"]) == info["steps"], "loop did not run T steps"
+    surv = model._captured_surv
+    assert ((surv == 0) | (surv == 1)).all(), "composed lattice must be a {0,1} survival set (sound narrowing)"
+    print(f"[smoke] loop ran {info['steps']} step(s) (stop={info['stop']}); every step a sound certified "
+          f"narrowing; T=1 is the no-op core  (PASS)")
+
     model.remove_hooks()
     print("\n[smoke] ALL STRUCTURAL CHECKS PASS — AlphaStructWoven builds, forward runs on csp_α, "
-          "no-op@init, gate moves, EMPTY_STRUCT control, invariant guard fires.\n")
+          "no-op@init, gate moves, EMPTY_STRUCT control, invariant guard fires; LEVER A (α-as-search) "
+          "rejects ⊥ + selects SAT; LEVER B (α↔organ loop) feedback revises emission with T=1 == core.\n")
     return True
 
 

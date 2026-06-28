@@ -41,13 +41,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .. import csp as C
 from ..latent_organ import DenseLatentProjector, dominate_dedp_loss
 from ..oracle_readout import OracleGamma, _mention_tensor, ABSTAIN_STR
 from .alpha_struct import (StructureRack, build_csp_from_struct, decode_structure,
-                           facts_to_struct_targets, structure_sup_loss, output_check)
+                           facts_to_struct_targets, structure_sup_loss, output_check,
+                           sample_candidates, solve_query)
 from .bank import build_bank, certified_csp_reductions
 from .compose import reduced_product
 from .protocol import Certificate, CSPState, Reduction
+
+# The α↔organ FEEDBACK channel width (lever B): per cell the organ reports back to the rack
+#   [narrowed-card-fraction, determined(singleton), conflict(⊥)]  — see compose_and_feedback.
+FB_DIM = 3
 
 
 # ============================================================ α's compile as a gated reduction
@@ -635,6 +641,62 @@ class AlphaStructComposerOrgan(BankComposerOrgan):
                 traces.append(None)
         return torch.from_numpy(out).to(b0.device), traces
 
+    @torch.no_grad()
+    def compose_and_feedback(self, b0, vmask, theta, alpha_facts, nd, K, queries=None):
+        """Lever B's organ→α channel. Same verifier-gated reduced product as __call__, but ALSO returns
+        the per-cell ORGAN FEEDBACK [B,N,FB_DIM] = [narrowed-card-fraction, determined, conflict/⊥] and a
+        per-instance verdict {solvable, determines, answer} from the EXACT solver (csp_α's exact_dedP).
+        The feedback is what the organ reports back to the rack for the next loop step:
+          * card-fraction |composed.dom[i]|/d   — how far the organ narrowed cell i (which cells determined),
+          * determined = (|composed.dom[i]|==1) — the solved cells,
+          * conflict   = (csp_α UNSAT) broadcast — the 'this structure caused ⊥' (unsat-core) signal.
+        Soundness is unchanged: the composed lattice is the certified floor narrowing of csp_α; the
+        feedback is a read-only report (it conditions α's NEXT emission, never the floor)."""
+        B, N, _ = b0.shape
+        alive = (torch.sigmoid(b0) >= theta).float() * vmask.unsqueeze(-1)
+        alive_np = alive.cpu().numpy()
+        out = np.zeros((B, N, K), dtype=np.float32)
+        fb = np.zeros((B, N, FB_DIM), dtype=np.float32)
+        verdicts = []
+        for b in range(B):
+            facts = alpha_facts[b] if alpha_facts is not None else None
+            n, d = nd[b]
+            q = queries[b] if queries is not None else None
+            if facts is None:
+                out[b] = alive_np[b]
+                verdicts.append(None)
+                continue
+            d = min(int(d), K)
+            adom = None
+            if self.use_alpha_gate:
+                adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
+                             for i in range(n))
+            try:
+                csp_a = build_csp_from_struct(facts, n, d)
+                composed = self.compose_one(csp_a, adom, system=None, tags=())
+                ded = C.exact_dedP(csp_a, csp_a.full())          # exact verdict (sound + complete for SAT)
+                solvable = any(len(c) > 0 for c in ded)
+                for i in range(n):
+                    ci = composed.dom[i]
+                    for v in ci:
+                        if v < K:
+                            out[b, i, v] = 1.0
+                    if not solvable:                              # ⊥ ⇒ unsat-core signal broadcast
+                        fb[b, i, 2] = 1.0
+                    else:
+                        fb[b, i, 0] = len(ci) / max(1, d)
+                        fb[b, i, 1] = 1.0 if len(ci) == 1 else 0.0
+                        fb[b, i, 2] = 1.0 if len(ci) == 0 else 0.0
+                det, ans = False, None
+                if solvable and q is not None and q < n and len(ded[q]) == 1:
+                    det, ans = True, int(next(iter(ded[q])))
+                verdicts.append({"solvable": solvable, "determines": det, "answer": ans})
+            except Exception:
+                out[b] = alive_np[b]
+                verdicts.append(None)
+        return (torch.from_numpy(out).to(b0.device),
+                torch.from_numpy(fb).to(b0.device), verdicts)
+
 
 def _rich_from_set(surv_set, dvec):
     """[B,N,K] composed candidate SET (+ per-instance domain sizes dvec[B]) → rich [B,N,K+2] =
@@ -673,6 +735,14 @@ class AlphaStructWoven(nn.Module):
         # per-cell candidate lattice head (b0): the gated α-passenger + the J0 grounding target. Reuses
         # the rack's shared featurization (one encoder pass for both structure + candidate sets).
         self.cand = nn.Sequential(nn.Linear(din, cand_hidden), nn.GELU(), nn.Linear(cand_hidden, K))
+        # LEVER B — the α↔organ FEEDBACK adapter: maps the organ's per-cell report [B,N,FB_DIM] into the
+        # rack's fused feature so α's NEXT emission can condition on what the organ narrowed/where it hit ⊥.
+        # ZERO-INIT (bias-free) ⇒ at t=0 (no feedback) and with the adapter untrained the loop is a bitwise
+        # no-op perturbation of the single-shot compile (T=1 == the core); it LEARNS to use feedback, the
+        # same "no-op@init then open the gate" discipline as γ. Composable with α-as-search (search runs
+        # WITHIN each loop step).
+        self.fb_adapter = nn.Linear(FB_DIM, din, bias=False)
+        nn.init.zeros_(self.fb_adapter.weight)
         self.rich = rich
         self.Fin = K + 2 if rich else K
         self.gamma = OracleGamma(D, self.Fin, gamma_hidden)
@@ -685,9 +755,17 @@ class AlphaStructWoven(nn.Module):
         self._inject = self._capture = False
         self._override = None
         self._empty_struct = False
+        # lever levers: α-as-search (search_K>1) + iterative α↔organ loop (loop_T>1); both OFF by default
+        # (search_K=1, loop_T=1) ⇒ the single-shot core, no behavior change / no-op@init preserved.
+        self._search_K = 1
+        self._search_temp = 1.0
+        self._loop_T = 1
+        self._queries = None
+        self._search_rng = None
         self._h_mid = None
         self._captured_surv = None
         self._last_pin = self._last_pair = self._last_b0 = self._last_vmask = self._last_facts = None
+        self._last_loop_info = None
         layers = _decoder_layers(peft_model)
         self._mid_handle = layers[mid_layer].register_forward_hook(self._mid_hook)
         self._inj_handle = layers[inject_layer].register_forward_hook(self._inj_hook)
@@ -697,14 +775,18 @@ class AlphaStructWoven(nn.Module):
         self._h_mid = output[0] if isinstance(output, tuple) else output
         return output
 
-    def _compile_struct(self):
+    def _compile_struct(self, feedback=None):
         """StructureRack(mid hidden) → (pin_logits, pair_logits, b0, vmask). One featurization feeds both
-        the CSP structure head and the per-cell candidate head."""
+        the CSP structure head and the per-cell candidate head. `feedback` [B,N,FB_DIM] (lever B) is the
+        organ's report from the previous loop step; it conditions α's emission via the zero-init
+        fb_adapter (feedback=None ⇒ t=0 ⇒ bitwise the single-shot compile)."""
         h = self._h_mid.float()
         m = self._mention.to(h.device)
         denom = m.sum(-1, keepdim=True).clamp_min(1e-6)
         v_mean = torch.einsum("bnt,btd->bnd", m, h) / denom            # mention-pool cell identity
         feat = self.alpha.featurize(v_mean, h, self._attn.to(h.device))
+        if feedback is not None:                                      # α↔organ feedback conditioning
+            feat = feat + self.fb_adapter(feedback.to(feat.dtype))
         pin_l, pair_l = self.alpha.csp(feat)                          # α EMITS structure
         b0 = self.cand(feat)                                          # α's per-cell candidate lattice
         vmask = (m.sum(-1) > 0.5).float()
@@ -729,15 +811,19 @@ class AlphaStructWoven(nn.Module):
         hs = output[0] if isinstance(output, tuple) else output
         surv = self._override
         if surv is None:
-            pin_l, pair_l, b0, vmask = self._compile_struct()
-            facts = self._decode_facts(pin_l, pair_l, vmask)
-            self._last_facts = facts
-            # THE INVARIANT: the composer forward runs under forbid_record_csp() — any read of rec['csp']
-            # (csp_spec_for_record) raises. The composer sees ONLY α's emitted structure.
-            with forbid_record_csp():
-                surv = self.composer(b0, vmask, self.theta, facts, self._nd, self.K)[0]
-            surv = surv * vmask.unsqueeze(-1)
-            self._captured_surv = surv.detach()
+            if self._loop_T > 1 or self._search_K > 1:
+                # LEVERS A/B: α-as-search and/or the iterative α↔organ loop pick the structure before γ.
+                surv = self.iterate_alpha_organ()[0]
+            else:
+                pin_l, pair_l, b0, vmask = self._compile_struct()
+                facts = self._decode_facts(pin_l, pair_l, vmask)
+                self._last_facts = facts
+                # THE INVARIANT: the composer forward runs under forbid_record_csp() — any read of
+                # rec['csp'] (csp_spec_for_record) raises. The composer sees ONLY α's emitted structure.
+                with forbid_record_csp():
+                    surv = self.composer(b0, vmask, self.theta, facts, self._nd, self.K)[0]
+                surv = surv * vmask.unsqueeze(-1)
+                self._captured_surv = surv.detach()
             surv = self._captured_surv
         if not self._inject:
             return output
@@ -749,17 +835,21 @@ class AlphaStructWoven(nn.Module):
     # ---- context manager ----
     @contextlib.contextmanager
     def live(self, mention, attn, *, inject, capture=False, override=None, nd=None, dvec=None,
-             empty_struct=False):
+             empty_struct=False, search_K=1, search_temp=1.0, loop_T=1, queries=None, search_rng=None):
         old = (self._mention, self._attn, self._inject, self._capture, self._override, self._nd,
-               self._dvec, self._empty_struct)
+               self._dvec, self._empty_struct, self._search_K, self._search_temp, self._loop_T,
+               self._queries, self._search_rng)
         self._mention, self._attn = mention, attn
-        (self._inject, self._capture, self._override, self._nd, self._dvec, self._empty_struct) = (
-            inject, capture, override, nd, dvec, empty_struct)
+        (self._inject, self._capture, self._override, self._nd, self._dvec, self._empty_struct,
+         self._search_K, self._search_temp, self._loop_T, self._queries, self._search_rng) = (
+            inject, capture, override, nd, dvec, empty_struct, search_K, search_temp, loop_T,
+            queries, search_rng)
         try:
             yield
         finally:
             (self._mention, self._attn, self._inject, self._capture, self._override, self._nd,
-             self._dvec, self._empty_struct) = old
+             self._dvec, self._empty_struct, self._search_K, self._search_temp, self._loop_T,
+             self._queries, self._search_rng) = old
 
     def logits(self, input_ids, attn):
         return self.model(input_ids=input_ids, attention_mask=attn).logits
@@ -780,24 +870,105 @@ class AlphaStructWoven(nn.Module):
         except Exception:
             pass
 
-    # ---- clean hooks for the two FOLLOW-ON levers (interfaces, not implementations) -----------------
-    def propose_structures(self, pin_l, pair_l, vmask, nd, *, topk=1, temp=1.0, rng=None):
-        """α-AS-SEARCH hook (north-star "search arm" / design §5.3): emit the top-k candidate factor
-        graphs (greedy + temperature samples) for one instance so a verifier-gated search can filter
-        them (compiles-to-solvable + certified-solution-output-checks) and distill the winner. The
-        proposer math is already validated in run_alpha_struct_search.build_candidates; this is the
-        in-woven entry point. INTERFACE ONLY — wire the search loop here next."""
-        raise NotImplementedError(
-            "α-as-search interface: decode top-k structures here and filter with alpha_struct.output_check"
-            " (see clair.organ.run_alpha_struct_search.build_candidates for the validated proposer).")
+    # ============================================================ LEVER A — α-AS-SEARCH (real)
+    def propose_structures(self, pin_l_b, pair_l_b, vmask_b, n, d, query, *, K=1, temp=1.0,
+                           rng=None, output_check_fn=None, csp_true=None):
+        """α-AS-SEARCH (design §5.3 / runs/alpha_struct_search_nl.json — verifier-selection recovered
+        answer-acc +0.11). For ONE instance: decode K candidate factor graphs from its CSP-head logits
+        (candidate 0 = greedy argmax; 1..K-1 = temperature samples — `sample_candidates`), compile each
+        to csp_α, run the EXACT certified solver (`solve_query` = exact_dedP), KEEP candidates that are
+        SOLVABLE (not ⊥) and DETERMINE the query, and SELECT the highest structure-CONFIDENCE survivor.
+        The selection is SOUND — it reads only the candidate's own structure + the certified solver +
+        the model's confidence, never gold. Returns the selected
+            {facts, conf, solvable, determines, answer, certified, n_pass, K}.
+        If `output_check_fn` + `csp_true` are supplied (the RELIABILITY layer, used OUTSIDE the
+        forbid_record_csp forward — e.g. the diagnostic), the survivor must ALSO pass the certified
+        output_check (answer is a real solution-value of the TRUE instance) — the gate that licenses the
+        accept. With none passing we fall back to the greedy candidate (uncertified). K=1 ⇒ greedy only
+        ⇒ identical to the single-shot decode (no behavior change)."""
+        cands = sample_candidates(pin_l_b, pair_l_b, vmask_b, n, K, temp=temp, d=d, rng=rng)
+        for c in cands:
+            solv, det, ans = solve_query(c["facts"], n, d, query)
+            c["solvable"], c["determines"], c["answer"] = solv, det, ans
+            ok = bool(solv and det)
+            if ok and output_check_fn is not None and csp_true is not None:
+                ok = bool(output_check_fn(ans, csp_true, query))     # certified gate (reliability layer)
+            c["passes"] = ok
+        passing = [c for c in cands if c["passes"]]
+        if passing:
+            sel = max(passing, key=lambda c: c["conf"])
+            sel = {**sel, "certified": True, "n_pass": len(passing)}
+        else:
+            sel = {**cands[0], "certified": False, "n_pass": 0}      # greedy fallback (uncertified)
+        sel["K"] = int(K)
+        return sel
 
-    def iterate_alpha_organ(self, max_iters=2, **kw):
-        """ITERATIVE α↔organ loop hook (north-star orchestrator): re-read the host hidden conditioned on
-        the composer's last lattice, re-emit a sharpened structure, recompose — the multi-step strategic
-        loop. INTERFACE ONLY — the single-shot forward above is iteration 0."""
-        raise NotImplementedError(
-            "iterative α↔organ loop interface: feed self._captured_surv back into the rack's read and "
-            "recompose for max_iters rounds (the orchestrator loop, notes/north_star_orchestrator.md).")
+    # ============================================================ LEVER B — ITERATIVE α↔organ LOOP (real)
+    @torch.no_grad()
+    def iterate_alpha_organ(self, *, T=None, search_K=None, search_temp=None, rng=None, queries=None,
+                            output_check_fn=None, csps_true=None):
+        """The DEEP bidirectional (inference-time) loop (north-star orchestrator on-ramp). Up to T steps:
+
+            t=0: α reads the host hidden → emits structure_0 → composer narrows → organ returns the PARTIAL
+                 result (per-cell narrowed cardinalities / which cells determined / the ⊥ unsat-core signal);
+            t>0: that feedback CONDITIONS the rack's next read (via the zero-init fb_adapter) → α emits a
+                 REVISION structure_t → re-narrow → new feedback;
+            stop on FIXPOINT (structure stable vs the previous step) or T.
+
+        α-as-search composes INSIDE each step (search_K>1 ⇒ propose+verifier-select the step's structure).
+        Every step's lattice is the certified-floor narrowing of its csp_α (SOUND each step — the floor
+        never drops a real solution value); the final answer is output-checked downstream. T=1 ⇒ one
+        emission, no feedback ever applied ⇒ bitwise the single-shot core. Returns (surv [B,N,K], info).
+
+        Generalizes toward the multi-step orchestrator (notes/north_star_orchestrator.md): here the loop
+        iterates α's COMPILE on a fixed host read; the orchestrator additionally re-runs the LM between
+        calls — same feedback channel, one level up (the organ-call is the checked anchor, the strategy
+        between calls is free)."""
+        from .. import curriculum as CU
+        T = self._loop_T if T is None else int(T)
+        K = self._search_K if search_K is None else int(search_K)
+        temp = self._search_temp if search_temp is None else float(search_temp)
+        rng = self._search_rng if rng is None else rng
+        queries = self._queries if queries is None else queries
+        B = self._mention.shape[0]
+        feedback = None                                              # zero at t=0 (the single-shot read)
+        facts_prev = [None] * B
+        surv = None
+        info = {"T": T, "search_K": K, "steps": 0, "stop": "T", "facts_per_step": [], "verdicts": None}
+        norm = lambda fs: None if fs is None else set(CU.norm_facts([tuple(f) for f in fs]))
+        for t in range(max(1, T)):
+            pin_l, pair_l, b0, vmask = self._compile_struct(feedback)
+            facts = []
+            for b in range(B):
+                n, d = self._nd[b]
+                dd = min(int(d), self.K)
+                q = queries[b] if queries is not None else None
+                if self._empty_struct:
+                    facts.append([])
+                elif K > 1:
+                    sel = self.propose_structures(
+                        pin_l[b], pair_l[b], vmask[b], int(n), dd, q, K=K, temp=temp, rng=rng,
+                        output_check_fn=output_check_fn,
+                        csp_true=(csps_true[b] if csps_true is not None else None))
+                    facts.append(sel["facts"])
+                else:
+                    facts.append(decode_structure(pin_l[b], pair_l[b], vmask[b], int(n), dd))
+            self._last_facts = facts
+            with forbid_record_csp():                               # the composer never sees rec['csp']
+                surv, feedback_next, verdicts = self.composer.compose_and_feedback(
+                    b0, vmask, self.theta, facts, self._nd, self.K, queries)
+            surv = surv * vmask.unsqueeze(-1)
+            info["facts_per_step"].append(facts)
+            info["verdicts"] = verdicts
+            info["steps"] = t + 1
+            if t > 0 and all(norm(facts[b]) == norm(facts_prev[b]) for b in range(B)):
+                info["stop"] = "fixpoint"
+                break
+            facts_prev = facts
+            feedback = feedback_next
+        self._captured_surv = surv.detach()
+        self._last_loop_info = info
+        return self._captured_surv, info
 
 
 # ============================================================ batch + no-op@init proof
@@ -808,6 +979,7 @@ def _alpha_struct_batch(recs, tok, dev, two_stream):
     ba = G.build_live_batch(recs, tok, dev, two_stream=two_stream)
     Nmax = max(r["n"] for r in recs)
     ba["nd"] = [(r["n"], len(r["vnames"])) for r in recs]
+    ba["queries"] = [int(r["query"]) for r in recs]                # lever B "determines-query" selector
     ba["dvec"] = torch.tensor([len(r["vnames"]) for r in recs], device=dev)
     pin_t, pair_t = facts_to_struct_targets([r.get("facts", []) for r in recs],
                                             [r["n"] for r in recs], Nmax)
@@ -881,9 +1053,15 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
     print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",
           flush=True)
     lora_params = [p for n, p in model.model.named_parameters() if p.requires_grad]
-    rack_cand = list(model.alpha.parameters()) + list(model.cand.parameters())
+    # the rack + the candidate head + the α↔organ feedback adapter (lever B) all train on the α signals.
+    rack_cand = list(model.alpha.parameters()) + list(model.cand.parameters()) \
+        + list(model.fb_adapter.parameters())
     rng = np.random.default_rng(a.seed + 5)
     struct_w = getattr(a, "struct_sup_w", 1.0)
+    # LEVERS (trained-WITH, not just eval): search_K>1 ⇒ α-as-search picks the structure each step;
+    # loop_T>1 ⇒ the iterative α↔organ loop. Default 1/1 ⇒ the validated single-shot recipe, unchanged.
+    sK = int(getattr(a, "search_K", 1)); sT = float(getattr(a, "search_temp", 1.0))
+    lT = int(getattr(a, "loop_T", 1))
 
     def batch(n):
         idxs = rng.integers(0, len(train_recs), n).tolist()
@@ -892,7 +1070,8 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
     def alpha_capture(ba):
         m, at = (ba["a_mention"], ba["a_attn"]) if two_stream else (ba["mention"], ba["attn"])
         ids = ba["a_input_ids"] if two_stream else ba["input_ids"]
-        with model.live(m, at, inject=False, capture=True, nd=ba["nd"], dvec=ba["dvec"]):
+        with model.live(m, at, inject=False, capture=True, nd=ba["nd"], dvec=ba["dvec"],
+                        search_K=sK, search_temp=sT, loop_T=lT, queries=ba["queries"]):
             _ = model.logits(ids, at)
 
     def struct_loss(ba):
@@ -936,7 +1115,8 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
         else:
             with model.live(ba["mention"], ba["attn"], inject=True, capture=True, nd=ba["nd"],
-                            dvec=ba["dvec"]):
+                            dvec=ba["dvec"], search_K=sK, search_temp=sT, loop_T=lT,
+                            queries=ba["queries"]):
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
             aux_struct = struct_loss(ba)
             aux_j0 = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])
