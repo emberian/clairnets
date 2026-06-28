@@ -346,7 +346,10 @@ def _weave_args(base_id, **over):
         base=base_id, steps=2500, warm_steps=400, bs=12, lora_r=16, lora_lr=2e-4, gamma_lr=1e-3,
         alpha_lr=3e-4, gamma_hidden=256, mid_layer=6, inject_layer=12, dctx=256, alpha_dp=384,
         alpha_heads=6, organ_d=128, organ_heads=4, organ_layers=2, organ_T=12, aux_w=0.5,
-        alpha_sup_w=1.0, engage_thr=5.0, per_rung_train=400, per_rung_eval=80, det_only=1, seed=0)
+        alpha_sup_w=1.0, engage_thr=5.0, per_rung_train=400, per_rung_eval=80, det_only=1, seed=0,
+        # ALPHA_STRUCT inference levers (train-WITH; default off = the validated single-shot recipe):
+        #   search_K>1 → α-as-search (verifier-select the structure); loop_T>1 → iterative α↔organ loop.
+        struct_sup_w=1.0, search_K=1, search_temp=1.0, loop_T=1)
     for k, v in over.items():
         setattr(a, k, v)
     return a
@@ -535,6 +538,12 @@ def main():
     pw.add_argument("--two_stream", type=int, default=1, help="1=two-stream (cells-gen) 0=single-stream")
     pw.add_argument("--steps", type=int, default=2500)
     pw.add_argument("--warm_steps", type=int, default=400)
+    pw.add_argument("--search_K", type=int, default=1,
+                    help="alpha_struct LEVER A (α-as-search): K candidate structures, verifier-selected "
+                         "(1=greedy, the single-shot core)")
+    pw.add_argument("--search_temp", type=float, default=1.0, help="α-as-search candidate sampling temperature")
+    pw.add_argument("--loop_T", type=int, default=1,
+                    help="alpha_struct LEVER B (iterative α↔organ loop): T feedback steps (1=single-shot core)")
     pw.add_argument("--out", default=None)
     pw.add_argument("--smoke", action="store_true")
 
@@ -551,7 +560,8 @@ def main():
                        smoke=a.smoke, gen_workers=a.gen_workers)
     elif a.cmd == "weave":
         weave(a.base, regime=a.regime, two_stream=bool(a.two_stream), organ_mode=a.organ_mode,
-              smoke=a.smoke, out=a.out, steps=a.steps, warm_steps=a.warm_steps)
+              smoke=a.smoke, out=a.out, steps=a.steps, warm_steps=a.warm_steps,
+              search_K=a.search_K, search_temp=a.search_temp, loop_T=a.loop_T)
     elif a.cmd == "rlvr":
         rlvr(task=a.task, steps=a.steps, out=a.out, smoke=a.smoke)
 

@@ -290,3 +290,85 @@ def output_check(answer, csp_true, query):
         return False
     ded = C.exact_dedP(csp_true, csp_true.full())
     return int(answer) in ded[query]
+
+
+# ===================================================================== α-as-search proposer (lever A)
+# The candidate-structure proposer + the SOUND certified selector, factored out of
+# run_alpha_struct_search.build_candidates / verify_structure so the LIVE woven (AlphaStructWoven.
+# propose_structures) reuses the *validated* proposer math (runs/alpha_struct_search_nl.json: verifier-
+# selection recovered answer-acc +0.11 over greedy). decode_structure_idx is the sampling-capable
+# sibling of decode_structure (which argmaxes); candidate 0 (argmax) is bitwise the greedy decode.
+
+def decode_structure_idx(pin_idx, pair_idx, vmask, n, d=None):
+    """One instance's CHOSEN class indices → the normalized predicted typed factor graph (a fact list).
+    Like `decode_structure` but over GIVEN indices (argmax for greedy, multinomial sample otherwise),
+    so it shares the exact decode semantics + the d-domain pin clamp. pin_idx [N], pair_idx [N,N]."""
+    from .. import curriculum as CU
+    facts = []
+    for i in range(n):
+        if float(vmask[i]) > 0.5 and int(pin_idx[i]) != 0:
+            v = int(pin_idx[i]) - 1
+            if d is None or v < d:
+                facts.append(("pin", i, v))
+    for i in range(n):
+        if float(vmask[i]) < 0.5:
+            continue
+        for j in range(n):
+            if i == j or float(vmask[j]) < 0.5:
+                continue
+            cls = PAIR_RELS[int(pair_idx[i, j])]
+            if cls in ("eq", "neq", "lt", "le"):
+                facts.append((cls, i, j))
+    return list(CU.norm_facts(facts))
+
+
+def sample_candidates(pin_l, pair_l, vmask, n, K, temp=1.0, d=None, rng=None):
+    """Decode K candidate structures for ONE instance from its CSP-head logits. Candidate 0 = GREEDY
+    (argmax — bitwise the single-shot decode); 1..K-1 = temperature samples of the pin & pair-relation
+    logits. Returns [{facts, conf}] with conf = the model's joint structure log-prob (its confidence,
+    the sound selector's tiebreak). Mirrors run_alpha_struct_search.build_candidates, in-woven."""
+    t = max(float(temp), 1e-6)
+    pin_lp = F.log_softmax(pin_l / t, dim=-1)              # [N,1+K]
+    pair_lp = F.log_softmax(pair_l / t, dim=-1)            # [N,N,R]
+    pin_p, pair_p = pin_lp.exp(), pair_lp.exp()
+    vb = vmask > 0.5
+    cells = [i for i in range(n) if bool(vb[i])]
+    pairs = [(i, j) for i in cells for j in cells if i != j]
+
+    def conf(pin_idx, pair_idx):
+        s = 0.0
+        for i in cells:
+            s += float(pin_lp[i, int(pin_idx[i])])
+        for (i, j) in pairs:
+            s += float(pair_lp[i, j, int(pair_idx[i, j])])
+        return s
+
+    out = []
+    for k in range(max(1, int(K))):
+        if k == 0:
+            pin_idx = pin_l.argmax(-1)
+            pair_idx = pair_l.argmax(-1)
+        else:
+            pin_idx = torch.multinomial(pin_p, 1, generator=rng).squeeze(-1)
+            pflat = pair_p.reshape(-1, pair_p.size(-1))
+            pair_idx = torch.multinomial(pflat, 1, generator=rng).squeeze(-1).reshape(pair_p.shape[:2])
+        facts = decode_structure_idx(pin_idx, pair_idx, vmask, n, d)
+        out.append({"facts": facts, "conf": conf(pin_idx, pair_idx)})
+    return out
+
+
+def solve_query(facts, n, d, query):
+    """The SOUND certified selector for α-as-search: compile csp_α = build_csp_from_struct(facts) and
+    read the EXACT solver (clair.csp.exact_dedP). Returns (solvable, determines_query, answer). ⊥ (unsat)
+    ⇒ every cell empty ⇒ solvable False. determines ⇔ the query cell is a singleton in some solution.
+    Uses ONLY the candidate's own structure + the exact solver — no gold (mirrors verify_structure)."""
+    from .. import csp as C
+    csp = build_csp_from_struct(facts, n, d)
+    ded = C.exact_dedP(csp, csp.full())
+    solvable = any(len(c) > 0 for c in ded)
+    if not solvable or query is None or query >= n:
+        return solvable, False, None
+    q = ded[query]
+    if len(q) == 1:
+        return True, True, int(next(iter(q)))
+    return True, False, None
