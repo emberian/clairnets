@@ -115,6 +115,14 @@ def solutions(csp: CSP, dom=None, limit=None):
 
 
 _DEDP_CACHE = {}
+# Memory bound (entry COUNT) for the dedₚ memo. This must stay small: a single cache key is
+# (csp.cons, dom), and for random-relation / composed CSPs the allowed-tuple tables in `cons` are
+# large (~270 KB/entry observed in the difficulty-stream mix), so the old 300k count-bound could
+# reach ~80 GB before clearing and OOM-killed Stage-1 pretrain at ~110k entries (~30 GB). The memo
+# is a pure performance optimisation — clearing only forces recompute (identical results) — and the
+# per-step working set is only a few hundred keys, so a small cap keeps the hit-rate while bounding
+# RAM. Override with CLAIR_DEDP_CACHE_MAX for hosts with more memory.
+_DEDP_CACHE_MAX = int(_os.environ.get("CLAIR_DEDP_CACHE_MAX", "20000"))
 
 
 def _exact_dedP_py(csp: CSP, dom):
@@ -148,7 +156,7 @@ def exact_dedP(csp: CSP, dom):
         res = tuple(frozenset(c) for c in cells)
     else:
         res = _exact_dedP_py(csp, dom)
-    if len(_DEDP_CACHE) > 300_000:                                 # bound memory on long runs
+    if len(_DEDP_CACHE) > _DEDP_CACHE_MAX:                          # bound memory on long runs
         _DEDP_CACHE.clear()
     _DEDP_CACHE[key] = res
     return res
@@ -462,6 +470,49 @@ def factor_cells(csp: CSP, st, factors):
                 surv = here if surv is None else (surv & here)
         cells.append(surv if surv is not None else frozenset(range(csp.d)))
     return tuple(cells)
+
+
+def _factor_consistency_cells_py(csp: CSP, dom, k=3):
+    """Pure-Python level-k factor consistency, projected to per-cell survivor sets (the fixpoint of
+    factor_step from the given `dom`, then factor_cells). NOT yet met with `dom` (caller meets)."""
+    factors = default_factors(csp, k)
+    st = factor_init(csp, factors, dom)
+    for _ in range(csp.n * csp.d * csp.d + 2):
+        nxt = factor_step(csp, st, factors)
+        if nxt == st:
+            break
+        st = nxt
+    return factor_cells(csp, st, factors)
+
+
+def factor_consistency_cells(csp: CSP, dom, k=3):
+    """Level-k generalized (factor) consistency projected to per-cell survivor sets, run to fixpoint from
+    `dom`. This is the certified `FactorConsistency` reduction's hot path (the composer's soundness floor).
+    Uses the Rust fast path when available — BITWISE-IDENTICAL per-cell sets to the pure-Python fixpoint
+    (the factor-consistency fixpoint is unique, so the Rust projection-set acceleration cannot change it;
+    cross-checked exhaustively in clair.organ.selftest). A cell in NO factor projects to the full domain
+    range(d) (matching factor_cells); the caller meets the result with `dom`."""
+    if _fast_ok(csp):
+        scopes, alloweds = _marshal_cons(csp.cons)
+        doml = [sorted(dom[i]) for i in range(csp.n)]
+        cells = _CF.factor_dedp(csp.n, csp.d, scopes, alloweds, doml, k)
+        return tuple(frozenset(c) for c in cells)
+    return _factor_consistency_cells_py(csp, dom, k)
+
+
+def factor_consistency_cells_batch(items, k=3):
+    """Batched level-k factor consistency across many (csp, dom) pairs, parallelised over cores in Rust
+    (GIL released) when every instance fits the fast-path bounds — else per-item Python fallback. `items`
+    is a list of (csp, dom). Returns a list of per-cell survivor-set tuples (NOT met with dom)."""
+    if _CF is not None and all(_fast_ok(c) for c, _ in items):
+        payload = []
+        for csp, dom in items:
+            scopes, alloweds = _marshal_cons(csp.cons)
+            doml = [sorted(dom[i]) for i in range(csp.n)]
+            payload.append((csp.n, csp.d, scopes, alloweds, doml, k))
+        outs = _CF.factor_dedp_batch(payload)
+        return [tuple(frozenset(c) for c in cells) for cells in outs]
+    return [factor_consistency_cells(csp, dom, k) for csp, dom in items]
 
 
 def solve_factor(csp: CSP, k=3):
