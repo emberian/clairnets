@@ -1,0 +1,99 @@
+{
+ "meta": {
+  "date": "2026-06-28",
+  "note": "DPLL search leg restored to the LDT organ; deduction (inner) = reduced_product; search (outer) = solve()",
+  "generated_s": 0.2
+ },
+ "families": [
+  {
+   "family": "chain_eq [bounded-width, determined]",
+   "n_inst": 40,
+   "n_satisfiable": 40,
+   "deduction_only_solved": 40,
+   "deduction_search_solved": 40,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 0.0,
+    "max_branches": 0,
+    "zero_branch_frac": 1.0,
+    "mean_nodes": 1.0
+   }
+  },
+  {
+   "family": "path 2-coloring [bounded-width, determined]",
+   "n_inst": 40,
+   "n_satisfiable": 40,
+   "deduction_only_solved": 40,
+   "deduction_search_solved": 40,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 0.0,
+    "max_branches": 0,
+    "zero_branch_frac": 1.0,
+    "mean_nodes": 1.0
+   }
+  },
+  {
+   "family": "3-coloring [underdetermined search]",
+   "n_inst": 40,
+   "n_satisfiable": 38,
+   "deduction_only_solved": 0,
+   "deduction_search_solved": 38,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 4.2,
+    "max_branches": 6,
+    "zero_branch_frac": 0.0,
+    "mean_nodes": 5.3
+   }
+  },
+  {
+   "family": "xor_global / deduction=AC (no GF2)",
+   "n_inst": 60,
+   "n_satisfiable": 60,
+   "deduction_only_solved": 3,
+   "deduction_search_solved": 60,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 2.83,
+    "max_branches": 12,
+    "zero_branch_frac": 0.05,
+    "mean_nodes": 5.8
+   }
+  },
+  {
+   "family": "xor_global / deduction=AC+factor (no GF2)",
+   "n_inst": 60,
+   "n_satisfiable": 60,
+   "deduction_only_solved": 19,
+   "deduction_search_solved": 60,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 0.75,
+    "max_branches": 3,
+    "zero_branch_frac": 0.317,
+    "mean_nodes": 2.15
+   }
+  },
+  {
+   "family": "xor_global / deduction+GF2 faculty",
+   "n_inst": 60,
+   "n_satisfiable": 60,
+   "deduction_only_solved": 60,
+   "deduction_search_solved": 60,
+   "unsound_returns": 0,
+   "branch_stats": {
+    "mean_branches": 0.0,
+    "max_branches": 0,
+    "zero_branch_frac": 1.0,
+    "mean_nodes": 1.0
+   }
+  }
+ ],
+ "ldt_two_routes": {
+  "claim": "affine is crossed by BRANCHING or LINEAR ALGEBRA (Feder-Vardi / Barto-Kozik dichotomy)",
+  "branching_route": "deduction+search WITHOUT GF2: deduction abstains, search SOLVES with real branches",
+  "linalg_route": "deduction+GF2 faculty: solves with ~0 branches (RREF row-space)",
+  "bounded_width": "deduction alone solves; search adds ~0 branches"
+ }
+}
