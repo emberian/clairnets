@@ -314,6 +314,79 @@ def test_process_reward():
     PR.smoke()
 
 
+# ============================================================ [7] MULTI-FACULTY dispatch (de-CSP-lock)
+def test_multifaculty():
+    print("\n[7] MULTI-FACULTY: general typed struct_α + composer DISPATCH (non-CSP faculty wired)")
+    import torch
+    import numpy as np
+    from . import faculty as FAC
+    from . import faculty_tasks as FT
+    from .faculty import (GraphReach, GraphReachState, CrossCSPGraph, build_struct_alpha,
+                          reachable, LIVE_FACULTIES)
+    from .multifaculty import MultiFacultyComposerOrgan
+    from .protocol import CSPState
+    K = 8
+    rng = np.random.default_rng(0)
+
+    # (a) GraphReach certified closure == brute BFS; survival is the per-cell reach one-hot
+    bad = 0
+    for _ in range(40):
+        n = int(rng.integers(4, 8))
+        edges = frozenset((i, j) for i in range(n) for j in range(n) if i != j and rng.random() < 0.3)
+        s = int(rng.integers(n))
+        out = GraphReach().reduce(GraphReachState(n, edges, s))
+        truth = reachable(n, edges, s)
+        bad += int(tuple(out.reach) != tuple(i in truth for i in range(n)))
+    assert bad == 0, f"GraphReach mismatched brute reachability on {bad}/40"
+    print("    graph_reach          == brute BFS reachability on 40 graphs (sound+complete closure)")
+
+    # (b) the typed builder dispatches by faculty → the right state_type (de-CSP-lock)
+    ts_c = build_struct_alpha("csp", [("pin", 0, 1), ("neq", 0, 1)], 3, 3)
+    ts_g = build_struct_alpha("graph", ([(0, 1), (1, 2)], 0, 2), 3, 2)
+    ts_x = build_struct_alpha("cross", ([("pin", 0, 0), ("neq", 0, 1)], [(0, 1)], 0, 1), 2, 2)
+    assert (ts_c.state_type, ts_g.state_type, ts_x.state_type) == \
+        ("csp-domain", "graph-reach", "cross-csp-graph"), "struct_α must carry its faculty state_type"
+    print(f"    build_struct_alpha   dispatches csp/graph/cross → "
+          f"{ts_c.state_type} / {ts_g.state_type} / {ts_x.state_type}")
+
+    # (c) CrossCSPGraph (the faculty-A→flow→faculty-B composite) == exact ground truth
+    bad = 0
+    for _ in range(30):
+        r = FT.gen_cross_record(rng, want_yes=(rng.random() < 0.5))
+        ts = build_struct_alpha("cross", (r["true_facts"], r["cand_edges"], r["source"], r["target"]),
+                                r["n"], 2)
+        out = CrossCSPGraph().reduce(ts.state)
+        bad += int(bool(out.reach[r["target"]]) != (r["gold_idx"] == 0))
+    assert bad == 0, f"CrossCSPGraph mismatched exact ground truth on {bad}/30"
+    print("    cross_csp_graph      == exact (CSP colours → active edges → reachability) on 30 instances")
+
+    # (d) the DISPATCHING composer routes a NON-CSP (graph) problem to its faculty (no LM): the de-CSP-lock
+    comp = MultiFacultyComposerOrgan(dev="cpu", use_core=False)
+    rg = FT.gen_graph_record(rng)
+    n = rg["n"]
+    edge_logits = torch.full((1, n, n), -9.0)
+    for (u, v) in rg["true_edges"]:
+        edge_logits[0, u, v] = 9.0                          # α "emits" the true edges
+    b0 = torch.zeros(1, n, K); vmask = torch.ones(1, n)
+    specs = [{"faculty": "graph", "facts": [], "n": n, "d": 2,
+              "source": rg["source"], "target": rg["target"]}]
+    surv, disp = comp.dispatch(b0, vmask, 0.5, edge_logits, specs, K)
+    assert disp[0] == "graph", "a graph problem must dispatch to the graph faculty (NOT csp-locked)"
+    truth = reachable(n, frozenset(map(tuple, rg["true_edges"])), rg["source"])
+    assert int(surv[0, rg["target"], 0]) == int(rg["target"] in truth), "graph readout must encode reach"
+    print(f"    composer.dispatch    routed a graph problem → graph faculty; reach readout correct "
+          f"(faculties={comp.faculties()})")
+
+    # (e) the multifaculty NECESSITY proof: cross solved, single-faculty baselines fail
+    res = FT.prove_multifaculty(n_inst=120, seed=1)
+    assert res["graph_faculty_acc"] > 0.99
+    assert res["cross_multifaculty_acc"] > 0.99
+    assert res["cross_graphonly_acc"] < 0.95 and res["cross_csponly_majority_acc"] < 0.7
+    print(f"    multifaculty win     cross {res['cross_multifaculty_acc']*100:.0f}% vs "
+          f"graph-only {res['cross_graphonly_acc']*100:.0f}% / csp-only "
+          f"{res['cross_csponly_majority_acc']*100:.0f}% (routing NECESSARY)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--woven", action="store_true", help="also run the full OLMo staged woven smoke")
@@ -326,9 +399,11 @@ def main():
     test_readout_noop()
     test_readout_bridge()
     test_process_reward()
+    test_multifaculty()
     test_woven(full=a.woven)
     print("\nALL CHECKS PASS — clair/organ is the assembled GLaDOS organ: certified bank sound on "
-          "domain, composer sound across >=2 domains, readout no-op at init, woven entry runs.")
+          "domain, composer sound across >=2 domains, readout no-op at init, MULTI-FACULTY dispatch "
+          "(graph faculty + cross-faculty composition) wired, woven entry runs.")
 
 
 if __name__ == "__main__":

@@ -9,3 +9,4 @@ clair_fast/target/
 *.so
 data/nl_frontier/*.jsonl
 runs/alpha_struct_woven.pt
+runs/multifaculty_full.pt
