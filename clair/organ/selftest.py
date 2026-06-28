@@ -427,6 +427,13 @@ def test_multifaculty():
           f"ising-only {ext['tri_isingonly_acc']*100:.0f}% / csp+ising {ext['tri_csp_ising_acc']*100:.0f}%")
 
 
+# ============================================================ [8] DPLL search leg (restored outer loop)
+def test_search():
+    print("\n[8] DPLL SEARCH leg (the restored LDT outer loop): deduction abstains, deduction+SEARCH solves")
+    from . import search as S
+    assert S.selftest(verbose=True), "the search-leg self-test must pass"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--woven", action="store_true", help="also run the full OLMo staged woven smoke")
@@ -440,6 +447,7 @@ def main():
     test_readout_bridge()
     test_process_reward()
     test_multifaculty()
+    test_search()
     test_woven(full=a.woven)
     print("\nALL CHECKS PASS — clair/organ is the assembled GLaDOS organ: certified bank sound on "
           "domain, composer sound across >=2 domains, readout no-op at init, MULTI-FACULTY dispatch "
