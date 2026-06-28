@@ -48,7 +48,7 @@ from .alpha_struct import (StructureRack, build_csp_from_struct, decode_structur
                            facts_to_struct_targets, structure_sup_loss, output_check,
                            sample_candidates, solve_query)
 from .bank import build_bank, certified_csp_reductions
-from .compose import reduced_product
+from .compose import reduced_product, reduced_product_batch
 from .protocol import Certificate, CSPState, Reduction
 
 # The α↔organ FEEDBACK channel width (lever B): per cell the organ reports back to the rack
@@ -112,6 +112,21 @@ class BankComposerOrgan:
         out, tr = reduced_product(full, reds, verify=False, max_rounds=self.max_rounds)
         self.last_trace = tr
         return out
+
+    def compose_batch(self, items):
+        """BATCHED compose: `items` is a list of (csp, alpha_dom, system, tags). Runs the SAME verifier-gated
+        reduced product as `compose_one` for every item, but fans the gated neural organ's forward across the
+        whole batch in one call (reduced_product_batch) — the per-instance composed lattice is BITWISE-
+        IDENTICAL to compose_one (asserted in selftest). Returns (list[CSPState], list[Trace])."""
+        states, extras = [], []
+        for csp, alpha_dom, system, tags in items:
+            states.append(CSPState.full(csp, system=system, tags=frozenset(tags)))
+            extras.append([_AlphaProposal(alpha_dom)] if (self.use_alpha_gate and alpha_dom is not None) else [])
+        outs, traces = reduced_product_batch(states, list(self.base_reductions), extras,
+                                             max_rounds=self.max_rounds)
+        if traces:
+            self.last_trace = traces[-1]
+        return outs, traces
 
     @torch.no_grad()
     def __call__(self, b0, vmask, theta, csps, K):
@@ -616,29 +631,37 @@ class AlphaStructComposerOrgan(BankComposerOrgan):
         alive = (torch.sigmoid(b0) >= theta).float() * vmask.unsqueeze(-1)
         alive_np = alive.cpu().numpy()
         out = np.zeros((B, N, K), dtype=np.float32)
-        traces = []
+        traces = [None] * B
+        # Phase 1: build each instance's csp_α + α-gate domain (the per-instance prep that can raise on a
+        # malformed emitted structure → graceful α-only fallback, exactly as the serial path). Survivors are
+        # composed TOGETHER (the gated neural organ — the dominant cost — fans across the batch dim).
+        items, slots = [], []
         for b in range(B):
             facts = alpha_facts[b] if alpha_facts is not None else None
             n, d = nd[b]
             if facts is None:
                 out[b] = alive_np[b]                       # no structure available: α-only fallback
-                traces.append(None)
                 continue
             d = min(int(d), K)
-            adom = None
-            if self.use_alpha_gate:
-                adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
-                             for i in range(n))             # α's per-cell lattice as a gated passenger
             try:
-                composed = self.compose_from_struct(facts, n, d, adom)
+                csp_a = build_csp_from_struct(facts, n, d)
+                adom = None
+                if self.use_alpha_gate:
+                    adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
+                                 for i in range(n))         # α's per-cell lattice as a gated passenger
+                items.append((csp_a, adom, None, ()))
+                slots.append((b, n))
+            except Exception:
+                out[b] = alive_np[b]                       # malformed csp_α ⇒ graceful α-only fallback
+        # Phase 2: one batched verifier-gated reduced product over the survivors (bitwise == per-instance).
+        if items:
+            composed_list, trace_list = self.compose_batch(items)
+            for (b, n), composed, tr in zip(slots, composed_list, trace_list):
                 for i in range(n):
                     for v in composed.dom[i]:
                         if v < K:
                             out[b, i, v] = 1.0
-                traces.append(self.last_trace)
-            except Exception:
-                out[b] = alive_np[b]                       # malformed csp_α ⇒ graceful α-only fallback
-                traces.append(None)
+                traces[b] = tr
         return torch.from_numpy(out).to(b0.device), traces
 
     @torch.no_grad()
@@ -657,23 +680,33 @@ class AlphaStructComposerOrgan(BankComposerOrgan):
         alive_np = alive.cpu().numpy()
         out = np.zeros((B, N, K), dtype=np.float32)
         fb = np.zeros((B, N, FB_DIM), dtype=np.float32)
-        verdicts = []
+        verdicts = [None] * B
+        # Phase 1: build csp_α + α-gate domain per instance (fallback on a malformed structure). Survivors
+        # are composed TOGETHER (the gated neural organ fans across the batch dim — identical per-instance).
+        items, slots = [], []
         for b in range(B):
             facts = alpha_facts[b] if alpha_facts is not None else None
             n, d = nd[b]
-            q = queries[b] if queries is not None else None
             if facts is None:
                 out[b] = alive_np[b]
-                verdicts.append(None)
                 continue
             d = min(int(d), K)
-            adom = None
-            if self.use_alpha_gate:
-                adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
-                             for i in range(n))
             try:
                 csp_a = build_csp_from_struct(facts, n, d)
-                composed = self.compose_one(csp_a, adom, system=None, tags=())
+                adom = None
+                if self.use_alpha_gate:
+                    adom = tuple(frozenset(v for v in range(d) if alive_np[b, i, v] > 0.5)
+                                 for i in range(n))
+                items.append((csp_a, adom, None, ()))
+                slots.append((b, n, d, csp_a))
+            except Exception:
+                out[b] = alive_np[b]
+        # Phase 2: one batched verifier-gated reduced product over the survivors.
+        composed_list = self.compose_batch(items)[0] if items else []
+        # Phase 3: per-instance exact verdict (csp_α's exact_dedP) + feedback + scatter (cheap Rust).
+        for (b, n, d, csp_a), composed in zip(slots, composed_list):
+            q = queries[b] if queries is not None else None
+            try:
                 ded = C.exact_dedP(csp_a, csp_a.full())          # exact verdict (sound + complete for SAT)
                 solvable = any(len(c) > 0 for c in ded)
                 for i in range(n):
@@ -690,10 +723,10 @@ class AlphaStructComposerOrgan(BankComposerOrgan):
                 det, ans = False, None
                 if solvable and q is not None and q < n and len(ded[q]) == 1:
                     det, ans = True, int(next(iter(ded[q])))
-                verdicts.append({"solvable": solvable, "determines": det, "answer": ans})
+                verdicts[b] = {"solvable": solvable, "determines": det, "answer": ans}
             except Exception:
                 out[b] = alive_np[b]
-                verdicts.append(None)
+                verdicts[b] = None
         return (torch.from_numpy(out).to(b0.device),
                 torch.from_numpy(fb).to(b0.device), verdicts)
 
@@ -1058,10 +1091,19 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
         + list(model.fb_adapter.parameters())
     rng = np.random.default_rng(a.seed + 5)
     struct_w = getattr(a, "struct_sup_w", 1.0)
-    # LEVERS (trained-WITH, not just eval): search_K>1 ⇒ α-as-search picks the structure each step;
-    # loop_T>1 ⇒ the iterative α↔organ loop. Default 1/1 ⇒ the validated single-shot recipe, unchanged.
-    sK = int(getattr(a, "search_K", 1)); sT = float(getattr(a, "search_temp", 1.0))
-    lT = int(getattr(a, "loop_T", 1))
+    # LEVER AUDIT (the composer-cost fix): α-as-search (search_K>1) and the iterative α↔organ loop
+    # (loop_T>1) are INFERENCE-time levers (the gate/eval arbiter selects/loops on the certified solver).
+    # They do NOT help TRAINING — γ reads the DETACHED composed lattice and the rack/cand/LoRA learn from
+    # the standing structure-sup + J0 + LM-CE, none of which need K candidates or T feedback steps. Running
+    # them in the training forward is a pure K×T composer tax (the dominant CPU cost) for no training
+    # benefit, so TRAINING is hard-pinned to the greedy single-shot pass (search_K=1, loop_T=1); the levers
+    # apply ONLY at eval/gate (clair.organ.alpha_struct_diag / run_alpha_struct_gate). With the default
+    # config (search_K=1/loop_T=1) this is a no-op; it only strips the tax if the flags were passed to weave.
+    _sK = int(getattr(a, "search_K", 1)); _lT = int(getattr(a, "loop_T", 1))
+    if _sK > 1 or _lT > 1:
+        print(f"  [lever audit] search_K={_sK}/loop_T={_lT} are EVAL/GATE-only — TRAINING runs greedy "
+              f"single-pass (K=1,T=1); the levers apply at the gate, not in the training forward.",
+              flush=True)
 
     def batch(n):
         idxs = rng.integers(0, len(train_recs), n).tolist()
@@ -1070,8 +1112,8 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
     def alpha_capture(ba):
         m, at = (ba["a_mention"], ba["a_attn"]) if two_stream else (ba["mention"], ba["attn"])
         ids = ba["a_input_ids"] if two_stream else ba["input_ids"]
-        with model.live(m, at, inject=False, capture=True, nd=ba["nd"], dvec=ba["dvec"],
-                        search_K=sK, search_temp=sT, loop_T=lT, queries=ba["queries"]):
+        # greedy single-shot: NO search/loop in TRAINING (levers are eval/gate-only — see the audit note).
+        with model.live(m, at, inject=False, capture=True, nd=ba["nd"], dvec=ba["dvec"]):
             _ = model.logits(ids, at)
 
     def struct_loss(ba):
@@ -1114,9 +1156,9 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
                             nd=ba["nd"], dvec=ba["dvec"]):
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
         else:
+            # greedy single-shot: NO search/loop in TRAINING (levers are eval/gate-only — see audit note).
             with model.live(ba["mention"], ba["attn"], inject=True, capture=True, nd=ba["nd"],
-                            dvec=ba["dvec"], search_K=sK, search_temp=sT, loop_T=lT,
-                            queries=ba["queries"]):
+                            dvec=ba["dvec"]):
                 logits = model.logits(ba["input_ids"], ba["attn"]).float()
             aux_struct = struct_loss(ba)
             aux_j0 = dominate_dedp_loss([model._last_b0], ba["tgt"], ba["vmask"])

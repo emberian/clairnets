@@ -358,6 +358,307 @@ fn dedp_core(n: usize, scopes: Vec<Vec<usize>>, alloweds: Vec<Vec<Vec<i64>>>, do
         .collect()
 }
 
+// ============================================================ level-k FACTOR consistency (level-2 reduced product)
+// Exact port of clair.csp.default_factors / factor_init / factor_step (iterated to fixpoint) / factor_cells,
+// as consumed by clair.organ.bank.FactorConsistency. The per-cell projected survivor sets are BITWISE
+// IDENTICAL to the pure-Python path (the fixpoint of generalized factor consistency is unique, so neither
+// factor visit order nor the projection-set acceleration below changes the result). This is the composer's
+// hot path (the certified soundness floor): ~92% of the per-instance compose time was this in pure Python.
+
+/// 8-bit-per-slot packing of selected cells of an assignment map (slot order = `cells` order).
+#[inline(always)]
+fn pack_cells(vals: &[u32]) -> u64 {
+    let mut key = 0u64;
+    for (p, &v) in vals.iter().enumerate() {
+        key |= (v as u64) << (8 * p);
+    }
+    key
+}
+
+/// All factors: every constraint scope (sorted, de-duped) PLUS every size-min(k,n) cell-combination that
+/// COVERS some constraint scope (contains it). Returns sorted-unique sorted-tuples (order is irrelevant to
+/// the fixpoint, but we mirror Python's `sorted(set(...))` for determinism).
+fn default_factors(n: usize, scopes: &[Vec<usize>], k: usize) -> Vec<Vec<usize>> {
+    use std::collections::BTreeSet;
+    let mut facs: BTreeSet<Vec<usize>> = BTreeSet::new();
+    let scope_sets: Vec<Vec<usize>> = scopes
+        .iter()
+        .map(|sc| {
+            let mut s = sc.clone();
+            s.sort_unstable();
+            s
+        })
+        .collect();
+    for s in &scope_sets {
+        facs.insert(s.clone());
+    }
+    let ksz = k.min(n);
+    if ksz > 0 && ksz <= n {
+        // itertools.combinations(range(n), ksz), ascending; combo is sorted by construction.
+        let mut combo: Vec<usize> = (0..ksz).collect();
+        loop {
+            // covers some constraint?  set(sc) subset-of set(combo); combo is sorted -> binary_search.
+            if scope_sets.iter().any(|s| s.iter().all(|c| combo.binary_search(c).is_ok())) {
+                facs.insert(combo.clone());
+            }
+            // advance to the next combination (in-place); break when exhausted.
+            let mut i = ksz;
+            let mut advanced = false;
+            while i > 0 {
+                i -= 1;
+                if combo[i] != i + n - ksz {
+                    combo[i] += 1;
+                    for j in (i + 1)..ksz {
+                        combo[j] = combo[j - 1] + 1;
+                    }
+                    advanced = true;
+                    break;
+                }
+            }
+            if !advanced {
+                break;
+            }
+        }
+    }
+    facs.into_iter().collect()
+}
+
+/// Initial per-factor allowed-tuple sets: the cartesian product of the (current) per-cell domains of the
+/// factor's cells, KEPT iff every constraint whose scope is a subset of the factor is satisfied. Tuples are
+/// packed in factor-cell (sorted) order. `cell_pos[c]` maps a cell index to its slot in the factor (or
+/// usize::MAX). Mirrors clair.csp.factor_init exactly.
+fn factor_init_one(
+    f: &[usize],
+    dom: &[Vec<u32>],
+    sub_cons: &[usize],
+    scopes: &[Vec<usize>],
+    sets: &[FxHashSet<u64>],
+) -> FxHashSet<u64> {
+    let mut out = FxHashSet::default();
+    // map cell -> slot in f
+    let maxcell = *f.iter().max().unwrap();
+    let mut slot = vec![usize::MAX; maxcell + 1];
+    for (p, &c) in f.iter().enumerate() {
+        slot[c] = p;
+    }
+    // cartesian product over sorted domains of f's cells
+    let doms: Vec<&Vec<u32>> = f.iter().map(|&c| &dom[c]).collect();
+    if doms.iter().any(|d| d.is_empty()) {
+        return out;
+    }
+    let mut idx = vec![0usize; f.len()];
+    loop {
+        // current assignment values in f order
+        let mut vals = [0u32; 8];
+        for (p, &c) in f.iter().enumerate() {
+            let _ = c;
+            vals[p] = doms[p][idx[p]];
+        }
+        // check every constraint whose scope subset f
+        let mut ok = true;
+        for &ci in sub_cons {
+            let sc = &scopes[ci];
+            // pack the constraint's cells in SCOPE order using the assignment
+            let mut key = 0u64;
+            for (p, &c) in sc.iter().enumerate() {
+                key |= (vals[slot[c]] as u64) << (8 * p);
+            }
+            if !sets[ci].contains(&key) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            out.insert(pack_cells(&vals[..f.len()]));
+        }
+        // advance the mixed-radix product counter
+        let mut p = f.len();
+        loop {
+            if p == 0 {
+                return out;
+            }
+            p -= 1;
+            idx[p] += 1;
+            if idx[p] < doms[p].len() {
+                break;
+            }
+            idx[p] = 0;
+        }
+    }
+}
+
+/// Unpack slot `pos` (8-bit) of a packed factor tuple.
+#[inline(always)]
+fn slot_val(key: u64, pos: usize) -> u32 {
+    ((key >> (8 * pos)) & 0xFF) as u32
+}
+
+fn factor_core(n: usize, d: usize, scopes: Vec<Vec<usize>>, alloweds: Vec<Vec<Vec<i64>>>, dom: Vec<Vec<u32>>, k: usize) -> Vec<Vec<u32>> {
+    let factors = default_factors(n, &scopes, k);
+    let nf = factors.len();
+    // packed allowed-tuple membership sets per constraint (scope order)
+    let mut sets: Vec<FxHashSet<u64>> = Vec::with_capacity(scopes.len());
+    for al in &alloweds {
+        let mut s = FxHashSet::default();
+        for t in al {
+            let mut key = 0u64;
+            for (p, &v) in t.iter().enumerate() {
+                key |= (v as u64) << (8 * p);
+            }
+            s.insert(key);
+        }
+        sets.push(s);
+    }
+    // per factor: indices of constraints whose (sorted) scope is a subset of the factor's cells
+    let fsets: Vec<FxHashSet<usize>> = factors.iter().map(|f| f.iter().copied().collect()).collect();
+    let mut sub_cons: Vec<Vec<usize>> = vec![Vec::new(); nf];
+    for (fi, fset) in fsets.iter().enumerate() {
+        for (ci, sc) in scopes.iter().enumerate() {
+            if sc.iter().all(|c| fset.contains(c)) {
+                sub_cons[fi].push(ci);
+            }
+        }
+    }
+    // initial per-factor tuple sets
+    let mut st: Vec<FxHashSet<u64>> = (0..nf)
+        .map(|fi| factor_init_one(&factors[fi], &dom, &sub_cons[fi], &scopes, &sets))
+        .collect();
+    // ordered factor-pair sharing: for (f,g) with f!=g and shared cells, the (slot-in-f, slot-in-g) pairs.
+    // slot positions within each factor (factors are sorted, small).
+    let fslot: Vec<Vec<(usize, usize)>> = (0..nf)
+        .map(|fi| {
+            factors[fi]
+                .iter()
+                .enumerate()
+                .map(|(p, &c)| (c, p))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // for each f, list of (g, shared:Vec<(slot_in_f, slot_in_g)>)
+    let mut neighbors: Vec<Vec<(usize, Vec<(usize, usize)>)>> = vec![Vec::new(); nf];
+    for fi in 0..nf {
+        for gi in 0..nf {
+            if gi == fi {
+                continue;
+            }
+            // shared cells = [c for c in g if c in f]  (g order)
+            let mut shared: Vec<(usize, usize)> = Vec::new();
+            for &(c, gp) in &fslot[gi] {
+                if let Some(&(_, fp)) = fslot[fi].iter().find(|&&(cc, _)| cc == c) {
+                    shared.push((fp, gp));
+                }
+            }
+            if !shared.is_empty() {
+                neighbors[fi].push((gi, shared));
+            }
+        }
+    }
+    // iterate factor_step to fixpoint — identical cap to clair.csp (n*d*d+2). The cap only bounds a loop
+    // that exits early on fixpoint, so any cap >= the convergence length yields the same fixpoint.
+    let max_iters = n * d * d + 2;
+    for _ in 0..max_iters {
+        // projection sets: for each ordered (f,g) we need {proj_g(u) over shared cells}; build per g per
+        // distinct shared-slot pattern lazily inside the loop.
+        let mut new_st: Vec<FxHashSet<u64>> = Vec::with_capacity(nf);
+        for fi in 0..nf {
+            let mut keep = FxHashSet::default();
+            // precompute, for each neighbor g, the set of g's projections onto the shared cells
+            let projs: Vec<(FxHashSet<u64>, &Vec<(usize, usize)>)> = neighbors[fi]
+                .iter()
+                .map(|(gi, shared)| {
+                    let mut pj = FxHashSet::default();
+                    for &u in &st[*gi] {
+                        let mut key = 0u64;
+                        for (slot, &(_fp, gp)) in shared.iter().enumerate() {
+                            key |= (slot_val(u, gp) as u64) << (8 * slot);
+                        }
+                        pj.insert(key);
+                    }
+                    (pj, shared)
+                })
+                .collect();
+            for &t in &st[fi] {
+                let mut ok = true;
+                for (pj, shared) in &projs {
+                    let mut key = 0u64;
+                    for (slot, &(fp, _gp)) in shared.iter().enumerate() {
+                        key |= (slot_val(t, fp) as u64) << (8 * slot);
+                    }
+                    if !pj.contains(&key) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    keep.insert(t);
+                }
+            }
+            new_st.push(keep);
+        }
+        if new_st == st {
+            break;
+        }
+        st = new_st;
+    }
+    // project to cells: cell i -> intersection over factors containing i of {t[slot_i]}; full domain if none.
+    let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut surv: Option<u64> = None; // bitmask
+        for (fi, f) in factors.iter().enumerate() {
+            if let Some(pos) = f.iter().position(|&c| c == i) {
+                let mut here = 0u64;
+                for &t in &st[fi] {
+                    here |= 1u64 << slot_val(t, pos);
+                }
+                surv = Some(match surv {
+                    None => here,
+                    Some(s) => s & here,
+                });
+            }
+        }
+        match surv {
+            Some(mask) => out.push(bits_to_sorted(mask)),
+            None => out.push((0..d as u32).collect()), // cell in NO factor -> range(d) (== Python factor_cells)
+        }
+    }
+    out
+}
+
+/// Level-k factor consistency for one instance. Returns per-cell projected survivor lists. A cell that is in
+/// NO factor is returned as an EMPTY list (sentinel); the Python wrapper replaces it with range(d) before the
+/// meet with the live domain (matching clair.csp.factor_cells, which returns frozenset(range(d)) there).
+#[pyfunction]
+fn factor_dedp(
+    n: usize,
+    d: usize,
+    scopes: Vec<Vec<usize>>,
+    alloweds: Vec<Vec<Vec<i64>>>,
+    dom: Vec<Vec<u32>>,
+    k: usize,
+) -> PyResult<Vec<Vec<u32>>> {
+    check_bounds(d, &scopes)?;
+    Ok(factor_core(n, d, scopes, alloweds, dom, k))
+}
+
+/// Batch level-k factor consistency over many instances, parallelised across cores (GIL released).
+#[pyfunction]
+fn factor_dedp_batch(
+    py: Python<'_>,
+    items: Vec<(usize, usize, Vec<Vec<usize>>, Vec<Vec<Vec<i64>>>, Vec<Vec<u32>>, usize)>,
+) -> PyResult<Vec<Vec<Vec<u32>>>> {
+    for (_, d, scopes, _, _, _) in &items {
+        check_bounds(*d, scopes)?;
+    }
+    let out = py.allow_threads(|| {
+        use rayon::prelude::*;
+        items
+            .into_par_iter()
+            .map(|(n, d, scopes, alloweds, dom, k)| factor_core(n, d, scopes, alloweds, dom, k))
+            .collect::<Vec<_>>()
+    });
+    Ok(out)
+}
+
 /// exact_dedP for one instance — returns per-cell sorted survivor lists (empty-all = unsat/⊥).
 #[pyfunction]
 fn exact_dedp(
@@ -488,5 +789,7 @@ fn clair_fast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solutions, m)?)?;
     m.add_function(wrap_pyfunction!(ac_step, m)?)?;
     m.add_function(wrap_pyfunction!(dedp_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(factor_dedp, m)?)?;
+    m.add_function(wrap_pyfunction!(factor_dedp_batch, m)?)?;
     Ok(())
 }

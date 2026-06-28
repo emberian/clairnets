@@ -151,6 +151,20 @@ def test_composer():
     print(f"    composing narrows alive {ac_only.alive()} (AC abstains) -> {comp.alive()} "
           f"(AC+factor+modular), soundly")
 
+    # BATCHED reduced product == serial per-instance, BITWISE (the composer-cost fix: the certified floor
+    # — incl. the Rust-ported factor consistency — fans across the batch dim; identity is a hard gate).
+    from .compose import reduced_product_batch
+    from .. import curriculum as CU
+    rng2 = np.random.default_rng(11)
+    batch_states = []
+    for _ in range(24):
+        p = CU.gen_problem(rng2)
+        batch_states.append(CSPState.full(CU.build_csp(p.n, p.d, p.facts)))
+    ser = [reduced_product(s, certified, verify=False)[0] for s in batch_states]
+    bat, _ = reduced_product_batch(batch_states, certified)
+    assert all(ser[i].dom == bat[i].dom for i in range(len(ser))), "batched reduced product != serial!"
+    print(f"    batched reduced product == serial per-instance: {len(ser)}/{len(ser)} bitwise-identical")
+
 
 # ============================================================ [3] readout no-op at init
 def test_readout_noop():
@@ -191,6 +205,12 @@ def test_woven(full=False):
     st = CSPState.full(col)
     raw = core.reduce(st)
     assert raw.issub(st), "the loaded core organ must produce a narrowing of the input"
+    # the BATCHED neural reduce (the composer-cost fix) is BITWISE-identical to per-instance reduce
+    col2 = C.coloring(5, [(0, 1), (1, 3), (2, 4)], k=3)
+    sts = [st, CSPState.full(col2), CSPState.full(C.chain_eq(4))]
+    rb = core.reduce_batch(sts)
+    assert all(rb[i].dom == core.reduce(sts[i]).dom for i in range(len(sts))), \
+        "core.reduce_batch must be bitwise-identical to per-instance core.reduce"
     out, tr = reduced_product(st, B.certified_csp_reductions(B.build_bank(load_neural=False)) + [core],
                               verify=True)
     assert tr.sound
