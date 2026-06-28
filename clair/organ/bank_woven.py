@@ -1074,8 +1074,18 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
     olmo = AutoModelForCausalLM.from_pretrained(mid_id, dtype=torch.bfloat16).to(dev).eval()
     for p in olmo.parameters():
         p.requires_grad_(False)
-    if use_lora:
+    # ADAPTER A/B (the capacity-vs-representation study): the ONLY thing that varies across arms.
+    #   full_ft  → unfreeze the host (the diagnostic UPPER BOUND; breaks the base-matrix thesis, not prod);
+    #   use_dora → weight-decomposed LoRA (use_dora=True; usually beats LoRA at equal rank/params);
+    #   else     → plain LoRA at rank a.lora_r. lr for the host group is a.lora_lr (driver lowers it for FT).
+    full_ft = bool(getattr(a, "full_ft", False))
+    if full_ft:
+        for p in olmo.parameters():
+            p.requires_grad_(True)
+        peft_model = olmo
+    elif use_lora:
         lconf = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.0, bias="none",
+                           use_dora=bool(getattr(a, "use_dora", False)),
                            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                                            "gate_proj", "up_proj", "down_proj"], task_type="CAUSAL_LM")
         peft_model = get_peft_model(olmo, lconf)
@@ -1093,7 +1103,10 @@ def train_alpha_struct_woven(olmo_ids, tok, dev, a, train_recs, eval_recs, two_s
     model.alpha.float(); model.cand.float(); model.gamma.float()
     noop, live = verify_noop_alpha_struct(model, tok, dev, eval_recs[0])
     from ..oracle_readout import n_trainable
-    print(f"\n  ALPHA_STRUCT-WOVEN  mid {mid} -> inject {inj}/{nL}  LoRA={use_lora}  "
+    _adapter = ("full_ft" if full_ft else
+                (f"dora_r{a.lora_r}" if (use_lora and bool(getattr(a, "use_dora", False)))
+                 else (f"lora_r{a.lora_r}" if use_lora else "frozen_host")))
+    print(f"\n  ALPHA_STRUCT-WOVEN  mid {mid} -> inject {inj}/{nL}  adapter={_adapter}  "
           f"readout={'rich' if rich else 'set'}  faculties={composer.faculties()}  "
           f"trainable {n_trainable(model):,}", flush=True)
     print(f"  NO-OP @ INIT max|base-(LoRA+gate0)| = {noop:.3e} (expect ~0) | gate-on moves {live:.3e}",

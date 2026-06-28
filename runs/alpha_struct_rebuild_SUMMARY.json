@@ -1,0 +1,39 @@
+{
+  "task": "Two architectural fixes to the alpha_struct α structure compiler (StructureRack/CSPStructureHead), retrained + measured on frozen OLMo-2-0425-1B.",
+  "code": {
+    "edited": "clair/organ/alpha_struct.py (+258/-9): CellSelfAttention backbone, CSPStructureHeadMP (edge message-passing), TernaryFactorHead + TERN_RELS, decode_structure/facts_to_ternary_targets/ternary_sup_loss/facts_to_gf2, StructureRack pair_head/backbone/ternary options (all no-op@init, defaults back-compatible).",
+    "new_driver": "clair/organ/run_alpha_struct_rebuild.py (retrain + measure both findings + 2x2 ablation).",
+    "conflict_rule": "Only alpha_struct.py + new driver edited; faculty/multifaculty/faculty_tasks/run_multifaculty untouched."
+  },
+  "finding1_longchain_consistency": {
+    "diagnosis": "independent per-pair head; long-chain errors compound. Tested cell-self-attention backbone (the literal ask) vs edge message-passing (MP) vs the representation floor (LINEAR).",
+    "rack_2000steps": {
+      "base_indep": {"micro": 0.860, "exact": 0.240, "long8_micro": 0.853, "long8_exact": 0.087, "extrap_micro": 0.212},
+      "mp_edge_messagepassing": {"micro": 0.881, "exact": 0.277, "long8_micro": 0.873, "long8_exact": 0.136, "extrap_micro": 0.331},
+      "cell_attention_backbone_wide": {"micro": 0.740, "exact": 0.090, "long8_micro": 0.720, "long8_exact": 0.013, "extrap_micro": 0.211}
+    },
+    "circuit_headonly_3000steps": {
+      "indep": {"micro": 0.816, "exact": 0.127},
+      "linear_representation_floor": {"micro": 0.496, "exact": 0.000},
+      "mp": {"micro": 0.899, "exact": 0.342}
+    },
+    "verdict": "ARCHITECTURE-bound (LINEAR floor 0.50 rules out representation/capacity). The fix is EDGE message-passing (MP), now wired as CSPStructureHeadMP (pair_head='mp'): rack mp beats base on exact-match (0.277 vs 0.240; long-chain exact 0.136 vs 0.087) and ESPECIALLY length-extrapolation (0.331 vs 0.212 micro). The cell-self-attention backbone did NOT help — measured negative in both bottleneck (run1: 0.716) and stable-wide (0.740) forms. NEGATIVE result for the literal ask; the consistency must be enforced at the EDGE, not the cell."
+  },
+  "finding2_ternary_parity_vocab": {
+    "claim": "binary {eq,neq,lt,le} vocab cannot express a XOR/parity constraint, so GF2RowSpace (affine wall) was unreachable. Added arity-3 parity head {none,even,odd}.",
+    "rack_1500steps_280val": {
+      "binary_no_ternary": {"parity_F1": 0.000, "gf2_query_solve": 0.218, "gf2_routed_rate": 0.000, "parity_rows_emitted": 0},
+      "ternary": {"parity_F1": 0.567, "parity_P": 0.573, "parity_R": 0.562, "gf2_query_solve": 0.575, "gf2_routed_rate": 1.000, "parity_rows_emitted": 1650},
+      "ternary_plus_backbone": {"parity_F1": 0.546, "gf2_query_solve": 0.564, "gf2_routed_rate": 1.000}
+    },
+    "verdict": "WIN. binary α CANNOT express parity (F1 0, 0% routed; its 0.218 GF2-solve is from pins alone). +ternary: 100% of instances now carry α-emitted parity constraints, parity-F1 0.567, and routing α's compiled (A,b) through the certified GF2RowSpace faculty solves 0.575 of determined queries (2.6x). Solve ceiling is bounded by parity-read F1 (0.57); backbone is neutral for parity (as expected — vocabulary, not consistency). Deferred: arity>3 parity, directed modular sum (a+b=c mod d>2)."
+  },
+  "ablation": "Finding1: base->mp isolates architecture (+), base->backbone isolates cell-attention (-), LINEAR isolates representation (floor). Finding2: 2x2 backbone x ternary shows ternary is NECESSARY (backbone alone emits 0 parity) and sufficient; backbone neutral.",
+  "verify": {
+    "organ_selftest": "ALL CHECKS PASS (x2, incl. after default-back-compat changes)",
+    "noop_at_init": "backbone, MP edge head, ternary head all bitwise no-op @ init (max|delta|=0.0)",
+    "round_trip": "decode(encode(facts)) exact for mixed binary+ternary fact sets",
+    "back_compat": "default StructureRack state_dict heads unchanged (csp/graph/ising/typ/reduction); fixes are opt-in (pair_head='mp', ternary=True, backbone=True)"
+  },
+  "honest_scope": "Finding 2 is a clean expressibility win. Finding 1: the consistency gap IS architecture-closeable, but by edge message-passing (the box-2 MPPairHead locus), NOT the cell-self-attention backbone the task hypothesized — that was measured to hurt. Box-2 driver's own extrapolation arm has a pre-existing index bug (crashed before writing circuit_mp.json; main-arm numbers captured to circuit_mp_mainarm.json). Rust extension unavailable on the box → ran pure-Python (CLAIR_NO_FAST); affine pool switched to the fast feed-forward gen_tree_xor_unique."
+}
