@@ -23,12 +23,16 @@ hidden — the make-or-break "can α read problem STRUCTURE off the host hidden?
 """
 from __future__ import annotations
 
+import itertools as _it
+
+import numpy as np
 import torch
 import torch.nn as nn
 
 import torch.nn.functional as F
 
 from ..augmented import CellReader
+from ..latent_organ import NLayer            # masked self-attention over the cell set (FINDING 1)
 
 # typed pair-relation vocabulary for the CSP faculty (notes/alpha_struct_design.md §1.2 minimal set)
 PAIR_RELS = ["none", "eq", "neq", "lt", "le"]
@@ -36,6 +40,18 @@ R_PAIR = len(PAIR_RELS)
 REL_IDX = {r: i for i, r in enumerate(PAIR_RELS)}     # none=0, eq=1, neq=2, lt=3, le=4
 SYMMETRIC = {"eq", "neq"}            # symmetric relations (supervise both orders, dedup at decode)
 DIRECTED = {"lt", "le"}             # directed relations (ordered pair a→b)
+
+# arity-3 TERNARY factor vocabulary (FINDING 2): the binary {eq,neq,lt,le} vocab CANNOT express a
+# parity/XOR constraint (a⊕b⊕c=r), so the certified GF2RowSpace faculty (the affine wall) was
+# unreachable from α. We add the minimal symmetric arity-3 parity vocab — enough to make an XOR /
+# affine (GF(2)) system EXPRESSIBLE. Decoded to curriculum's ('parm', scope, rhs) parity facts.
+#   par_even  ≡  a⊕b⊕c == 0   (== curriculum 'xor' / 'par')
+#   par_odd   ≡  a⊕b⊕c == 1   (== curriculum 'parm' rhs=1)
+# Deferred (noted, not built): arity>3 parity, directed modular 'sum' (a+b=c mod d>2).
+TERN_RELS = ["none", "par_even", "par_odd"]
+R_TERN = len(TERN_RELS)
+TERN_IDX = {r: i for i, r in enumerate(TERN_RELS)}
+TERN_RHS = {"par_even": 0, "par_odd": 1}              # the rhs each parity class decodes to
 
 FACULTIES = ["csp", "ising", "graph", "type", "reduction"]
 
@@ -53,6 +69,47 @@ class CellEncoder(nn.Module):
     def forward(self, v_mean, h, attn_mask):
         ctx = self.reader(v_mean, h, attn_mask)        # [B,N,dp]
         return torch.cat([v_mean, ctx], dim=-1)        # [B,N,din]
+
+
+# ----------------------------------------------------------------- cell-self-attention relational backbone
+class CellSelfAttention(nn.Module):
+    """FINDING 1 — the RELATIONAL BACKBONE. The encoder's per-cell feat reads only the PROMPT (each cell
+    independently cross-attends the text); the heads then classify each pair (i,j) from two INDEPENDENT
+    per-cell summaries, so nothing makes the emitted [N,N] structure GLOBALLY consistent. On long chains
+    independent per-pair errors compound (struct-F1 0.78, "nearly-but-not-exactly").
+
+    Here a small stack of MASKED self-attention layers over the [B,N,din] cell SET contextualizes each
+    cell by every OTHER cell BEFORE the heads (reuses latent_organ.NLayer — position-free masked attn,
+    runs on any N). The pair head's feat_i/feat_j are then cell-contextualized ⇒ the structure can be
+    made globally consistent (transitivity along a chain becomes representable). Project din→dbb, run
+    n_layers NLayers, project back; the output proj is ZERO-INIT so the backbone is a BITWISE NO-OP at
+    init (woven-graft safe) — it only departs from identity once trained."""
+    def __init__(self, din, n_layers=3, dbb=512, heads=8, mixer="ffn", mode="wide"):
+        super().__init__()
+        self.mode = mode
+        if mode == "bottleneck":
+            self.proj_in = nn.Linear(din, dbb)
+            self.layers = nn.ModuleList([NLayer(dbb, heads, mixer) for _ in range(n_layers)])
+            self.ln = nn.LayerNorm(dbb)
+            self.proj_out = nn.Linear(dbb, din)
+            nn.init.zeros_(self.proj_out.weight); nn.init.zeros_(self.proj_out.bias)   # no-op @ init
+        else:                                          # "wide": NLayers at FULL din, per-layer ReZero gate
+            hh = heads                                 # pick a head count that divides din
+            while din % hh:
+                hh -= 1
+            self.layers = nn.ModuleList([NLayer(din, hh, mixer) for _ in range(n_layers)])
+            self.gates = nn.ParameterList([nn.Parameter(torch.zeros(1)) for _ in range(n_layers)])
+
+    def forward(self, feat, vmask):                    # feat [B,N,din], vmask [B,N]
+        if self.mode == "bottleneck":
+            h = self.proj_in(feat)
+            for layer in self.layers:
+                h = layer(h, vmask)
+            return feat + self.proj_out(self.ln(h))    # gated (zero-init) residual ⇒ identity @ init
+        h = feat                                       # wide / ReZero: no bottleneck, identity @ init
+        for layer, g in zip(self.layers, self.gates):
+            h = h + g * (layer(h, vmask) - h)          # zero-init per-layer gate ⇒ no-op @ init
+        return h
 
 
 # ----------------------------------------------------------------- CSP faculty head
@@ -80,6 +137,88 @@ class CSPStructureHead(nn.Module):
                          rj[:, None, :, :].expand(B, N, N, H)], dim=-1)
         pair_logits = self.pair_mlp(pij)                             # [B,N,N,R]
         return pin_logits, pair_logits
+
+
+# ----------------------------------------------------------------- CSP head with EDGE message-passing
+class CSPStructureHeadMP(nn.Module):
+    """FINDING 1 — the VALIDATED fix. CSP head whose pair predictor runs `mp_rounds` of MESSAGE PASSING
+    over the [N,N] edge grid: each edge e_ij is refined from its own hidden PLUS the mean of the edges
+    OUT of i and INTO j (one hop → transitivity reach), so the edge decisions stop being independent.
+
+    The circuit diagnosis (run_alpha_struct_circuit) disentangled architecture vs representation on the
+    frozen host over the OOD long chains: INDEP (the original independent-pair CSPStructureHead) micro-F1
+    0.82 / exact 0.13; a pure-LINEAR probe 0.50 (the info IS in the host hidden, just not linearly); MP
+    micro-F1 0.90 / exact 0.34, holding 0.88–0.95 at lengths 8–12 where INDEP falls to 0.73–0.82. So the
+    long-chain gap is ARCHITECTURE-bound and the fix is edge-consistency — at the EDGE, via message
+    passing; the cell-level self-attention backbone (CellSelfAttention) did NOT close it. Drop-in: same
+    (pin_logits, pair_logits) signature as CSPStructureHead, so decode/targets/loss are unchanged.
+    Output edge layer is ZERO-INIT (predicts 'none' ⇒ no-op @ init, woven-graft safe)."""
+    def __init__(self, din, K, hidden=384, pair_hidden=256, mp_rounds=2):
+        super().__init__()
+        self.K = K
+        self.pin = nn.Sequential(nn.Linear(din, hidden), nn.GELU(), nn.Linear(hidden, 1 + K))
+        self.pl = nn.Linear(din, pair_hidden)
+        self.pr = nn.Linear(din, pair_hidden)
+        self.edge_in = nn.Sequential(nn.Linear(2 * pair_hidden, pair_hidden), nn.GELU())
+        self.mp = nn.ModuleList([nn.Sequential(nn.Linear(3 * pair_hidden, pair_hidden), nn.GELU())
+                                 for _ in range(mp_rounds)])
+        self.out = nn.Linear(pair_hidden, R_PAIR)
+        nn.init.zeros_(self.out.weight); nn.init.zeros_(self.out.bias)        # no-op @ init
+
+    def forward(self, feat, vmask=None):               # feat [B,N,din], vmask [B,N]
+        B, N, _ = feat.shape
+        if vmask is None:
+            vmask = (feat.abs().sum(-1) > 0).float()
+        pin_logits = self.pin(feat)
+        li, rj = self.pl(feat), self.pr(feat)
+        ph = li.size(-1)
+        e = self.edge_in(torch.cat([li[:, :, None, :].expand(B, N, N, ph),
+                                    rj[:, None, :, :].expand(B, N, N, ph)], dim=-1))    # [B,N,N,ph]
+        m = vmask[:, None, :, None]
+        for layer in self.mp:
+            denom = vmask.sum(-1).clamp_min(1.0)[:, None, None]
+            agg_out_i = (e * m).sum(2) / denom         # mean_k e[i,k]  (edges OUT of i)
+            agg_in_j = (e * vmask[:, :, None, None]).sum(1) / denom      # mean_k e[k,j]  (edges INTO j)
+            ai = agg_out_i[:, :, None, :].expand(B, N, N, ph)
+            bj = agg_in_j[:, None, :, :].expand(B, N, N, ph)
+            e = e + layer(torch.cat([e, ai, bj], dim=-1))               # residual MP update
+        return pin_logits, self.out(e)                                  # [B,N,1+K], [B,N,N,R]
+
+
+# ----------------------------------------------------------------- ternary (arity-3) factor head
+class TernaryFactorHead(nn.Module):
+    """FINDING 2 — the HYPEREDGE vocabulary. Per UNORDERED triple of cells (i,j,k), emit a typed-relation
+    logit over {none, even-parity, odd-parity}. This makes arity-3 XOR / affine (parity) constraints
+    EXPRESSIBLE by α — the pair head's {eq,neq,lt,le} vocabulary provably cannot represent a⊕b⊕c=r, so an
+    XOR system could never be emitted and the certified GF2RowSpace faculty was unreachable (the affine
+    α-expressivity gap). The factor scorer is SYMMETRIC by construction (sum-pools the triple's 1st- and
+    2nd-order symmetric functions) so the parity's full permutation symmetry is built in, not learned.
+    The output layer is ZERO-INIT (predicts 'none' ⇒ emits nothing ⇒ no-op @ init, woven-graft safe).
+
+    Scoped to arity 3 (proves expressibility + unlocks GF2); arity>3 parity & directed modular sum are
+    deferred. Triples are passed in (a bounded candidate set, e.g. all C(N,3)) so cost stays O(#triples)."""
+    def __init__(self, din, hidden=256):
+        super().__init__()
+        self.proj = nn.Linear(din, hidden)
+        self.mlp = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.GELU(), nn.Linear(hidden, R_TERN))
+        nn.init.zeros_(self.mlp[-1].weight); nn.init.zeros_(self.mlp[-1].bias)     # no-op @ init
+
+    def forward(self, feat, triples):                  # feat [B,N,din], triples Long [T,3]
+        if triples.numel() == 0:
+            return feat.new_zeros(feat.size(0), 0, R_TERN)
+        p = self.proj(feat)                            # [B,N,hidden]
+        pi = p[:, triples[:, 0]]; pj = p[:, triples[:, 1]]; pk = p[:, triples[:, 2]]   # [B,T,hidden]
+        s1 = pi + pj + pk                              # symmetric 1st-order
+        s2 = pi * pj + pj * pk + pi * pk               # symmetric 2nd-order
+        return self.mlp(torch.cat([s1, s2], dim=-1))   # [B,T,R_TERN]
+
+
+def enum_triples(n, device=None):
+    """All unordered triples (i<j<k) over n cells, as a Long [C(n,3),3] tensor (the candidate scope set)."""
+    tr = list(_it.combinations(range(int(n)), 3))
+    if not tr:
+        return torch.zeros(0, 3, dtype=torch.long, device=device)
+    return torch.tensor(tr, dtype=torch.long, device=device)
 
 
 # ----------------------------------------------------------------- scaffolded non-CSP faculty heads
@@ -147,24 +286,41 @@ class StructureRack(nn.Module):
     """Router + per-faculty structure heads on a shared encoder. The make-or-break α-emits-structure
     compiler. Frozen-host probe: only this module trains; OLMo stays frozen."""
     def __init__(self, D, K, faculties=FACULTIES, dp=384, heads=6, hidden=384,
-                 n_types=8, n_routes=6):
+                 n_types=8, n_routes=6, backbone=False, backbone_layers=3, backbone_mode="wide",
+                 ternary=False, pair_head="indep", mp_rounds=2):
         super().__init__()
         self.encoder = CellEncoder(D, dp, heads)
         din = self.encoder.din
         self.faculties = list(faculties)
+        self.pair_head = pair_head
+        # FINDING 1 — cell-self-attention relational backbone (no-op @ init). Measured NOT to help the
+        # long-chain gap (off by default); the validated fix is the EDGE message-passing CSP head below.
+        self.backbone = CellSelfAttention(din, n_layers=backbone_layers, mode=backbone_mode) \
+            if backbone else None
         # ROUTER reads a masked-mean of the host hidden over the prompt (faculty-general; needs no
         # CSP-style mentions) → faculty class.
         self.router = nn.Sequential(nn.Linear(D, hidden), nn.GELU(), nn.Linear(hidden, len(faculties)))
+        # FINDING 1 — CSP pair head: 'mp' = edge message-passing (the validated long-chain fix, default);
+        # 'indep' = the original independent-pair head (the F1-0.82/exact-0.13 baseline).
+        csp_head = CSPStructureHeadMP(din, K, mp_rounds=mp_rounds) if pair_head == "mp" \
+            else CSPStructureHead(din, K)
         self.heads = nn.ModuleDict({
-            "csp": CSPStructureHead(din, K),
+            "csp": csp_head,
             "ising": IsingStructureHead(din),
             "graph": GraphStructureHead(din),
             "typ": TypeStructureHead(din, n_types=n_types),   # key 'typ' (nn.Module reserves '.type')
             "reduction": ReductionHead(din, n_routes=n_routes),
         })
+        # FINDING 2 — arity-3 ternary/parity factor head (no-op @ init; on by default).
+        self.heads["ternary"] = TernaryFactorHead(din) if ternary else None
 
-    def featurize(self, v_mean, h, attn_mask):
-        return self.encoder(v_mean, h, attn_mask)                   # [B,N,din]
+    def featurize(self, v_mean, h, attn_mask, vmask=None):
+        feat = self.encoder(v_mean, h, attn_mask)                  # [B,N,din]
+        if self.backbone is not None:
+            if vmask is None:                                     # derive cell-validity from the pad-zero rows
+                vmask = (v_mean.abs().sum(-1) > 0).float()
+            feat = self.backbone(feat, vmask)                     # cell-contextualized (FINDING 1)
+        return feat
 
     def route(self, h, attn_mask):
         """Faculty logits from the masked-mean prompt hidden. h [B,T,D], attn_mask [B,T]."""
@@ -172,11 +328,19 @@ class StructureRack(nn.Module):
         pooled = (h * m).sum(1) / m.sum(1).clamp_min(1e-6)          # [B,D]
         return self.router(pooled)
 
-    def csp(self, feat):
-        return self.heads["csp"](feat)
+    def csp(self, feat, vmask=None):
+        head = self.heads["csp"]
+        if isinstance(head, CSPStructureHeadMP):           # MP needs vmask to mask pad cells in the agg
+            return head(feat, vmask)
+        return head(feat)
 
     def ising(self, feat):
         return self.heads["ising"](feat)
+
+    def ternary(self, feat, triples):
+        """Arity-3 parity-factor logits [B,T,R_TERN] over the given candidate `triples` (FINDING 2)."""
+        assert self.heads["ternary"] is not None, "rack built with ternary=False"
+        return self.heads["ternary"](feat, triples)
 
 
 # ===================================================================== struct-IO (the α↔composer bridge)
@@ -198,13 +362,17 @@ def _expand_alldiff(facts):
     return out
 
 
-def decode_structure(pin_logits, pair_logits, vmask, n, d=None):
+def decode_structure(pin_logits, pair_logits, vmask, n, d=None, tern_logits=None, triples=None):
     """One instance's CSP-head logits → the normalized predicted typed factor graph (a fact list).
 
     pin_logits [N,1+K] (argmax≠0 ⇒ pin(i, v=argmax-1)); pair_logits [N,N,R] (argmax over
     {none,eq,neq,lt,le} per ordered pair). Identical decode semantics to run_alpha_struct_probe /
     run_alpha_struct_search; returns `list(curriculum.norm_facts(...))` (order-insensitive, de-duped).
-    `d` (if given) drops out-of-domain pin values (a pinned value v>=d can never hold)."""
+    `d` (if given) drops out-of-domain pin values (a pinned value v>=d can never hold).
+
+    FINDING 2: if `tern_logits` [T,R_TERN] (+ its `triples` [T,3]) are given, the argmax-non-'none'
+    parity classes are decoded to ('parm', (i,j,k), rhs) facts (round-tripped by build_csp_from_struct
+    → curriculum's 'parm' constraint, and by facts_to_gf2 → the GF2RowSpace faculty)."""
     from .. import curriculum as CU
     pin = pin_logits.argmax(-1)
     pair = pair_logits.argmax(-1)
@@ -223,7 +391,87 @@ def decode_structure(pin_logits, pair_logits, vmask, n, d=None):
             cls = PAIR_RELS[int(pair[i, j])]
             if cls in ("eq", "neq", "lt", "le"):
                 facts.append((cls, i, j))
+    if tern_logits is not None and triples is not None and len(triples) > 0:
+        tcls = tern_logits.argmax(-1)
+        for t in range(len(triples)):
+            i, j, k = (int(x) for x in triples[t])
+            if float(vmask[i]) < 0.5 or float(vmask[j]) < 0.5 or float(vmask[k]) < 0.5:
+                continue
+            cls = TERN_RELS[int(tcls[t])]
+            if cls != "none":
+                facts.append(("parm", (i, j, k), TERN_RHS[cls]))
     return list(CU.norm_facts(facts))
+
+
+def facts_to_ternary_targets(facts_per_inst, triples, Nmax):
+    """Batched arity-3 parity targets aligned to the candidate `triples` [T,3] (FINDING 2 supervision):
+       tern_tgt [B,T] long, TERN_IDX of the triple's parity class (0=none).
+    Curriculum parity facts come in three shapes that all denote a⊕b⊕c=rhs over a 3-cell scope:
+    ('xor',a,b,c) (rhs 0), ('par',scope) (rhs 0), ('parm',scope,rhs). Each is matched to its triple."""
+    B = len(facts_per_inst)
+    T = len(triples)
+    tgt = torch.zeros(B, T, dtype=torch.long)
+    tri_index = {tuple(int(x) for x in triples[t]): t for t in range(T)}
+    for bi, facts in enumerate(facts_per_inst):
+        for f in facts:
+            k = f[0]
+            if k == "xor":
+                scope, rhs = tuple(sorted(f[1:4])), 0
+            elif k == "par":
+                scope, rhs = tuple(sorted(f[1])), 0
+            elif k == "parm":
+                scope, rhs = tuple(sorted(f[1])), int(f[2]) % 2
+            else:
+                continue
+            if len(scope) != 3 or any(c >= Nmax for c in scope):
+                continue                                  # arity>3 parity deferred (out of this head's scope)
+            t = tri_index.get(scope)
+            if t is not None:
+                tgt[bi, t] = TERN_IDX["par_odd" if rhs else "par_even"]
+    return tgt
+
+
+def ternary_sup_loss(tern_logits, tern_tgt, tri_valid, wpos=4.0, wnone=0.3):
+    """Masked soundness-asymmetric CE of the ternary-head logits vs the true arity-3 parity factors over
+    VALID triples (all three cells mentioned). `wpos` weights the parity classes (recall — a dropped
+    parity under-constrains the GF2 floor), `wnone` the none class (precision)."""
+    dev = tern_logits.device
+    w = torch.full((R_TERN,), wpos, device=dev); w[0] = wnone
+    m = tri_valid.bool()
+    if not m.any():
+        return tern_logits.sum() * 0.0
+    return F.cross_entropy(tern_logits[m], tern_tgt.to(dev)[m], weight=w)
+
+
+def facts_to_gf2(facts, n):
+    """α's emitted parity+pin facts (d=2) → a GF(2) system (A,b) for the certified GF2RowSpace faculty
+    (FINDING 2 routing). Each parity ('parm',scope,rhs)/('xor',a,b,c)/('par',scope) is a row of 1s over
+    its scope (rhs; xor/par ⇒ 0); each ('pin',i,v) a unit row. The binary {eq,neq,lt,le} vocab emits
+    NO parity rows ⇒ the system stays rank-deficient ⇒ GF2 cannot force the derived cells (the gap)."""
+    rows, rhs = [], []
+    for f in facts:
+        k = f[0]
+        if k == "parm":
+            row = np.zeros(n, np.uint8)
+            for c in f[1]:
+                row[int(c)] ^= 1
+            rows.append(row); rhs.append(int(f[2]) % 2)
+        elif k in ("xor",):
+            row = np.zeros(n, np.uint8)
+            for c in f[1:4]:
+                row[int(c)] ^= 1
+            rows.append(row); rhs.append(0)
+        elif k == "par":
+            row = np.zeros(n, np.uint8)
+            for c in f[1]:
+                row[int(c)] ^= 1
+            rows.append(row); rhs.append(0)
+        elif k == "pin":
+            row = np.zeros(n, np.uint8); row[int(f[1])] = 1
+            rows.append(row); rhs.append(int(f[2]) % 2)
+    A = np.array(rows, np.uint8) if rows else np.zeros((0, n), np.uint8)
+    b = np.array(rhs, np.uint8) if rows else np.zeros((0,), np.uint8)
+    return A, b
 
 
 def build_csp_from_struct(facts, n, d):
@@ -257,7 +505,8 @@ def facts_to_struct_targets(facts_per_inst, n_per_inst, Nmax):
                 a, b = int(f[1]), int(f[2])
                 if a < Nmax and b < Nmax:
                     pair[bi, a, b] = REL_IDX[k]
-            # ternary/variadic (sum/xor/par/rel) are deferred (design §1.2) — not in the minimal vocab
+            # arity-3 parity (xor/par/parm) is now handled by facts_to_ternary_targets (FINDING 2);
+            # directed modular 'sum' and arity>3 parity / 'rel' tables remain deferred.
     return pin, pair
 
 

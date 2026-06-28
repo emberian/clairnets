@@ -188,7 +188,8 @@ def run_gate(model, recs, tok, dev, bs=8, two_stream=True, seed=0, verbose=True)
         "n": len(recs), "n_corrupt_informative": len(cidx),
         "ALPHA_STRUCT_true": acc_true, "ALPHA_INPUT_CORRUPT": acc_corr,
         "EMPTY_STRUCT": acc_empty, "NO_STRUCT": acc_none,
-        "struct_F1": f1, "acc_faithful": acc_faith, "acc_unfaithful": acc_nfaith,
+        "struct_F1": f1, "exact_match": float(np.mean([1.0 if faithful[i] else 0.0 for i in idx])),
+        "acc_faithful": acc_faith, "acc_unfaithful": acc_nfaith,
         "output_check_rate": output_check_rate, "criteria": crit, "PASS": passed,
     }
     if verbose:
