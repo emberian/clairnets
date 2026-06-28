@@ -1,0 +1,268 @@
+{
+ "meta": {
+  "date": "2026-06-28",
+  "device": "cpu",
+  "elapsed_s": 1157.3,
+  "policy": {
+   "kind": "FactorGraphProposer GNN as per-(cell,value) solution-consistency scorer",
+   "arm": "full",
+   "budget_NDMA": [
+    28,
+    6,
+    220,
+    3
+   ],
+   "trained_by": "imitation of exact_dedP lookahead (solution-consistent values), masked BCE",
+   "train_inst_per_family": {
+    "planted 5-coloring [deep search, hidden-structure]": 80,
+    "xor_global / deduction=AC [affine wall]": 80,
+    "3-coloring [bounded-width, shallow]": 80,
+    "hard random binary CSP [phase transition]": 80
+   },
+   "n_states": 3915,
+   "n_train": 3446,
+   "n_val": 469,
+   "val_top1_consistent": 0.9104477611940298,
+   "train_steps": 3000
+  }
+ },
+ "families": [
+  {
+   "family": "planted 5-coloring [deep search, hidden-structure]",
+   "n_inst": 70,
+   "tight_node_budget": 4,
+   "policies": {
+    "symbolic_mrv": {
+     "mean_branches": 7.057142857142857,
+     "max_branches": 21,
+     "mean_nodes": 8.157142857142857,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "guided_mrv": {
+     "mean_branches": 6.757142857142857,
+     "max_branches": 18,
+     "mean_nodes": 7.8428571428571425,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "guided_decisive": {
+     "mean_branches": 45.91428571428571,
+     "max_branches": 871,
+     "mean_nodes": 111.95714285714286,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "untrained_mrv": {
+     "mean_branches": 7.071428571428571,
+     "max_branches": 21,
+     "mean_nodes": 8.17142857142857,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    }
+   },
+   "branch_reduction_pct": 4.251012145748986,
+   "node_reduction_pct": 3.852889667250435
+  },
+  {
+   "family": "xor_global / deduction=AC [affine wall]",
+   "n_inst": 70,
+   "tight_node_budget": 5,
+   "policies": {
+    "symbolic_mrv": {
+     "mean_branches": 5.414285714285715,
+     "max_branches": 15,
+     "mean_nodes": 10.414285714285715,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.24285714285714285,
+     "unsound_returns": 0
+    },
+    "guided_mrv": {
+     "mean_branches": 5.4714285714285715,
+     "max_branches": 14,
+     "mean_nodes": 10.7,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.2,
+     "unsound_returns": 0
+    },
+    "guided_decisive": {
+     "mean_branches": 6.642857142857143,
+     "max_branches": 23,
+     "mean_nodes": 12.785714285714286,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.2571428571428571,
+     "unsound_returns": 0
+    },
+    "untrained_mrv": {
+     "mean_branches": 5.414285714285715,
+     "max_branches": 15,
+     "mean_nodes": 10.4,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.24285714285714285,
+     "unsound_returns": 0
+    }
+   },
+   "branch_reduction_pct": -1.0554089709762495,
+   "node_reduction_pct": -2.7434842249656968
+  },
+  {
+   "family": "3-coloring [bounded-width, shallow]",
+   "n_inst": 70,
+   "tight_node_budget": 2,
+   "policies": {
+    "symbolic_mrv": {
+     "mean_branches": 3.2,
+     "max_branches": 6,
+     "mean_nodes": 4.4714285714285715,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "guided_mrv": {
+     "mean_branches": 3.142857142857143,
+     "max_branches": 6,
+     "mean_nodes": 4.3,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "guided_decisive": {
+     "mean_branches": 4.314285714285714,
+     "max_branches": 8,
+     "mean_nodes": 5.785714285714286,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    },
+    "untrained_mrv": {
+     "mean_branches": 3.2,
+     "max_branches": 6,
+     "mean_nodes": 4.4714285714285715,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.0,
+     "unsound_returns": 0
+    }
+   },
+   "branch_reduction_pct": 1.7857142857142931,
+   "node_reduction_pct": 3.833865814696492
+  },
+  {
+   "family": "hard random binary CSP [phase transition]",
+   "n_inst": 70,
+   "tight_node_budget": 3,
+   "policies": {
+    "symbolic_mrv": {
+     "mean_branches": 4.057142857142857,
+     "max_branches": 10,
+     "mean_nodes": 5.571428571428571,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.14285714285714285,
+     "unsound_returns": 0
+    },
+    "guided_mrv": {
+     "mean_branches": 4.171428571428572,
+     "max_branches": 9,
+     "mean_nodes": 5.542857142857143,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.12857142857142856,
+     "unsound_returns": 0
+    },
+    "guided_decisive": {
+     "mean_branches": 3.414285714285714,
+     "max_branches": 8,
+     "mean_nodes": 4.828571428571428,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.24285714285714285,
+     "unsound_returns": 0
+    },
+    "untrained_mrv": {
+     "mean_branches": 4.071428571428571,
+     "max_branches": 9,
+     "mean_nodes": 5.542857142857143,
+     "solve_rate_full": 1.0,
+     "solve_rate_tight": 0.17142857142857143,
+     "unsound_returns": 0
+    }
+   },
+   "branch_reduction_pct": -2.8169014084507165,
+   "node_reduction_pct": 0.512820512820511
+  }
+ ],
+ "policy_drives_order": {
+  "planted 5-coloring [deep search, hidden-structure]": {
+   "n_states": 400,
+   "diff_cell_frac": 0.0,
+   "diff_firstval_frac": 0.665,
+   "diff_order_frac": 0.695
+  },
+  "xor_global / deduction=AC [affine wall]": {
+   "n_states": 400,
+   "diff_cell_frac": 0.0,
+   "diff_firstval_frac": 0.5025,
+   "diff_order_frac": 0.5025
+  },
+  "3-coloring [bounded-width, shallow]": {
+   "n_states": 400,
+   "diff_cell_frac": 0.0,
+   "diff_firstval_frac": 0.2075,
+   "diff_order_frac": 0.3475
+  },
+  "hard random binary CSP [phase transition]": {
+   "n_states": 400,
+   "diff_cell_frac": 0.0,
+   "diff_firstval_frac": 0.3975,
+   "diff_order_frac": 0.4475
+  }
+ },
+ "policy_quality": {
+  "planted 5-coloring [deep search, hidden-structure]": {
+   "n_states": 598,
+   "top1_consistent": 0.9816053511705686
+  },
+  "xor_global / deduction=AC [affine wall]": {
+   "n_states": 201,
+   "top1_consistent": 0.4129353233830846
+  },
+  "3-coloring [bounded-width, shallow]": {
+   "n_states": 583,
+   "top1_consistent": 0.9228130360205832
+  },
+  "hard random binary CSP [phase transition]": {
+   "n_states": 575,
+   "top1_consistent": 0.9565217391304348
+  }
+ },
+ "soundness": {
+  "returns_checked": 480,
+  "unsound_returns": 0,
+  "incomplete_returns": 0
+ },
+ "verdict": {
+  "headline": "neural-proposes / checked-search on the LDT OUTER loop: a LEARNED branch order is SOUND for ANY policy (the output check gates every return) and the policy LEARNS solution-consistency where structure is local \u2014 but the SEARCH-COST win is bounded by the SAME bounded-width dichotomy that limits local deduction.",
+  "sound_for_any_policy": true,
+  "total_unsound_returns": 0,
+  "returns_checked": 480,
+  "policy_learns_top1_consistent_per_family": {
+   "planted 5-coloring [deep search, hidden-structure]": 0.982,
+   "xor_global / deduction=AC [affine wall]": 0.413,
+   "3-coloring [bounded-width, shallow]": 0.923,
+   "hard random binary CSP [phase transition]": 0.957
+  },
+  "policy_is_not_noop": true,
+  "pooled_branch_reduction_pct": 0.94,
+  "pooled_node_reduction_pct": 0.8,
+  "per_family_branch_reduction_pct": {
+   "planted 5-coloring [deep search, hidden-structure]": 4.25,
+   "xor_global / deduction=AC [affine wall]": -1.06,
+   "3-coloring [bounded-width, shallow]": 1.79,
+   "hard random binary CSP [phase transition]": -2.82
+  },
+  "dichotomy_finding": "A LOCAL learned branch policy faces the SAME width wall as local deduction. (a) AFFINE WALL (xor+AC): deep search but the local policy is at CHANCE (top1~0.5) -> cost neutral/noisy. (b) BOUNDED-WIDTH / SYMMETRIC (3-/planted-coloring): the policy LEARNS (top1 0.9-0.98) but MANY values are solution-consistent, so the symbolic ascending order already dives well -> ~0 headroom. (c) small random CSP: learnable with a little headroom -> small/noisy reduction. Deep-search <=> not-bounded-width <=> weak local signal; learnable <=> bounded-width <=> shallow/no-headroom -> a decisive outer-loop win needs a NON-LOCAL (e.g. GF2-aware) policy.",
+  "learned_cell_choice_hurts": "guided_decisive (learned CELL) >= symbolic cost => MRV fail-first cell is the right cell rule; learning belongs in the VALUE order.",
+  "untrained_policy_is_neutral": "untrained_mrv ~= symbolic_mrv (any effect is from TRAINING, not the net)."
+ }
+}

@@ -97,6 +97,47 @@ def make_guided_branch(organ, fallback: Branch = most_constrained_branch) -> Bra
     return _branch
 
 
+def make_policy_branch(policy, cell_mode: str = "mrv", fallback: Branch = most_constrained_branch) -> Branch:
+    """The TRAINED learned-branch hook (this file's contribution): order branches by a trained
+    `BranchPolicy` (below) — a size-equivariant factor-graph GNN that scores per-(cell,value)
+    SOLUTION-CONSISTENCY. `policy` is any object exposing guidance(state)->{'survival_logits':[n,K]}
+    (BranchPolicy, or the pretrained CoreNarrowOrgan for the reuse baseline). Soundness +
+    completeness are INDEPENDENT of the policy (check_assignment gates every return), so this only
+    changes the SEARCH ORDER / COST — never correctness. cell_mode selects the cell rule:
+      'mrv'          : fail-first cell (smallest alive domain, the symbolic cell choice) + LEARNED
+                       value order — isolates the value-ordering win (the safe, strong default).
+      'decisive'     : LEARNED cell (the open cell the policy splits most decisively) + learned values.
+      'mrv_decisive' : smallest-domain cells, ties broken by policy decisiveness.
+    Falls back to `fallback` whenever guidance is unavailable/malformed."""
+    def _branch(state: CSPState):
+        try:
+            logits = policy.guidance(state)["survival_logits"]
+        except Exception:
+            return fallback(state)
+        open_cells = [i for i in range(state.csp.n) if len(state.dom[i]) > 1]
+        if not open_cells:
+            return fallback(state)
+
+        def score(i, v):
+            return float(logits[i][v]) if v < len(logits[i]) else 0.0
+
+        def decisiveness(i):
+            ls = [score(i, v) for v in sorted(state.dom[i])]
+            return (max(ls) - min(ls)) if ls else -1.0
+
+        if cell_mode == "mrv":
+            cell = min(open_cells, key=lambda i: len(state.dom[i]))
+        elif cell_mode == "decisive":
+            cell = max(open_cells, key=decisiveness)
+        elif cell_mode == "mrv_decisive":
+            cell = min(open_cells, key=lambda i: (len(state.dom[i]), -decisiveness(i)))
+        else:
+            raise ValueError(f"unknown cell_mode {cell_mode!r}")
+        vals = sorted(state.dom[cell], key=lambda v: -score(cell, v))   # learned value order (best-first)
+        return cell, vals
+    return _branch
+
+
 # ============================================================ stats
 @dataclass
 class SearchStats:
@@ -184,6 +225,191 @@ def deduction_only(state: CSPState, reductions, gate: str = "exact"):
     behaviour (deduction + certified-ops + ABSTAIN). Returns (status, narrowed_state)."""
     out, _tr = reduced_product(state, reductions, verify=False, gate=gate)
     return out.status(), out
+
+
+# ============================================================ THE LEARNED BRANCH POLICY (built + trained here)
+# The outer-loop counterpart of the GLaDOS bet: the BRANCH ORDER is proposed by a learned model and the
+# output check keeps the search SOUND regardless. The policy is a size-equivariant factor-graph GNN
+# (clair.proposer.FactorGraphProposer, reused as a per-(cell,value) scorer) trained by IMITATION of the
+# exact solution-consistency oracle: for a narrowed CSPState, exact_dedP gives the values used by SOME
+# solution of that state (a branch into such a value never dead-ends), so a value ordered by predicted
+# consistency dives toward a solution and minimizes backtracking. The oracle is used at TRAIN time only;
+# the deployed policy is one cheap forward per branch node. Soundness/completeness are policy-independent.
+
+_POLICY_BUDGET = (28, 6, 220, 3)   # (N,D,M,A): xor d=2, k<=6 coloring, random d<=6, n<=28, arity<=3 all fit
+
+
+class BranchPolicy:
+    """A trained branch-ordering policy. `guidance(state)` returns {'survival_logits': [n,K]} exactly
+    like the certified organs' neural-guidance hook, so make_policy_branch orders branches by it."""
+
+    def __init__(self, net, budget=_POLICY_BUDGET, dev: str = "cpu"):
+        self.net = net
+        self.budget = tuple(budget)
+        self.dev = dev
+
+    @staticmethod
+    def build(budget=_POLICY_BUDGET, arm: str = "full", d: int = 64, R: int = 6, ds: int = 3,
+              dev: str = "cpu", seed: int = 0) -> "BranchPolicy":
+        import torch
+        from ..proposer import FactorGraphProposer
+        N, D, M, A = budget
+        torch.manual_seed(seed)
+        net = FactorGraphProposer(arm, N, D, M, A, d=d, R=R, ds=ds).to(dev)
+        return BranchPolicy(net, budget, dev)
+
+    def guidance(self, state: CSPState):
+        import torch
+        from .bank import _featurize_budget
+        N, D, M, A = self.budget
+        self.net.eval()
+        with torch.no_grad():
+            f = _featurize_budget([(state.csp, state.dom)], self.dev, N, D, M, A)
+            b, cls, _ = self.net(f["var_mask"], f["given"], f["fac_rel"], f["fac_arity"],
+                                 f["edge_var"], f["edge_valid"], f["var_valid"], f["fac_valid"])
+        return {"survival_logits": b[0].detach().cpu().numpy(), "conflict_logit": float(cls[0])}
+
+    def save(self, path: str):
+        import torch
+        torch.save({"state": self.net.state_dict(), "budget": self.budget, "arm": self.net.arm,
+                    "d": self.net.d, "R": self.net.R, "ds": self.net.ds}, path)
+
+    @staticmethod
+    def load(path: str, dev: str = "cpu") -> "BranchPolicy":
+        import torch
+        from ..proposer import FactorGraphProposer
+        blob = torch.load(path, map_location=dev, weights_only=False)
+        N, D, M, A = blob["budget"]
+        net = FactorGraphProposer(blob["arm"], N, D, M, A, d=blob["d"], R=blob["R"], ds=blob["ds"]).to(dev)
+        net.load_state_dict(blob["state"])
+        net.eval()
+        return BranchPolicy(net, blob["budget"], dev)
+
+
+def collect_branch_states(instances, reductions, gate: str = "exact", max_states: int = 6000,
+                          per_inst: int = 10, seed: int = 0, value_random: bool = True):
+    """Roll DPLL search on `instances` and record OPEN (csp, dom) states encountered just before a
+    branch, each labelled with the exact SOLUTION-CONSISTENT set exact_dedP(state) (the values used by
+    SOME solution of the state = the lookahead 'this value can lead to a solution' oracle). Returns a
+    list of (csp, dom, ded) imitation examples. Exact oracle is TRAIN-time only."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    data = []
+    for csp in instances:
+        if len(data) >= max_states:
+            break
+        got = [0]
+
+        def rec(s, depth):
+            if got[0] >= per_inst or len(data) >= max_states or depth > csp.n + 4:
+                return
+            out, _ = reduced_product(s, reductions, verify=False, gate=gate)
+            if out.status() != "open":
+                return
+            ded = C.exact_dedP(out.csp, out.dom)
+            if all(len(out.dom[i]) <= 1 for i in range(out.csp.n)):
+                return
+            data.append((out.csp, out.dom, ded))
+            got[0] += 1
+            cell = min((i for i in range(out.csp.n) if len(out.dom[i]) > 1),
+                       key=lambda i: len(out.dom[i]))
+            vals = sorted(out.dom[cell])
+            if value_random:
+                rng.shuffle(vals)
+            for v in vals:
+                rec(out.with_dom(tuple(frozenset({v}) if i == cell else out.dom[i]
+                                       for i in range(out.csp.n))), depth + 1)
+
+        rec(CSPState.full(csp) if not isinstance(csp, CSPState) else csp, 0)
+    return data
+
+
+def _branch_targets(batch, N, D, dev):
+    """Per-(cell,value) consistency target tgt[B,N,D] and supervision mask msk[B,N,D] (alive values
+    only) for a list of (csp, dom, ded) examples."""
+    import numpy as np, torch
+    B = len(batch)
+    tgt = np.zeros((B, N, D), np.float32)
+    msk = np.zeros((B, N, D), np.float32)
+    for bi, (csp, dom, ded) in enumerate(batch):
+        for i in range(csp.n):
+            for v in dom[i]:
+                if v < D:
+                    msk[bi, i, v] = 1.0
+                    if v in ded[i]:
+                        tgt[bi, i, v] = 1.0
+    return torch.as_tensor(tgt, device=dev), torch.as_tensor(msk, device=dev)
+
+
+def train_branch_policy(instances, reductions, *, budget=_POLICY_BUDGET, dev: str = "cpu",
+                        arm: str = "full", d: int = 64, R: int = 6, ds: int = 3, steps: int = 500,
+                        bs: int = 96, lr: float = 3e-4, gate: str = "exact", max_states: int = 8000,
+                        per_inst: int = 10, seed: int = 0, val_frac: float = 0.12, verbose: bool = True,
+                        data=None):
+    """BUILD + TRAIN the branch policy by imitation of the exact solution-consistency oracle. Collects
+    open search states (or reuses `data`), labels each (cell,value) by exact_dedP membership, and trains
+    the FactorGraphProposer per-(cell,value) head with masked BCE. Returns (BranchPolicy, metrics)."""
+    import numpy as np, torch, torch.nn.functional as Fnn
+    from ..proposer import FactorGraphProposer
+    from .bank import _featurize_budget
+    N, D, M, A = budget
+    if data is None:
+        data = collect_branch_states(instances, reductions, gate=gate, max_states=max_states,
+                                     per_inst=per_inst, seed=seed)
+    if not data:
+        raise ValueError("no training states collected (instances too easy / all deduction-solved?)")
+    rng = np.random.default_rng(seed + 1)
+    perm = rng.permutation(len(data))
+    data = [data[i] for i in perm]
+    nv = max(1, int(len(data) * val_frac))
+    val, train = data[:nv], data[nv:]
+    if not train:
+        train = data
+
+    torch.manual_seed(seed)
+    net = FactorGraphProposer(arm, N, D, M, A, d=d, R=R, ds=ds).to(dev)
+    opt = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.95))
+
+    def loss_on(batch):
+        f = _featurize_budget([(c, dm) for c, dm, _ in batch], dev, N, D, M, A)
+        b, _cls, _sup = net(f["var_mask"], f["given"], f["fac_rel"], f["fac_arity"],
+                            f["edge_var"], f["edge_valid"], f["var_valid"], f["fac_valid"])
+        tgt, msk = _branch_targets(batch, N, D, dev)
+        per = Fnn.binary_cross_entropy_with_logits(b, tgt, reduction="none") * msk
+        return per.sum() / msk.sum().clamp(min=1.0), b
+
+    t0 = __import__("time").time()
+    for step in range(1, steps + 1):
+        net.train()
+        sel = rng.choice(len(train), size=min(bs, len(train)), replace=False)
+        loss, _ = loss_on([train[i] for i in sel])
+        opt.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0); opt.step()
+        if verbose and (step % max(1, steps // 5) == 0 or step == 1):
+            print(f"    [branch-policy] step {step}/{steps} loss {float(loss.detach()):.4f} "
+                  f"({__import__('time').time()-t0:.0f}s)", flush=True)
+
+    # validation: at each open VAL state, is the policy's TOP-scored value at the MRV cell solution-consistent?
+    # (= would that first dive avoid a dead-end). This is the cost-relevant policy quality.
+    net.eval()
+    pol = BranchPolicy(net, budget, dev)
+    top_ok = top_n = 0
+    for (csp, dom, ded) in val:
+        open_cells = [i for i in range(csp.n) if len(dom[i]) > 1]
+        if not open_cells:
+            continue
+        cell = min(open_cells, key=lambda i: len(dom[i]))
+        if not ded[cell]:                          # LIVE states only (dead subtree => no consistent value)
+            continue
+        logits = pol.guidance(CSPState(csp, dom))["survival_logits"]
+        best = max(sorted(dom[cell]), key=lambda v: float(logits[cell][v]) if v < len(logits[cell]) else 0.0)
+        top_ok += int(best in ded[cell]); top_n += 1
+    metrics = {"n_states": len(data), "n_train": len(train), "n_val": len(val),
+               "val_top1_consistent": (top_ok / top_n) if top_n else None, "train_steps": steps}
+    if verbose:
+        print(f"    [branch-policy] trained on {len(train)} states; "
+              f"val top-1 value solution-consistent = {metrics['val_top1_consistent']}", flush=True)
+    return pol, metrics
 
 
 # ============================================================ self-test (the new search check)
