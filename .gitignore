@@ -1,6 +1,36 @@
 __pycache__/
 *.pyc
-runs/
+runs/*
+# runs/ holds outputs; these are kept deliberately (woven configs and the core organ
+# checkpoint are loaded by clair/organ/graft.py and clair/organ/bank.py; the rest are cited results)
+!runs/alien_clean.json
+!runs/alien_full.json
+!runs/alpha_struct_gate.json
+!runs/alpha_struct_lora_nl.json
+!runs/alpha_struct_lora_nl_L12.json
+!runs/alpha_struct_nl_frontier.json
+!runs/alpha_struct_probe.json
+!runs/alpha_struct_rebuild_SUMMARY.json
+!runs/alpha_struct_search_nl.json
+!runs/alpha_struct_sharp_corrupt.json
+!runs/general_organ_full.pt
+!runs/guided_search.json
+!runs/interp_bank.json
+!runs/interreducer_sweep.json
+!runs/multifaculty_full.json
+!runs/multifaculty_nfac.json
+!runs/organ_block_scaling.json
+!runs/organ_eval_buckets.json
+!runs/search_leg.json
+!runs/shuffled_diag.json
+!runs/thesis_gate.json
+!runs/woven_config_gemma4.json
+!runs/woven_config_nemotron_h_8b.json
+!runs/woven_config_olmo2-1b.json
+!runs/woven_config_olmo3_32b.json
+!runs/woven_config_pythia-160m.json
+!runs/woven_config_qwen36.json
+!runs/woven_config_smollm3-3b.json
 *.json.tmp
 .DS_Store
 venv/
