@@ -41,3 +41,6 @@ data/nl_frontier/*.jsonl
 runs/alpha_struct_woven.pt
 runs/multifaculty_full.pt
 runs/multifaculty_nfac.pt
+
+# PDFs live in the local paper library; see PAPERS.txt.
+*.[pP][dD][fF]

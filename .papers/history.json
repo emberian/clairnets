@@ -1,0 +1,624 @@
+[
+  {
+    "repo": "clairnets",
+    "oid": "8e957777b1901c9e85853d7abf560d512d5b687f",
+    "sha256": "b7b730b8f564b2e4fbd8b14fef82af2ca2744683b108c7fcf584e37de9a504d6",
+    "bytes": 194959,
+    "library_path": "repo-rescue-2026-11-13/papers/b7b730b8f564b2e4--1704.02942-budinich-clifford-sat.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/1704.02942-budinich-clifford-sat.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "9eb6877312d85e6f48b1f6a26338d3bd2961a583",
+    "sha256": "d4b8c752b7ad28b6df67bab764ba6744c575ffe8e2f09879c750b05c7daf3e90",
+    "bytes": 2371799,
+    "library_path": "repo-rescue-2026-11-13/papers/d4b8c752b7ad28b6--1807.03819-universal-transformers.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/1807.03819-universal-transformers.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "b8e6b8ffe0b486dd321fabbe56a3ebf5abba33a7",
+    "sha256": "33a86289009a29dfc9291160bbff04d6641aaa1350698f1314698bb904369afd",
+    "bytes": 1437334,
+    "library_path": "repo-rescue-2026-11-13/papers/33a86289009a29df--1905.12149-satnet-differentiable-maxsat.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/1905.12149-satnet-differentiable-maxsat.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "eebf106f0ec03c567c4fe54600941fd6e2c86281",
+    "sha256": "2562cc63cb06bcf474e98102ef2116df097df35d207ee6e4846b217694fc2dfb",
+    "bytes": 571541,
+    "library_path": "repo-rescue-2026-11-13/papers/2562cc63cb06bcf4--2107.05407-pondernet.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2107.05407-pondernet.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "20bd4df671bdbbd42d0dfcce9c56bd3a352769a5",
+    "sha256": "a5fec590d85462d05d02c2270046fc95341e8f479cb5fa961ca2fab393bea824",
+    "bytes": 10177679,
+    "library_path": "liu-ash-goel2022-transformers-learn-shortcuts-to-automata-2210.10749.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": true,
+    "original_paths": [
+      "pdfs/2210.10749-transformers-shortcuts-automata.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "2390e312b721828c8d4fb0ff5df2406b5321142b",
+    "sha256": "8c8a4011075186de9407fdb7a24367b7cf80c1b21ac8fec0d8a4181b8494a6fb",
+    "bytes": 728818,
+    "library_path": "repo-rescue-2026-11-13/papers/8c8a4011075186de--2312.11522-satnet-grounding-critique.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2312.11522-satnet-grounding-critique.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "5203ae0ae74e9d25404259a454e2a7c844a30d2f",
+    "sha256": "a60258740c3fe0c93a38c81413b72bcb6ba0c943a7d2e890642b7c05349ee3fa",
+    "bytes": 1228929,
+    "library_path": "repo-rescue-2026-11-13/papers/a60258740c3fe0c9--2406.09308-transnar.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2406.09308-transnar.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "9e52b5aa16a5f54d8944f8a02721f2e3ed4d6fbf",
+    "sha256": "b2dfdee58a5ca1c2b20bf0aa2393a816fe3256e0fb95571e755ff1d7e5305432",
+    "bytes": 15558616,
+    "library_path": "repo-rescue-2026-11-13/papers/b2dfdee58a5ca1c2--2411.12580-procedural-knowledge-pretraining.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2411.12580-procedural-knowledge-pretraining.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "529c4eb3777a67f66b609bea45829bdb690a4f06"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "aa194377e7155852a2cc1f177167f3c8708c47e4",
+    "sha256": "6eb32c71eaa571b727ee95bce20396243fd70dc1ee8a37f91a7de717790d5b46",
+    "bytes": 3289091,
+    "library_path": "repo-rescue-2026-11-13/papers/6eb32c71eaa571b7--2412.06769-coconut-latent-reasoning.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2412.06769-coconut-latent-reasoning.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "a0a1b46206bb4ab253cd311f56a79f0cac1ebc17",
+    "sha256": "96f4543683a06a470ccb0b6b0db27a98f283fde9467d175e838f03a629a76c7b",
+    "bytes": 11557797,
+    "library_path": "repo-rescue-2026-11-13/papers/96f4543683a06a47--2502.05171-geiping-recurrent-depth.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2502.05171-geiping-recurrent-depth.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "5b531051f915815cb260c77ebc595d174fc3b7ee",
+    "sha256": "a3aed7457446fa4c11c5f6cac89c38725ca42d0a66c44cc1935e2f8b6376882e",
+    "bytes": 2149490,
+    "library_path": "repo-rescue-2026-11-13/papers/a3aed7457446fa4c--2502.17416-looped-transformers-reasoning.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2502.17416-looped-transformers-reasoning.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "7c190d8b4d2aafad941c354f7a13168ebe28e50d",
+    "sha256": "b7696412ee361336f0b442a206e0c05b043c5e7dd67564b4b16bf423ac2d951e",
+    "bytes": 1677956,
+    "library_path": "repo-rescue-2026-11-13/papers/b7696412ee361336--2502.19402-general-reasoning-from-getgo.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2502.19402-general-reasoning-from-getgo.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "529c4eb3777a67f66b609bea45829bdb690a4f06"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "def745199a0c491ba57ba91a558192fca2c9595a",
+    "sha256": "b832116a334f4baaf72ffb794877d5a209e86ea6f8bad90ab2ebac50ae043bae",
+    "bytes": 727514,
+    "library_path": "repo-rescue-2026-11-13/papers/b832116a334f4baa--2502.19411-code-to-think-survey.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2502.19411-code-to-think-survey.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "1916fa8e7438f5d4773f8ddf3b505ca0c19de9f0",
+    "sha256": "76139ea0ba0e9155569c7aa7b8153502f6a5b23fed717af0ca9934ec9d764f9a",
+    "bytes": 2191668,
+    "library_path": "repo-rescue-2026-11-13/papers/76139ea0ba0e9155--2504.13837-rlvr-elicits-not-expands.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2504.13837-rlvr-elicits-not-expands.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "a1db84b3a78ef1db585a8685afe3625161d3f0e7",
+    "sha256": "4a10760481208004f596643d0f0df7ba248ca61825069be03acdb295da1aaaf7",
+    "bytes": 688664,
+    "library_path": "repo-rescue-2026-11-13/papers/4a10760481208004--2506.00288-emergent-abilities-continued-pretraining.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2506.00288-emergent-abilities-continued-pretraining.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "529c4eb3777a67f66b609bea45829bdb690a4f06"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "424c33e4cc9029c8f42a33cab3e81c022779f576",
+    "sha256": "0a7973ed18d6509d95dc104be79bc3c7c6110cf6e6acba21413d83bc8fd696db",
+    "bytes": 4286133,
+    "library_path": "repo-rescue-2026-11-13/papers/0a7973ed18d6509d--2506.10947-spurious-rewards.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2506.10947-spurious-rewards.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "e9e2b21522a0b1dc3ca8f7f727984369813a69ae",
+    "sha256": "38d0acc7bccc0060ce9e37413e00aedf91e26f6b0be9f5085ad40b124af4d95e",
+    "bytes": 845733,
+    "library_path": "repo-rescue-2026-11-13/papers/38d0acc7bccc0060--2506.13932-llm-reasoning-for-code-survey.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2506.13932-llm-reasoning-for-code-survey.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "9c87a62ab6b889c83947d4240c177d527662d4aa",
+    "sha256": "81b05b03ebd92748b1bc0e59d4b6e0d8271e1e56b84d1d589a03430db79b6e25",
+    "bytes": 2268976,
+    "library_path": "repo-rescue-2026-11-13/papers/81b05b03ebd92748--2506.21734-hrm-hierarchical-reasoning.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2506.21734-hrm-hierarchical-reasoning.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "017086b1af91ad259017defded8087de3151d8ba",
+    "sha256": "40eae8ecfd845fcfe92f913b21ea2c2bfc4bb7a87acee068d90812ecaa66a82b",
+    "bytes": 1610710,
+    "library_path": "repo-rescue-2026-11-13/papers/40eae8ecfd845fcf--2507.07207-scaling-compositional-generalization.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2507.07207-scaling-compositional-generalization.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "412c8493c19ce59534c6eaca7b6e8d3042bed9a3",
+    "sha256": "2c524d425f3eb2a5191bb6915cbd3629525978e348dce572d0270d885212bf7f",
+    "bytes": 4792642,
+    "library_path": "repo-rescue-2026-11-13/papers/2c524d425f3eb2a5--2509.23314-twoscale-latent-dynamics.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2509.23314-twoscale-latent-dynamics.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "9d38d7bf0655f4cd03a08f3385b4a4a4e8e58950",
+    "sha256": "936435417e09f5c7050c1986f700f4d441ab4a7483e212db09a6fbf3ad805bcf",
+    "bytes": 2496114,
+    "library_path": "repo-rescue-2026-11-13/papers/936435417e09f5c7--2510.00355-arcprize-hrm-analysis.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2510.00355-arcprize-hrm-analysis.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "56aed85d27c50494bd75f7c77941497ceaee2bd2",
+    "sha256": "62537d806818024cf9e6dfb53c350e9d50b83e09cd1686b976033a5bd919d05a",
+    "bytes": 1707363,
+    "library_path": "repo-rescue-2026-11-13/papers/62537d806818024c--2510.03264-frontloading-reasoning-synergy.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2510.03264-frontloading-reasoning-synergy.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "529c4eb3777a67f66b609bea45829bdb690a4f06"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "43077909b90721a01c1dbbfeb62eaa979e52c3ba",
+    "sha256": "c2b3ef5a8d6bc68e667aa01e8405dcfd9ebe88cfe1c6e58f04c5a6d652ce7af9",
+    "bytes": 427299,
+    "library_path": "repo-rescue-2026-11-13/papers/c2b3ef5a8d6bc68e--2510.04871-trm-tiny-recursive-model.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2510.04871-trm-tiny-recursive-model.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "2fd5053e4b5967e16245fb17bd56ea6a9e44108a",
+    "sha256": "cfc5263a98bb6effdc92e37f7da03b1e8f63282c1599353224932ce39843cbb9",
+    "bytes": 472086,
+    "library_path": "repo-rescue-2026-11-13/papers/cfc5263a98bb6eff--2601.06793-cliffordnet-geometric-product.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2601.06793-cliffordnet-geometric-product.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "0511f57cf061fba97b6da841607aeec1d464fda2",
+    "sha256": "2e8d87516a8181c686e38168dbcc574bec3e063ec5618cbe2107e90aba9b50ca",
+    "bytes": 1605821,
+    "library_path": "repo-rescue-2026-11-13/papers/2e8d87516a8181c6--2602.10520-rltt-latent-trajectory-reward.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2602.10520-rltt-latent-trajectory-reward.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "6257eced76bde7881c8c0535e6669128b9d4c60e",
+    "sha256": "d3f9b59b7d1fb40af48fc98337418ae7e31781991cdfb637be90f9dfbad5a73f",
+    "bytes": 9784399,
+    "library_path": "repo-rescue-2026-11-13/papers/d3f9b59b7d1fb40a--2604.19740-generalization-edge-of-stability.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2604.19740-generalization-edge-of-stability.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "2c5f045816247e851aa698a6c731f0227b96bbda",
+    "sha256": "d5d2336e87194af3d30dd5cbe2320383e6fdae3116fa3e09d265f02fb486c602",
+    "bytes": 575119,
+    "library_path": "repo-rescue-2026-11-13/papers/d5d2336e87194af3--2605.08605-lattice-deduction-transformer.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/2605.08605-lattice-deduction-transformer.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "9ff938eb466271ecba0f11ada5973260856adb6f",
+    "sha256": "3159573154c90f0d39b9921ada59375f3a657a679db68881b943b6f82f6d09e9",
+    "bytes": 556238,
+    "library_path": "obend-vision-20261031/amin-rompf2018-collapsing-towers.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": true,
+    "original_paths": [
+      "pdfs/collapsing_towers.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "f5498753e19c8ed38ee52f16f9058211a598eb22",
+    "sha256": "afbcbdf99c77122ddb8e819250d8dcd50845c1972aa1fcdb0287051f6fcc7227",
+    "bytes": 3987324,
+    "library_path": "repo-rescue-2026-11-13/papers/afbcbdf99c77122d--compiling_linear_neurons.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/compiling_linear_neurons.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "fb475162f9f68734515359915427fb32921a270b",
+    "sha256": "134d8ab85bf00f4ca9ce08b64c0fe7b44c9da718a6508252c55a67a2718a03a1",
+    "bytes": 6260273,
+    "library_path": "repo-rescue-2026-11-13/papers/134d8ab85bf00f4c--compiling_recurrent_neurons.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/compiling_recurrent_neurons.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "4675aa0b21bfa4510613c4dd7da3a74a0f0303cd",
+    "sha256": "c3e60c781440f0899b15d9a834b7e042fe487bfccb66c24ce0700cacecffc8e0",
+    "bytes": 375096,
+    "library_path": "repo-rescue-2026-11-13/papers/c3e60c781440f089--lsrl-process-grpo-latent-states.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/lsrl-process-grpo-latent-states.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "686793c1b6a22ff75e15825b6f80ac63e1ba91c6"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "a7f01b67287ad7678628b3ea58ecb9d1d77e6337",
+    "sha256": "9c1fb9c7d1cad0387f36f90303d6ac6398a4aa22b55a9d8a959392557f740294",
+    "bytes": 441636,
+    "library_path": "repo-rescue-2026-11-13/papers/9c1fb9c7d1cad038--reasoning_about_reasoning.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/reasoning_about_reasoning.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "7057149ed02305d5c5429d0bc06193290ddca231",
+    "sha256": "ae71308379ddfc492442befefc0f1d621c57e2d18edc7ed289cafccd6ef0ab4b",
+    "bytes": 793846,
+    "library_path": "repo-rescue-2026-11-13/papers/ae71308379ddfc49--staged_minikanren.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/staged_minikanren.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "81fdba6f0fbf4a5324ccbb15e02e1a518aca3bd4",
+    "sha256": "9797899fd95a4abab518b3a59798daf4983c11cbe2667fc1b3f41528741fa889",
+    "bytes": 1108229,
+    "library_path": "repo-rescue-2026-11-13/papers/9797899fd95a4aba--vermcts.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/vermcts.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "876b95d2889a16f89c1f8af9a47d79aa4897b4a3",
+    "sha256": "55e9fc5ae7a338ca186a8b38f05cf7c624fd2af5bef40d18e30b92dd55f0eaf1",
+    "bytes": 1081719,
+    "library_path": "repo-rescue-2026-11-13/papers/55e9fc5ae7a338ca--vermcts_full.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "pdfs/vermcts_full.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "1c1483d00c67c54d60a74f1735bacc7db9a56124"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "d95be0e436394b81ff2145587ff15e8207150e6f",
+    "sha256": "8bcb21ee362900388456d81d10d276a0b842ebc4fc97ee6e1669c9fc56fb32ac",
+    "bytes": 89280,
+    "library_path": "repo-rescue-2026-11-13/papers/8bcb21ee36290038--clairnets.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "report/clairnets.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "f2a76e420b10d5c41887a1a699803f113e8ae323"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "21a8849a88ed7fe1fa39a36eb496ef0b58288363",
+    "sha256": "ff119dd7e63fac646cc592b9320bdeaff84d69b21ff4244bd01c7a2297d720f1",
+    "bytes": 395986,
+    "library_path": "repo-rescue-2026-11-13/papers/ff119dd7e63fac64--glados.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "report/glados.pdf"
+    ],
+    "observed_commits": [
+      "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+      "b5fa45be1781ec3f72996bfcd49faabd1d1b47a4"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "41220417e3125f34964d120c903ba9f84c655ace",
+    "sha256": "3ea922ce4f7e22795ec042e30bf7f5c2f90b21469db7bdd6718c8ee10415236e",
+    "bytes": 344435,
+    "library_path": "repo-rescue-2026-11-13/papers/3ea922ce4f7e2279--glados.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "report/glados.pdf"
+    ],
+    "observed_commits": [
+      "ebd2480a76cdb7ca3bc599a9942d0dcf9ce3fdd4"
+    ]
+  },
+  {
+    "repo": "clairnets",
+    "oid": "07550a12f325cb5548d9339e46a33c51543cff1b",
+    "sha256": "b0a2e48dec8d9fdb24b42bd737eecc9f414e54f6b1408d95ff4280ceaec67a0a",
+    "bytes": 289160,
+    "library_path": "repo-rescue-2026-11-13/papers/b0a2e48dec8d9fdb--glados.pdf",
+    "valid_pdf": true,
+    "reused_existing_library_copy": false,
+    "original_paths": [
+      "report/glados.pdf"
+    ],
+    "observed_commits": [
+      "bcec6fbf9eeca83a1da3ca36cd16a32cd56f553a"
+    ]
+  }
+]

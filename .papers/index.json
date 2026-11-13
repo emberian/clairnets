@@ -1,0 +1,301 @@
+{
+  "original_tip": "03daec5a9b0a15ce3845d782eb0725e16abe1f0a",
+  "papers": [
+    {
+      "path": "pdfs/1704.02942-budinich-clifford-sat.pdf",
+      "oid": "8e957777b1901c9e85853d7abf560d512d5b687f",
+      "bytes": 194959,
+      "mode": "100644",
+      "sha256": "b7b730b8f564b2e4fbd8b14fef82af2ca2744683b108c7fcf584e37de9a504d6",
+      "library_path": "repo-rescue-2026-11-13/papers/b7b730b8f564b2e4--1704.02942-budinich-clifford-sat.pdf"
+    },
+    {
+      "path": "pdfs/1807.03819-universal-transformers.pdf",
+      "oid": "9eb6877312d85e6f48b1f6a26338d3bd2961a583",
+      "bytes": 2371799,
+      "mode": "100644",
+      "sha256": "d4b8c752b7ad28b6df67bab764ba6744c575ffe8e2f09879c750b05c7daf3e90",
+      "library_path": "repo-rescue-2026-11-13/papers/d4b8c752b7ad28b6--1807.03819-universal-transformers.pdf"
+    },
+    {
+      "path": "pdfs/1905.12149-satnet-differentiable-maxsat.pdf",
+      "oid": "b8e6b8ffe0b486dd321fabbe56a3ebf5abba33a7",
+      "bytes": 1437334,
+      "mode": "100644",
+      "sha256": "33a86289009a29dfc9291160bbff04d6641aaa1350698f1314698bb904369afd",
+      "library_path": "repo-rescue-2026-11-13/papers/33a86289009a29df--1905.12149-satnet-differentiable-maxsat.pdf"
+    },
+    {
+      "path": "pdfs/2107.05407-pondernet.pdf",
+      "oid": "eebf106f0ec03c567c4fe54600941fd6e2c86281",
+      "bytes": 571541,
+      "mode": "100644",
+      "sha256": "2562cc63cb06bcf474e98102ef2116df097df35d207ee6e4846b217694fc2dfb",
+      "library_path": "repo-rescue-2026-11-13/papers/2562cc63cb06bcf4--2107.05407-pondernet.pdf"
+    },
+    {
+      "path": "pdfs/2210.10749-transformers-shortcuts-automata.pdf",
+      "oid": "20bd4df671bdbbd42d0dfcce9c56bd3a352769a5",
+      "bytes": 10177679,
+      "mode": "100644",
+      "sha256": "a5fec590d85462d05d02c2270046fc95341e8f479cb5fa961ca2fab393bea824",
+      "library_path": "liu-ash-goel2022-transformers-learn-shortcuts-to-automata-2210.10749.pdf"
+    },
+    {
+      "path": "pdfs/2312.11522-satnet-grounding-critique.pdf",
+      "oid": "2390e312b721828c8d4fb0ff5df2406b5321142b",
+      "bytes": 728818,
+      "mode": "100644",
+      "sha256": "8c8a4011075186de9407fdb7a24367b7cf80c1b21ac8fec0d8a4181b8494a6fb",
+      "library_path": "repo-rescue-2026-11-13/papers/8c8a4011075186de--2312.11522-satnet-grounding-critique.pdf"
+    },
+    {
+      "path": "pdfs/2406.09308-transnar.pdf",
+      "oid": "5203ae0ae74e9d25404259a454e2a7c844a30d2f",
+      "bytes": 1228929,
+      "mode": "100644",
+      "sha256": "a60258740c3fe0c93a38c81413b72bcb6ba0c943a7d2e890642b7c05349ee3fa",
+      "library_path": "repo-rescue-2026-11-13/papers/a60258740c3fe0c9--2406.09308-transnar.pdf"
+    },
+    {
+      "path": "pdfs/2411.12580-procedural-knowledge-pretraining.pdf",
+      "oid": "9e52b5aa16a5f54d8944f8a02721f2e3ed4d6fbf",
+      "bytes": 15558616,
+      "mode": "100644",
+      "sha256": "b2dfdee58a5ca1c2b20bf0aa2393a816fe3256e0fb95571e755ff1d7e5305432",
+      "library_path": "repo-rescue-2026-11-13/papers/b2dfdee58a5ca1c2--2411.12580-procedural-knowledge-pretraining.pdf"
+    },
+    {
+      "path": "pdfs/2412.06769-coconut-latent-reasoning.pdf",
+      "oid": "aa194377e7155852a2cc1f177167f3c8708c47e4",
+      "bytes": 3289091,
+      "mode": "100644",
+      "sha256": "6eb32c71eaa571b727ee95bce20396243fd70dc1ee8a37f91a7de717790d5b46",
+      "library_path": "repo-rescue-2026-11-13/papers/6eb32c71eaa571b7--2412.06769-coconut-latent-reasoning.pdf"
+    },
+    {
+      "path": "pdfs/2502.05171-geiping-recurrent-depth.pdf",
+      "oid": "a0a1b46206bb4ab253cd311f56a79f0cac1ebc17",
+      "bytes": 11557797,
+      "mode": "100644",
+      "sha256": "96f4543683a06a470ccb0b6b0db27a98f283fde9467d175e838f03a629a76c7b",
+      "library_path": "repo-rescue-2026-11-13/papers/96f4543683a06a47--2502.05171-geiping-recurrent-depth.pdf"
+    },
+    {
+      "path": "pdfs/2502.17416-looped-transformers-reasoning.pdf",
+      "oid": "5b531051f915815cb260c77ebc595d174fc3b7ee",
+      "bytes": 2149490,
+      "mode": "100644",
+      "sha256": "a3aed7457446fa4c11c5f6cac89c38725ca42d0a66c44cc1935e2f8b6376882e",
+      "library_path": "repo-rescue-2026-11-13/papers/a3aed7457446fa4c--2502.17416-looped-transformers-reasoning.pdf"
+    },
+    {
+      "path": "pdfs/2502.19402-general-reasoning-from-getgo.pdf",
+      "oid": "7c190d8b4d2aafad941c354f7a13168ebe28e50d",
+      "bytes": 1677956,
+      "mode": "100644",
+      "sha256": "b7696412ee361336f0b442a206e0c05b043c5e7dd67564b4b16bf423ac2d951e",
+      "library_path": "repo-rescue-2026-11-13/papers/b7696412ee361336--2502.19402-general-reasoning-from-getgo.pdf"
+    },
+    {
+      "path": "pdfs/2502.19411-code-to-think-survey.pdf",
+      "oid": "def745199a0c491ba57ba91a558192fca2c9595a",
+      "bytes": 727514,
+      "mode": "100644",
+      "sha256": "b832116a334f4baaf72ffb794877d5a209e86ea6f8bad90ab2ebac50ae043bae",
+      "library_path": "repo-rescue-2026-11-13/papers/b832116a334f4baa--2502.19411-code-to-think-survey.pdf"
+    },
+    {
+      "path": "pdfs/2504.13837-rlvr-elicits-not-expands.pdf",
+      "oid": "1916fa8e7438f5d4773f8ddf3b505ca0c19de9f0",
+      "bytes": 2191668,
+      "mode": "100644",
+      "sha256": "76139ea0ba0e9155569c7aa7b8153502f6a5b23fed717af0ca9934ec9d764f9a",
+      "library_path": "repo-rescue-2026-11-13/papers/76139ea0ba0e9155--2504.13837-rlvr-elicits-not-expands.pdf"
+    },
+    {
+      "path": "pdfs/2506.00288-emergent-abilities-continued-pretraining.pdf",
+      "oid": "a1db84b3a78ef1db585a8685afe3625161d3f0e7",
+      "bytes": 688664,
+      "mode": "100644",
+      "sha256": "4a10760481208004f596643d0f0df7ba248ca61825069be03acdb295da1aaaf7",
+      "library_path": "repo-rescue-2026-11-13/papers/4a10760481208004--2506.00288-emergent-abilities-continued-pretraining.pdf"
+    },
+    {
+      "path": "pdfs/2506.10947-spurious-rewards.pdf",
+      "oid": "424c33e4cc9029c8f42a33cab3e81c022779f576",
+      "bytes": 4286133,
+      "mode": "100644",
+      "sha256": "0a7973ed18d6509d95dc104be79bc3c7c6110cf6e6acba21413d83bc8fd696db",
+      "library_path": "repo-rescue-2026-11-13/papers/0a7973ed18d6509d--2506.10947-spurious-rewards.pdf"
+    },
+    {
+      "path": "pdfs/2506.13932-llm-reasoning-for-code-survey.pdf",
+      "oid": "e9e2b21522a0b1dc3ca8f7f727984369813a69ae",
+      "bytes": 845733,
+      "mode": "100644",
+      "sha256": "38d0acc7bccc0060ce9e37413e00aedf91e26f6b0be9f5085ad40b124af4d95e",
+      "library_path": "repo-rescue-2026-11-13/papers/38d0acc7bccc0060--2506.13932-llm-reasoning-for-code-survey.pdf"
+    },
+    {
+      "path": "pdfs/2506.21734-hrm-hierarchical-reasoning.pdf",
+      "oid": "9c87a62ab6b889c83947d4240c177d527662d4aa",
+      "bytes": 2268976,
+      "mode": "100644",
+      "sha256": "81b05b03ebd92748b1bc0e59d4b6e0d8271e1e56b84d1d589a03430db79b6e25",
+      "library_path": "repo-rescue-2026-11-13/papers/81b05b03ebd92748--2506.21734-hrm-hierarchical-reasoning.pdf"
+    },
+    {
+      "path": "pdfs/2507.07207-scaling-compositional-generalization.pdf",
+      "oid": "017086b1af91ad259017defded8087de3151d8ba",
+      "bytes": 1610710,
+      "mode": "100644",
+      "sha256": "40eae8ecfd845fcfe92f913b21ea2c2bfc4bb7a87acee068d90812ecaa66a82b",
+      "library_path": "repo-rescue-2026-11-13/papers/40eae8ecfd845fcf--2507.07207-scaling-compositional-generalization.pdf"
+    },
+    {
+      "path": "pdfs/2509.23314-twoscale-latent-dynamics.pdf",
+      "oid": "412c8493c19ce59534c6eaca7b6e8d3042bed9a3",
+      "bytes": 4792642,
+      "mode": "100644",
+      "sha256": "2c524d425f3eb2a5191bb6915cbd3629525978e348dce572d0270d885212bf7f",
+      "library_path": "repo-rescue-2026-11-13/papers/2c524d425f3eb2a5--2509.23314-twoscale-latent-dynamics.pdf"
+    },
+    {
+      "path": "pdfs/2510.00355-arcprize-hrm-analysis.pdf",
+      "oid": "9d38d7bf0655f4cd03a08f3385b4a4a4e8e58950",
+      "bytes": 2496114,
+      "mode": "100644",
+      "sha256": "936435417e09f5c7050c1986f700f4d441ab4a7483e212db09a6fbf3ad805bcf",
+      "library_path": "repo-rescue-2026-11-13/papers/936435417e09f5c7--2510.00355-arcprize-hrm-analysis.pdf"
+    },
+    {
+      "path": "pdfs/2510.03264-frontloading-reasoning-synergy.pdf",
+      "oid": "56aed85d27c50494bd75f7c77941497ceaee2bd2",
+      "bytes": 1707363,
+      "mode": "100644",
+      "sha256": "62537d806818024cf9e6dfb53c350e9d50b83e09cd1686b976033a5bd919d05a",
+      "library_path": "repo-rescue-2026-11-13/papers/62537d806818024c--2510.03264-frontloading-reasoning-synergy.pdf"
+    },
+    {
+      "path": "pdfs/2510.04871-trm-tiny-recursive-model.pdf",
+      "oid": "43077909b90721a01c1dbbfeb62eaa979e52c3ba",
+      "bytes": 427299,
+      "mode": "100644",
+      "sha256": "c2b3ef5a8d6bc68e667aa01e8405dcfd9ebe88cfe1c6e58f04c5a6d652ce7af9",
+      "library_path": "repo-rescue-2026-11-13/papers/c2b3ef5a8d6bc68e--2510.04871-trm-tiny-recursive-model.pdf"
+    },
+    {
+      "path": "pdfs/2601.06793-cliffordnet-geometric-product.pdf",
+      "oid": "2fd5053e4b5967e16245fb17bd56ea6a9e44108a",
+      "bytes": 472086,
+      "mode": "100644",
+      "sha256": "cfc5263a98bb6effdc92e37f7da03b1e8f63282c1599353224932ce39843cbb9",
+      "library_path": "repo-rescue-2026-11-13/papers/cfc5263a98bb6eff--2601.06793-cliffordnet-geometric-product.pdf"
+    },
+    {
+      "path": "pdfs/2602.10520-rltt-latent-trajectory-reward.pdf",
+      "oid": "0511f57cf061fba97b6da841607aeec1d464fda2",
+      "bytes": 1605821,
+      "mode": "100644",
+      "sha256": "2e8d87516a8181c686e38168dbcc574bec3e063ec5618cbe2107e90aba9b50ca",
+      "library_path": "repo-rescue-2026-11-13/papers/2e8d87516a8181c6--2602.10520-rltt-latent-trajectory-reward.pdf"
+    },
+    {
+      "path": "pdfs/2604.19740-generalization-edge-of-stability.pdf",
+      "oid": "6257eced76bde7881c8c0535e6669128b9d4c60e",
+      "bytes": 9784399,
+      "mode": "100644",
+      "sha256": "d3f9b59b7d1fb40af48fc98337418ae7e31781991cdfb637be90f9dfbad5a73f",
+      "library_path": "repo-rescue-2026-11-13/papers/d3f9b59b7d1fb40a--2604.19740-generalization-edge-of-stability.pdf"
+    },
+    {
+      "path": "pdfs/2605.08605-lattice-deduction-transformer.pdf",
+      "oid": "2c5f045816247e851aa698a6c731f0227b96bbda",
+      "bytes": 575119,
+      "mode": "100644",
+      "sha256": "d5d2336e87194af3d30dd5cbe2320383e6fdae3116fa3e09d265f02fb486c602",
+      "library_path": "repo-rescue-2026-11-13/papers/d5d2336e87194af3--2605.08605-lattice-deduction-transformer.pdf"
+    },
+    {
+      "path": "pdfs/collapsing_towers.pdf",
+      "oid": "9ff938eb466271ecba0f11ada5973260856adb6f",
+      "bytes": 556238,
+      "mode": "100644",
+      "sha256": "3159573154c90f0d39b9921ada59375f3a657a679db68881b943b6f82f6d09e9",
+      "library_path": "obend-vision-20261031/amin-rompf2018-collapsing-towers.pdf"
+    },
+    {
+      "path": "pdfs/compiling_linear_neurons.pdf",
+      "oid": "f5498753e19c8ed38ee52f16f9058211a598eb22",
+      "bytes": 3987324,
+      "mode": "100644",
+      "sha256": "afbcbdf99c77122ddb8e819250d8dcd50845c1972aa1fcdb0287051f6fcc7227",
+      "library_path": "repo-rescue-2026-11-13/papers/afbcbdf99c77122d--compiling_linear_neurons.pdf"
+    },
+    {
+      "path": "pdfs/compiling_recurrent_neurons.pdf",
+      "oid": "fb475162f9f68734515359915427fb32921a270b",
+      "bytes": 6260273,
+      "mode": "100644",
+      "sha256": "134d8ab85bf00f4ca9ce08b64c0fe7b44c9da718a6508252c55a67a2718a03a1",
+      "library_path": "repo-rescue-2026-11-13/papers/134d8ab85bf00f4c--compiling_recurrent_neurons.pdf"
+    },
+    {
+      "path": "pdfs/lsrl-process-grpo-latent-states.pdf",
+      "oid": "4675aa0b21bfa4510613c4dd7da3a74a0f0303cd",
+      "bytes": 375096,
+      "mode": "100644",
+      "sha256": "c3e60c781440f0899b15d9a834b7e042fe487bfccb66c24ce0700cacecffc8e0",
+      "library_path": "repo-rescue-2026-11-13/papers/c3e60c781440f089--lsrl-process-grpo-latent-states.pdf"
+    },
+    {
+      "path": "pdfs/reasoning_about_reasoning.pdf",
+      "oid": "a7f01b67287ad7678628b3ea58ecb9d1d77e6337",
+      "bytes": 441636,
+      "mode": "100644",
+      "sha256": "9c1fb9c7d1cad0387f36f90303d6ac6398a4aa22b55a9d8a959392557f740294",
+      "library_path": "repo-rescue-2026-11-13/papers/9c1fb9c7d1cad038--reasoning_about_reasoning.pdf"
+    },
+    {
+      "path": "pdfs/staged_minikanren.pdf",
+      "oid": "7057149ed02305d5c5429d0bc06193290ddca231",
+      "bytes": 793846,
+      "mode": "100644",
+      "sha256": "ae71308379ddfc492442befefc0f1d621c57e2d18edc7ed289cafccd6ef0ab4b",
+      "library_path": "repo-rescue-2026-11-13/papers/ae71308379ddfc49--staged_minikanren.pdf"
+    },
+    {
+      "path": "pdfs/vermcts.pdf",
+      "oid": "81fdba6f0fbf4a5324ccbb15e02e1a518aca3bd4",
+      "bytes": 1108229,
+      "mode": "100644",
+      "sha256": "9797899fd95a4abab518b3a59798daf4983c11cbe2667fc1b3f41528741fa889",
+      "library_path": "repo-rescue-2026-11-13/papers/9797899fd95a4aba--vermcts.pdf"
+    },
+    {
+      "path": "pdfs/vermcts_full.pdf",
+      "oid": "876b95d2889a16f89c1f8af9a47d79aa4897b4a3",
+      "bytes": 1081719,
+      "mode": "100644",
+      "sha256": "55e9fc5ae7a338ca186a8b38f05cf7c624fd2af5bef40d18e30b92dd55f0eaf1",
+      "library_path": "repo-rescue-2026-11-13/papers/55e9fc5ae7a338ca--vermcts_full.pdf"
+    },
+    {
+      "path": "report/clairnets.pdf",
+      "oid": "d95be0e436394b81ff2145587ff15e8207150e6f",
+      "bytes": 89280,
+      "mode": "100644",
+      "sha256": "8bcb21ee362900388456d81d10d276a0b842ebc4fc97ee6e1669c9fc56fb32ac",
+      "library_path": "repo-rescue-2026-11-13/papers/8bcb21ee36290038--clairnets.pdf"
+    },
+    {
+      "path": "report/glados.pdf",
+      "oid": "21a8849a88ed7fe1fa39a36eb496ef0b58288363",
+      "bytes": 395986,
+      "mode": "100644",
+      "sha256": "ff119dd7e63fac646cc592b9320bdeaff84d69b21ff4244bd01c7a2297d720f1",
+      "library_path": "repo-rescue-2026-11-13/papers/ff119dd7e63fac64--glados.pdf"
+    }
+  ]
+}

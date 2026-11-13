@@ -1,0 +1,11 @@
+Paper-library offload, 2026-11-13
+
+PDF paths were removed from Git history after all observed versions were SHA256-verified in ~/paperbin. Source paper/report inputs, source code, images and unrelated data were retained. See PAPERS.txt and .papers/history.json for recovery identities and source paths.
+
+Original tip: 03daec5a9b0a15ce3845d782eb0725e16abe1f0a
+Pre-rewrite Git bundle: /Users/ember/repo-archives/2026-11-13/pdf-offload/clairnets.bundle
+Bundle SHA256: 7023f496ae2444d95c2e7f498acd1ca25aee8ee37be25a582312b514fd338027
+Independent backup: hbox:~/repo-archives/2026-11-13/pdf-offload/clairnets.bundle
+The original archive passed restoration and git fsck. .papers/history-map.tsv.xz maps old commits to rewritten commits. Commits made empty by payload removal were retained.
+
+Existing local worktrees retain old history and were not modified. Preserve local work and use a fresh clone; do not merge or force-push old histories back.

@@ -1,3 +1,5 @@
+> PDFs live in the local paper library. Restore exact saved versions with `python3 tools/paperbin.py restore`; see [PAPERS.txt](PAPERS.txt).
+
 # GLaDOS — Geometric Lattice Deduction Over Streams
 
 **A checked, differentiable deduction organ woven into a language model — and trained to be used.**
